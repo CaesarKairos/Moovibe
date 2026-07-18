@@ -27,8 +27,6 @@ document.addEventListener('DOMContentLoaded', () => {
         "Finding a cinematic soul..."
     ];
 
-    // --- API Configuration ---
-    const WORKER_URL = 'https://moovibe-api.cesarbatistasantos08.workers.dev/'; // Substitua pelo link real do seu Worker
 
     // --- Core Functions ---
 
@@ -122,8 +120,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (!song) return;
 
-        // Real fetch to the Cloudflare Worker API
-        const fetchPromise = fetch(`${WORKER_URL}/api/recommend`, {
+        // Real fetch to the Cloudflare Pages Function (/recommend)
+        const fetchPromise = fetch('/recommend', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'

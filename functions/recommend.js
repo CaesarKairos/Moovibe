@@ -1,9 +1,7 @@
 /**
- * Moovibe - Cloudflare Worker (ES Modules)
+ * Moovibe - Cloudflare Pages Function
  * 
- * Tradução completa do backend Python (app.py) para o ambiente
- * Cloudflare Workers. Escuta POST em /api/recommend e orquestra:
- * 
+ * Responde em POST /recommend com a orquestração completa:
  *   1. LRCLIB (letras) + Genius (contexto)
  *   2. DuckDuckGo fallback (letra + contexto + filme)
  *   3. OpenRouter (IA → recomendação de filme)
@@ -20,120 +18,106 @@ const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
 const DUCKDUCKGO_HTML_URL = 'https://html.duckduckgo.com/html/';
 
 // ============================================================
-//  HANDLER PRINCIPAL
+//  HANDLER PRINCIPAL (Pages Functions)
 // ============================================================
-export default {
-  async fetch(request, env) {
-    // --- CORS preflight ---
-    if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
-        },
-      });
+export async function onRequest(context) {
+  const { request, env } = context;
+
+  // Apenas POST
+  if (request.method !== 'POST') {
+    return new Response('Method Not Allowed', { status: 405 });
+  }
+
+  try {
+    const body = await request.json();
+    const { nome_musica, artista } = body;
+
+    if (!nome_musica) {
+      return jsonResponse({ error: 'nome_musica is required' }, 400);
     }
 
-    const url = new URL(request.url);
-
-    // Apenas POST /api/recommend
-    if (request.method !== 'POST' || url.pathname !== '/api/recommend') {
-      return new Response('Not Found', { status: 404 });
+    // ---- 1. BUSCAR LETRA (LRCLIB → DuckDuckGo fallback) ----
+    let letra = await buscarLetraLRCLIB(nome_musica, artista);
+    if (!letra) {
+      letra = await buscarDuckDuckGo(`${nome_musica} ${artista} lyrics`);
     }
 
-    try {
-      const body = await request.json();
-      const { nome_musica, artista } = body;
-
-      if (!nome_musica) {
-        return jsonResponse({ error: 'nome_musica is required' }, 400);
-      }
-
-      // ---- 1. BUSCAR LETRA (LRCLIB → DuckDuckGo fallback) ----
-      let letra = await buscarLetraLRCLIB(nome_musica, artista);
-      if (!letra) {
-        letra = await buscarDuckDuckGo(`${nome_musica} ${artista} lyrics`);
-      }
-
-      // ---- 2. BUSCAR CONTEXTO (Genius → DuckDuckGo fallback) ----
-      let contextoExtra = null;
-      if (env.GENIUS_API_KEY) {
-        contextoExtra = await buscarContextoGenius(nome_musica, artista, env.GENIUS_API_KEY);
-      }
-      if (!contextoExtra) {
-        contextoExtra = await buscarDuckDuckGo(`${nome_musica} ${artista} song meaning`);
-      }
-
-      // ---- 3. RECOMENDAÇÃO IA (OpenRouter) ----
-      const recomendacaoIA = await obterRecomendacaoIA(
-        nome_musica, artista, letra, contextoExtra, env.OPENROUTER_API_KEY
-      );
-
-      if (!recomendacaoIA) {
-        return jsonResponse({ error: 'Falha ao obter recomendacao da IA' }, 500);
-      }
-
-      const nomeFilme = recomendacaoIA.filme_sugerido;
-      const anoFilme = recomendacaoIA.ano_filme || '';
-      const justificativa = recomendacaoIA.justificativa_vibe;
-      const vibeTitle = recomendacaoIA.vibe_title || 'VIBE CINEMATICA';
-      const tags = recomendacaoIA.tags || ['UNICO', 'ESSENCIAL'];
-
-      // ---- 4. DADOS DO FILME (TMDb → DuckDuckGo fallback) ----
-      let dadosFilme = null;
-      if (env.TMDB_API_KEY) {
-        dadosFilme = await obterDetalhesTMDB(nomeFilme, anoFilme, env.TMDB_API_KEY);
-      }
-      if (!dadosFilme || !dadosFilme.sinopse) {
-        const fallback = await buscarDadosFilmeDuckDuckGo(nomeFilme, anoFilme);
-        if (fallback) {
-          dadosFilme = fallback;
-        }
-      }
-
-      // ---- 5. MONTAR RESPOSTA ----
-      const resposta = {
-        song: nome_musica,
-        artist: artista || '',
-        movie: {
-          title: dadosFilme?.titulo_pt || nomeFilme,
-          original_title: dadosFilme?.titulo_original || nomeFilme,
-          release_year: dadosFilme?.ano || anoFilme || 'Nao informado',
-          director: dadosFilme?.diretor || 'Nao encontrado',
-          synopsis: dadosFilme?.sinopse || 'Sinopse nao disponivel.',
-          poster_url: dadosFilme?.poster || '',
-          stills: dadosFilme?.cenas || [],
-          ai_explanation: `<p>${justificativa}</p>`,
-          vibe_title: vibeTitle,
-          tags: tags,
-          imdb_url: dadosFilme?.imdb_id
-            ? `https://www.imdb.com/title/${dadosFilme.imdb_id}/`
-            : `https://www.imdb.com/find?q=${encodeURIComponent(nomeFilme)}`,
-          letterboxd_url: dadosFilme?.id_tmdb
-            ? `https://letterboxd.com/tmdb/${dadosFilme.id_tmdb}`
-            : `https://letterboxd.com/search/${encodeURIComponent(nomeFilme)}/`,
-          tiktok_url: `https://www.tiktok.com/search?q=${encodeURIComponent(nomeFilme + ' edit')}`,
-        },
-      };
-
-      return jsonResponse(resposta, 200);
-    } catch (error) {
-      console.error('Worker error:', error);
-      return jsonResponse({ error: 'Erro interno do servidor' }, 500);
+    // ---- 2. BUSCAR CONTEXTO (Genius → DuckDuckGo fallback) ----
+    let contextoExtra = null;
+    if (env.GENIUS_API_KEY) {
+      contextoExtra = await buscarContextoGenius(nome_musica, artista, env.GENIUS_API_KEY);
     }
-  },
-};
+    if (!contextoExtra) {
+      contextoExtra = await buscarDuckDuckGo(`${nome_musica} ${artista} song meaning`);
+    }
+
+    // ---- 3. RECOMENDAÇÃO IA (OpenRouter) ----
+    const recomendacaoIA = await obterRecomendacaoIA(
+      nome_musica, artista, letra, contextoExtra, env.OPENROUTER_API_KEY
+    );
+
+    if (!recomendacaoIA) {
+      return jsonResponse({ error: 'Falha ao obter recomendacao da IA' }, 500);
+    }
+
+    const nomeFilme = recomendacaoIA.filme_sugerido;
+    const anoFilme = recomendacaoIA.ano_filme || '';
+    const justificativa = recomendacaoIA.justificativa_vibe;
+    const vibeTitle = recomendacaoIA.vibe_title || 'VIBE CINEMATICA';
+    const tags = recomendacaoIA.tags || ['UNICO', 'ESSENCIAL'];
+
+    // ---- 4. DADOS DO FILME (TMDb → DuckDuckGo fallback) ----
+    let dadosFilme = null;
+    if (env.TMDB_API_KEY) {
+      dadosFilme = await obterDetalhesTMDB(nomeFilme, anoFilme, env.TMDB_API_KEY);
+    }
+    if (!dadosFilme || !dadosFilme.sinopse) {
+      const fallback = await buscarDadosFilmeDuckDuckGo(nomeFilme, anoFilme);
+      if (fallback) {
+        dadosFilme = fallback;
+      }
+    }
+
+    // ---- 5. MONTAR RESPOSTA ----
+    const resposta = {
+      song: nome_musica,
+      artist: artista || '',
+      movie: {
+        title: dadosFilme?.titulo_pt || nomeFilme,
+        original_title: dadosFilme?.titulo_original || nomeFilme,
+        release_year: dadosFilme?.ano || anoFilme || 'Nao informado',
+        director: dadosFilme?.diretor || 'Nao encontrado',
+        synopsis: dadosFilme?.sinopse || 'Sinopse nao disponivel.',
+        poster_url: dadosFilme?.poster || '',
+        stills: dadosFilme?.cenas || [],
+        ai_explanation: `<p>${justificativa}</p>`,
+        vibe_title: vibeTitle,
+        tags: tags,
+        imdb_url: dadosFilme?.imdb_id
+          ? `https://www.imdb.com/title/${dadosFilme.imdb_id}/`
+          : `https://www.imdb.com/find?q=${encodeURIComponent(nomeFilme)}`,
+        letterboxd_url: dadosFilme?.id_tmdb
+          ? `https://letterboxd.com/tmdb/${dadosFilme.id_tmdb}`
+          : `https://letterboxd.com/search/${encodeURIComponent(nomeFilme)}/`,
+        tiktok_url: `https://www.tiktok.com/search?q=${encodeURIComponent(nomeFilme + ' edit')}`,
+      },
+    };
+
+    return jsonResponse(resposta, 200);
+  } catch (error) {
+    console.error('Pages Function error:', error);
+    return jsonResponse({ error: 'Erro interno do servidor' }, 500);
+  }
+}
 
 // ============================================================
-//  HELPERS: Resposta JSON com CORS
+//  HELPERS: Resposta JSON
 // ============================================================
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
     },
   });
 }
