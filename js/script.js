@@ -69,6 +69,26 @@ document.addEventListener('DOMContentLoaded', () => {
             });
     }
 
+    /**
+     * Abre o TikTok de forma inteligente:
+     * - Mobile: deep link nativo (tiktok://)
+     * - Desktop: URL web em nova aba
+     */
+    function abrirTikTok(nomeFilme) {
+        if (!nomeFilme) return;
+        
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+        const query = encodeURIComponent(nomeFilme + " edit");
+        
+        if (isMobile) {
+            // Deep link nativo para abrir o app TikTok
+            window.location.href = "tiktok://search?keyword=" + query;
+        } else {
+            // Desktop: abre em nova aba
+            window.open("https://www.tiktok.com/search?q=" + query, "_blank");
+        }
+    }
+
     function injectResults(data) {
         // Populate Meta
         const artistStr = data.artist ? ` - ${data.artist}` : "";
@@ -101,6 +121,18 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('res-imdb').href = data.movie.imdb_url;
         document.getElementById('res-letterboxd').href = data.movie.letterboxd_url;
 
+        // TikTok: substitui link estático por event listener inteligente
+        const tiktokLink = document.getElementById('res-tiktok');
+        const novoTiktokLink = tiktokLink.cloneNode(true);
+        tiktokLink.parentNode.replaceChild(novoTiktokLink, tiktokLink);
+        
+        // Salva o nome do filme para usar no clique
+        const nomeFilmeParaTikTok = data.movie.title || data.movie.original_title;
+        
+        novoTiktokLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            abrirTikTok(nomeFilmeParaTikTok);
+        });
         // Stills
         if (data.movie.stills.length >= 3) {
             document.getElementById('res-still-1').src = data.movie.stills[0];

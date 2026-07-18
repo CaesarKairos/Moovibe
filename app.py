@@ -5,16 +5,9 @@ import requests
 import urllib.parse
 from dotenv import load_dotenv
 
-# --- NOVAS BIBLIOTECAS ---
+# --- BIBLIOTECAS ---
 # lyricsgenius: busca letras e significado/descrição de músicas via Genius API
-# duckduckgo_search: fallback de busca na web quando as APIs de música falham
 import lyricsgenius
-
-# Importa e suprime warning do duckduckgo_search (rename para ddgs)
-import warnings
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", RuntimeWarning)
-    from duckduckgo_search import DDGS
 
 # Carrega as variaveis de ambiente do seu arquivo .env
 load_dotenv()
@@ -28,6 +21,27 @@ URL_LRCLIB = "https://" + "lrclib.net/api/search"
 URL_OPENROUTER = "https://" + "openrouter.ai/api/v1/chat/completions"
 URL_TMDB_BUSCA = "https://" + "api.themoviedb.org/3/search/movie"
 URL_TMDB_BASE = "https://" + "api.themoviedb.org/3/movie"
+URL_DDG_INSTANT = "https://" + "api.duckduckgo.com/"
+URL_WIKIPEDIA = "https://" + "pt.wikipedia.org/api/rest_v1/page/summary/"
+
+
+# ==========================================
+# UTILITÁRIO: Limpar termos de busca
+# ==========================================
+def limpar_termo_musica(termo):
+    """
+    Remove sufixos comuns como '(Official Video)', '(Remaster)', 'Feat.' etc.
+    para melhorar a taxa de sucesso nas APIs (Genius, Wikipedia, etc.).
+    """
+    termo_limpo = termo
+    # Remove parenteses com palavras-chave comuns: (Official Video), (Official Music Video), (Remaster), (Remastered), (Audio), (Lyric Video), etc.
+    termo_limpo = re.sub(r'\([^)]*(?:official|music\s*video|remaster|remastered|audio|lyric|video|visualizer|live|feat\.?|ft\.?|prod\.?|explicit|clean|edit|version|4k|hd|360)[^)]*\)', '', termo_limpo, flags=re.IGNORECASE)
+    # Remove colchetes com palavras-chave
+    termo_limpo = re.sub(r'\[[^\]]*(?:official|music\s*video|remaster|remastered|audio|lyric|video|visualizer|live|feat\.?|ft\.?|prod\.?|explicit|clean|edit|version|4k|hd|360)[^\]]*\]', '', termo_limpo, flags=re.IGNORECASE)
+    # Remove "Feat.", "Ft.", etc. no meio do texto
+    termo_limpo = re.sub(r'\s+(?:feat\.?|ft\.?)\..*$', '', termo_limpo, flags=re.IGNORECASE)
+    return termo_limpo.strip()
+
 
 # ==========================================
 # 1. BUSCA DE LETRAS (LRCLIB API - Gratis)
@@ -60,6 +74,10 @@ def buscar_contexto_genius(nome_musica, artista):
         return None
 
     try:
+        # Limpa o nome da musica para melhorar a busca
+        nome_musica_limpo = limpar_termo_musica(nome_musica)
+        artista_limpo = limpar_termo_musica(artista) if artista else artista
+
         # Instancia o cliente do Genius
         genius = lyricsgenius.Genius(
             GENIUS_API_KEY,
@@ -68,8 +86,8 @@ def buscar_contexto_genius(nome_musica, artista):
         )
         genius.verbose = False  # Silencia logs automaticos da biblioteca
 
-        # Busca a musica pelo nome e artista
-        musica = genius.search_song(nome_musica, artista)
+        # Busca a musica pelo nome e artista (usando termos limpos)
+        musica = genius.search_song(nome_musica_limpo, artista_limpo)
 
         if musica and hasattr(musica, 'description'):
             # A descricao do Genius geralmente contem o significado/contexto
@@ -91,69 +109,131 @@ def buscar_contexto_genius(nome_musica, artista):
 
 
 # ==========================================
-# 1.6 BUSCA DE LETRA (DUCKDUCKGO - FALLBACK)
+# 1.6 BUSCA DE LETRA (DUCKDUCKGO INSTANT ANSWER API - FALLBACK)
 # ==========================================
 def buscar_letra_duckduckgo(nome_musica, artista):
     """
-    Fallback para letra: busca na web por "{musica} {artista} lyrics" usando DuckDuckGo.
-    Retorna o texto dos primeiros resultados como pseudo-letra ou None se falhar.
+    Fallback para letra: usa a API Instant Answer do DuckDuckGo (gratuita, sem bloqueio de IP).
+    Retorna o texto do resumo ou None se falhar.
     """
     try:
         termo_busca = f"{nome_musica} {artista} lyrics"
-        print(f"[DUCKDUCKGO] Buscando na web por: '{termo_busca}'...")
-        resultados_texto = []
+        print(f"[DUCKDUCKGO API] Buscando na web por: '{termo_busca}'...")
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            with DDGS() as ddgs:
-                for i, resultado in enumerate(ddgs.text(termo_busca, max_results=3)):
-                    titulo = resultado.get("title", "")
-                    descricao = resultado.get("body", "")
-                    if titulo or descricao:
-                        resultados_texto.append(f"Resultado {i+1}: {titulo}\n{descricao}")
+        params = {
+            "q": termo_busca,
+            "format": "json",
+            "no_html": "1",
+            "skip_disambig": "1"
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; Moovibe/1.0)"
+        }
+        resposta = requests.get(URL_DDG_INSTANT, params=params, headers=headers, timeout=10)
 
-        if resultados_texto:
-            print("[DUCKDUCKGO] ✓ Sucesso! Letra extraida da web e preparada para a IA.")
-            return "\n\n".join(resultados_texto)
-        else:
-            print("[DUCKDUCKGO] ⚠ Nenhum resultado encontrado na web para esta busca.")
+        if resposta.status_code == 200:
+            dados = resposta.json()
+            # Tenta extrair o AbstractText (resumo principal)
+            abstract = dados.get("AbstractText", "")
+            if abstract:
+                print("[DUCKDUCKGO API] ✓ Sucesso! Resumo encontrado via API Instant Answer.")
+                return abstract[:2000]
+
+            # Fallback: tenta o Definition ou o primeiro resultado de RelatedTopics
+            definicao = dados.get("Definition", "")
+            if definicao:
+                print("[DUCKDUCKGO API] ✓ Sucesso! Definicao encontrada via API Instant Answer.")
+                return definicao[:2000]
+
+            # Tenta o primeiro RelatedTopic
+            topics = dados.get("RelatedTopics", [])
+            if topics and isinstance(topics, list):
+                primeiro = topics[0]
+                if isinstance(primeiro, dict):
+                    texto = primeiro.get("Text", "") or primeiro.get("Result", "") or ""
+                    if texto:
+                        print("[DUCKDUCKGO API] ✓ Sucesso! Topico relacionado encontrado via API Instant Answer.")
+                        return texto[:2000]
+
+            # Tenta o resultado da busca na web (se houver)
+            results = dados.get("Results", [])
+            if results and isinstance(results, list):
+                primeiro = results[0]
+                if isinstance(primeiro, dict):
+                    texto = primeiro.get("Text", "") or ""
+                    if texto:
+                        print("[DUCKDUCKGO API] ✓ Sucesso! Resultado de busca encontrado via API Instant Answer.")
+                        return texto[:2000]
+
+            print("[DUCKDUCKGO API] ⚠ Nenhum resultado encontrado na API Instant Answer para esta busca.")
 
     except Exception as e:
-        print(f"[DUCKDUCKGO] Erro na busca de letra: {e}")
+        print(f"[DUCKDUCKGO API] Erro na busca de letra: {e}")
 
     return None
 
 
 # ==========================================
-# 1.7 BUSCA DE CONTEXTO (DUCKDUCKGO - FALLBACK)
+# 1.7 BUSCA DE CONTEXTO (DUCKDUCKGO INSTANT ANSWER API - FALLBACK)
 # ==========================================
 def buscar_contexto_duckduckgo(nome_musica, artista):
     """
-    Fallback: busca na web sobre o significado da musica usando DuckDuckGo.
-    Retorna um texto com os 2-3 primeiros resultados ou None se falhar.
+    Fallback: busca na web sobre o significado da musica usando a API Instant Answer do DuckDuckGo.
+    Retorna um texto com o resumo ou None se falhar.
     """
     try:
         termo_busca = f"{nome_musica} {artista} song meaning"
-        print(f"[DUCKDUCKGO] Buscando na web por: '{termo_busca}'...")
-        resultados_texto = []
+        print(f"[DUCKDUCKGO API] Buscando na web por: '{termo_busca}'...")
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            with DDGS() as ddgs:
-                for i, resultado in enumerate(ddgs.text(termo_busca, max_results=3)):
-                    titulo = resultado.get("title", "")
-                    descricao = resultado.get("body", "")
-                    if titulo or descricao:
-                        resultados_texto.append(f"Resultado {i+1}: {titulo}\n{descricao}")
+        params = {
+            "q": termo_busca,
+            "format": "json",
+            "no_html": "1",
+            "skip_disambig": "1"
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; Moovibe/1.0)"
+        }
+        resposta = requests.get(URL_DDG_INSTANT, params=params, headers=headers, timeout=10)
 
-        if resultados_texto:
-            print("[DUCKDUCKGO] ✓ Sucesso! Contexto extraido da web e preparado para a IA.")
-            return "\n\n".join(resultados_texto)
-        else:
-            print("[DUCKDUCKGO] ⚠ Nenhum resultado encontrado na web para esta busca.")
+        if resposta.status_code == 200:
+            dados = resposta.json()
+            # Tenta extrair o AbstractText (resumo principal)
+            abstract = dados.get("AbstractText", "")
+            if abstract:
+                print("[DUCKDUCKGO API] ✓ Sucesso! Resumo encontrado via API Instant Answer.")
+                return abstract[:2000]
+
+            # Fallback: tenta o Definition
+            definicao = dados.get("Definition", "")
+            if definicao:
+                print("[DUCKDUCKGO API] ✓ Sucesso! Definicao encontrada via API Instant Answer.")
+                return definicao[:2000]
+
+            # Tenta o primeiro RelatedTopic
+            topics = dados.get("RelatedTopics", [])
+            if topics and isinstance(topics, list):
+                primeiro = topics[0]
+                if isinstance(primeiro, dict):
+                    texto = primeiro.get("Text", "") or primeiro.get("Result", "") or ""
+                    if texto:
+                        print("[DUCKDUCKGO API] ✓ Sucesso! Topico relacionado encontrado via API Instant Answer.")
+                        return texto[:2000]
+
+            # Tenta o resultado da busca na web
+            results = dados.get("Results", [])
+            if results and isinstance(results, list):
+                primeiro = results[0]
+                if isinstance(primeiro, dict):
+                    texto = primeiro.get("Text", "") or ""
+                    if texto:
+                        print("[DUCKDUCKGO API] ✓ Sucesso! Resultado de busca encontrado via API Instant Answer.")
+                        return texto[:2000]
+
+            print("[DUCKDUCKGO API] ⚠ Nenhum resultado encontrado na API Instant Answer para esta busca.")
 
     except Exception as e:
-        print(f"[DUCKDUCKGO] Erro na busca de contexto: {e}")
+        print(f"[DUCKDUCKGO API] Erro na busca de contexto: {e}")
 
     return None
 
@@ -184,10 +264,14 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
         "autenticamente asiatico com titulo original nesses caracteres. "
         "Se nao tiver certeza, escolha um filme classico e bem conhecido.\n\n"
 
+        "REGRA ABSOLUTA: No campo 'filme_sugerido', retorne APENAS o nome do filme, SEM o ano de lancamento "
+        "junto. Por exemplo, retorne 'Fight Club' e JAMAIS 'Fight Club 1999'. O ano deve ser retornado "
+        "EXCLUSIVAMENTE no campo separado 'ano_filme'.\n\n"
+
         "Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de formatacao markdown, "
         "apenas as chaves brutas). O JSON deve conter as seguintes chaves exatas:\n"
         "{\n"
-        '  "filme_sugerido": "Nome exato do filme (de preferencia o titulo original em ingles ou o mais conhecido)",\n'
+        '  "filme_sugerido": "Nome exato do filme (de preferencia o titulo original em ingles ou o mais conhecido, SEM o ano)",\n'
         '  "ano_filme": "Ano de lancamento do filme sugerido (Apenas os 4 digitos numericos, ex: 2002)",\n'
         '  "justificativa_vibe": "Uma explicacao poetica, profunda e envolvente (em portugues, ate 4 frases) conectando sentimentos da musica/letra com o filme."\n'
         "}"
@@ -247,55 +331,104 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
 
 
 # ==========================================
-# 3.5 FALLBACK DE FILME (DUCKDUCKGO)
+# 3.5 FALLBACK DE FILME (WIKIPEDIA API)
 # ==========================================
-def buscar_dados_filme_duckduckgo(nome_filme, ano):
+def buscar_dados_filme_wikipedia(nome_filme, ano):
     """
     Fallback para quando o TMDb nao encontra dados do filme.
-    Busca na web por informacoes basicas (sinopse, diretor) usando DuckDuckGo.
+    Usa a API oficial e gratuita da Wikipedia (https://pt.wikipedia.org/api/rest_v1/page/summary/).
     Retorna um dicionario com os dados encontrados ou None se falhar.
     """
     try:
-        # Monta query inteligente: tenta com ano primeiro, depois sem
+        # Tenta primeiro em portugues, depois em ingles
+        termos_tentativa = []
+
         if ano:
-            termo_busca = f"{nome_filme} {ano} filme sinopse"
-        else:
-            termo_busca = f"{nome_filme} filme sinopse"
+            # Tenta com ano no nome para melhor precisao
+            termos_tentativa.append(f"{nome_filme} ({ano})")
+            termos_tentativa.append(f"{nome_filme} {ano}")
 
-        print(f"[DUCKDUCKGO] 🔍 TMDb nao encontrou dados para o filme. Buscando informacoes na web por: '{nome_filme}'...")
-        resultados_texto = []
+        termos_tentativa.append(nome_filme)
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            with DDGS() as ddgs:
-                for i, resultado in enumerate(ddgs.text(termo_busca, max_results=3)):
-                    titulo = resultado.get("title", "")
-                    descricao = resultado.get("body", "")
-                    if titulo or descricao:
-                        resultados_texto.append(f"Resultado {i+1}: {titulo}\n{descricao}")
+        for termo in termos_tentativa:
+            termo_encoded = urllib.parse.quote(termo)
+            url_wiki = f"{URL_WIKIPEDIA}{termo_encoded}"
 
-        if resultados_texto:
-            sinopse_web = "\n\n".join(resultados_texto)
-            print("[DUCKDUCKGO] ✓ Sucesso! Dados basicos do filme recuperados da web.")
+            print(f"[WIKIPEDIA] 🔍 Buscando informacoes para: '{termo}'...")
 
-            # Tenta extrair mencao a diretor nos resultados
-            diretor_web = "Disponivel na Web"
-            for texto in resultados_texto:
-                # Procura padroes como "direcao de", "diretor", "dirigido por"
-                match_dir = re.search(r'(?:dire[cç][aã]o\s+(?:de\s+)?|diretor[:\s]+|dirigido\s+por\s+)([A-ZÀ-Ú][A-Za-zÀ-Ú\s]+)', texto, re.IGNORECASE)
-                if match_dir:
-                    diretor_web = match_dir.group(1).strip()
-                    break
-
-            return {
-                "sinopse": sinopse_web[:2000],
-                "diretor": diretor_web
+            headers = {
+                "User-Agent": "Moovibe/1.0 (movie recommendation app)"
             }
-        else:
-            print("[DUCKDUCKGO] ⚠ Nenhum resultado encontrado na web para este filme.")
+            resposta = requests.get(url_wiki, headers=headers, timeout=10)
+
+            if resposta.status_code == 200:
+                dados = resposta.json()
+
+                if dados.get("type") == "disambiguation":
+                    # Pagina de desambiguacao, tenta o proximo termo
+                    print(f"[WIKIPEDIA] ⚠ Pagina de desambiguacao para '{termo}'. Tentando outro termo...")
+                    continue
+
+                extract = dados.get("extract", "")
+                if extract:
+                    print(f"[WIKIPEDIA] ✓ Sucesso! Dados do filme recuperados da Wikipedia para '{termo}'.")
+
+                    # Tenta extrair o diretor do extract
+                    diretor_wiki = "Disponivel na Web"
+                    match_dir = re.search(r'(?:dire[cç][aã]o\s+(?:de\s+)?|diretor[:\s]+|dirigido\s+por\s+)([A-ZÀ-Ú][A-Za-zÀ-Ú\s]+)', extract, re.IGNORECASE)
+                    if match_dir:
+                        diretor_wiki = match_dir.group(1).strip()
+
+                    return {
+                        "sinopse": extract[:2000],
+                        "diretor": diretor_wiki
+                    }
+
+            elif resposta.status_code == 404:
+                # Pagina nao encontrada, tenta o proximo termo
+                print(f"[WIKIPEDIA] ⚠ Pagina nao encontrada para '{termo}'. Tentando outro termo...")
+                continue
+
+        # Se chegou aqui, nenhum termo funcionou em portugues. Tenta em ingles.
+        url_wiki_en = "https://" + "en.wikipedia.org/api/rest_v1/page/summary/"
+        for termo in [f"{nome_filme} ({ano})" if ano else nome_filme, nome_filme]:
+            termo_encoded = urllib.parse.quote(termo)
+            url_en = f"{url_wiki_en}{termo_encoded}"
+
+            print(f"[WIKIPEDIA EN] 🔍 Buscando informacoes para: '{termo}'...")
+
+            headers = {
+                "User-Agent": "Moovibe/1.0 (movie recommendation app)"
+            }
+            resposta = requests.get(url_en, headers=headers, timeout=10)
+
+            if resposta.status_code == 200:
+                dados = resposta.json()
+
+                if dados.get("type") == "disambiguation":
+                    continue
+
+                extract = dados.get("extract", "")
+                if extract:
+                    print(f"[WIKIPEDIA EN] ✓ Sucesso! Dados do filme recuperados da Wikipedia EN para '{termo}'.")
+
+                    diretor_wiki = "Disponivel na Web"
+                    match_dir = re.search(r'(?:directed\s+by\s+|director[:\s]+)([A-Z][A-Za-z\s]+)', extract, re.IGNORECASE)
+                    if match_dir:
+                        diretor_wiki = match_dir.group(1).strip()
+
+                    return {
+                        "sinopse": extract[:2000],
+                        "diretor": diretor_wiki
+                    }
+
+            elif resposta.status_code == 404:
+                continue
+
+        print("[WIKIPEDIA] ⚠ Nenhum resultado encontrado na Wikipedia para este filme.")
 
     except Exception as e:
-        print(f"[DUCKDUCKGO] Erro na busca de dados do filme: {e}")
+        print(f"[WIKIPEDIA] Erro na busca de dados do filme: {e}")
 
     return None
 
@@ -400,10 +533,10 @@ def main():
         if letra:
             print("Letra encontrada no banco de dados (LRCLIB).")
         else:
-            print("Letra nao encontrada no banco. Buscando na web (DuckDuckGo)...")
+            print("Letra nao encontrada no banco. Buscando na web (DuckDuckGo API)...")
             letra = buscar_letra_duckduckgo(nome_musica, artista)
             if letra:
-                print("Letra encontrada via busca na web (DuckDuckGo).")
+                print("Letra encontrada via busca na web (DuckDuckGo API).")
             else:
                 print("Letra nao encontrada. Prosseguindo apenas com a energia da musica.")
 
@@ -414,7 +547,7 @@ def main():
         contexto_extra = buscar_contexto_genius(nome_musica, artista)
 
         if not contexto_extra:
-            print("Genius sem resultados. Buscando na web (DuckDuckGo)...")
+            print("Genius sem resultados. Buscando na web (DuckDuckGo API)...")
             contexto_extra = buscar_contexto_duckduckgo(nome_musica, artista)
 
         if contexto_extra:
@@ -443,18 +576,18 @@ def main():
         print(f"Consultando TMDb para coletar as midias de '{termo_busca_tmdb}'...")
         dados_filme = obter_detalhes_filme_tmdb(termo_busca_tmdb)
 
-        # --- FALLBACK: Se TMDb falhou ou sinopse vazia, busca na web ---
+        # --- FALLBACK: Se TMDb falhou ou sinopse vazia, busca na Wikipedia ---
         if not dados_filme or not dados_filme.get("sinopse") or dados_filme["sinopse"] in ("Sem sinopse disponivel.", ""):
-            fallback_ddg = buscar_dados_filme_duckduckgo(nome_filme_ia, ano_filme_ia)
-            if fallback_ddg:
+            fallback_wiki = buscar_dados_filme_wikipedia(nome_filme_ia, ano_filme_ia)
+            if fallback_wiki:
                 dados_filme = {
                     "id_tmdb": None,
                     "titulo_pt": nome_filme_ia,
                     "titulo_original": nome_filme_ia,
                     "ano": ano_filme_ia if ano_filme_ia else "Nao informado",
-                    "sinopse": fallback_ddg["sinopse"],
+                    "sinopse": fallback_wiki["sinopse"],
                     "poster": None,
-                    "diretor": fallback_ddg["diretor"],
+                    "diretor": fallback_wiki["diretor"],
                     "imdb_id": None,
                     "cenas": []
                 }

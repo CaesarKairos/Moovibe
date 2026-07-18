@@ -3,10 +3,11 @@
  * 
  * Responde em POST /recommend com a orquestração completa:
  *   1. LRCLIB (letras) + Genius (contexto)
- *   2. DuckDuckGo fallback (letra + contexto + filme)
- *   3. OpenRouter (IA → recomendação de filme)
- *   4. TMDb (pôster, diretor, stills, etc.)
- *   5. Resposta JSON formatada para o frontend
+ *   2. DuckDuckGo Instant Answer API fallback (letra + contexto + filme)
+ *   3. Wikipedia API fallback (dados do filme)
+ *   4. OpenRouter (IA → recomendação de filme)
+ *   5. TMDb (pôster, diretor, stills, etc.)
+ *   6. Resposta JSON formatada para o frontend
  */
 
 // ============================================================
@@ -15,7 +16,9 @@
 const LRCLIB_URL = 'https://lrclib.net/api/search';
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
-const DUCKDUCKGO_HTML_URL = 'https://html.duckduckgo.com/html/';
+const DDG_INSTANT_API_URL = 'https://api.duckduckgo.com/';
+const WIKIPEDIA_PT_API = 'https://pt.wikipedia.org/api/rest_v1/page/summary/';
+const WIKIPEDIA_EN_API = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
 
 // ============================================================
 //  HANDLER PRINCIPAL (Pages Functions)
@@ -36,19 +39,19 @@ export async function onRequest(context) {
       return jsonResponse({ error: 'nome_musica is required' }, 400);
     }
 
-    // ---- 1. BUSCAR LETRA (LRCLIB → DuckDuckGo fallback) ----
+    // ---- 1. BUSCAR LETRA (LRCLIB → DuckDuckGo API fallback) ----
     let letra = await buscarLetraLRCLIB(nome_musica, artista);
     if (!letra) {
-      letra = await buscarDuckDuckGo(`${nome_musica} ${artista} lyrics`);
+      letra = await buscarDuckDuckGoAPI(`${nome_musica} ${artista} lyrics`);
     }
 
-    // ---- 2. BUSCAR CONTEXTO (Genius → DuckDuckGo fallback) ----
+    // ---- 2. BUSCAR CONTEXTO (Genius → DuckDuckGo API fallback) ----
     let contextoExtra = null;
     if (env.GENIUS_API_KEY) {
       contextoExtra = await buscarContextoGenius(nome_musica, artista, env.GENIUS_API_KEY);
     }
     if (!contextoExtra) {
-      contextoExtra = await buscarDuckDuckGo(`${nome_musica} ${artista} song meaning`);
+      contextoExtra = await buscarDuckDuckGoAPI(`${nome_musica} ${artista} song meaning`);
     }
 
     // ---- 3. RECOMENDAÇÃO IA (OpenRouter) ----
@@ -66,15 +69,25 @@ export async function onRequest(context) {
     const vibeTitle = recomendacaoIA.vibe_title || 'VIBE CINEMATICA';
     const tags = recomendacaoIA.tags || ['UNICO', 'ESSENCIAL'];
 
-    // ---- 4. DADOS DO FILME (TMDb → DuckDuckGo fallback) ----
+    // ---- 4. DADOS DO FILME (TMDb → Wikipedia fallback) ----
     let dadosFilme = null;
     if (env.TMDB_API_KEY) {
       dadosFilme = await obterDetalhesTMDB(nomeFilme, anoFilme, env.TMDB_API_KEY);
     }
-    if (!dadosFilme || !dadosFilme.sinopse) {
-      const fallback = await buscarDadosFilmeDuckDuckGo(nomeFilme, anoFilme);
+    if (!dadosFilme || !dadosFilme.sinopse || dadosFilme.sinopse === 'Sem sinopse disponivel.') {
+      const fallback = await buscarDadosFilmeWikipedia(nomeFilme, anoFilme);
       if (fallback) {
-        dadosFilme = fallback;
+        dadosFilme = {
+          id_tmdb: null,
+          titulo_pt: nomeFilme,
+          titulo_original: nomeFilme,
+          ano: anoFilme || 'Nao informado',
+          sinopse: fallback.sinopse,
+          poster: null,
+          diretor: fallback.diretor,
+          imdb_id: null,
+          cenas: [],
+        };
       }
     }
 
@@ -123,6 +136,21 @@ function jsonResponse(data, status = 200) {
 }
 
 // ============================================================
+//  UTILITÁRIO: Limpar termos de busca
+// ============================================================
+function limparTermoMusica(termo) {
+  if (!termo) return termo;
+  let termoLimpo = termo;
+  // Remove parenteses com palavras-chave comuns
+  termoLimpo = termoLimpo.replace(/\([^)]*(?:official|music\s*video|remaster|remastered|audio|lyric|video|visualizer|live|feat\.?|ft\.?|prod\.?|explicit|clean|edit|version|4k|hd|360)[^)]*\)/gi, '');
+  // Remove colchetes com palavras-chave
+  termoLimpo = termoLimpo.replace(/\[[^\]]*(?:official|music\s*video|remaster|remastered|audio|lyric|video|visualizer|live|feat\.?|ft\.?|prod\.?|explicit|clean|edit|version|4k|hd|360)[^\]]*\]/gi, '');
+  // Remove "Feat.", "Ft.", etc. no meio do texto
+  termoLimpo = termoLimpo.replace(/\s+(?:feat\.?|ft\.?)\..*$/i, '');
+  return termoLimpo.trim();
+}
+
+// ============================================================
 //  1. BUSCAR LETRA — LRCLIB
 // ============================================================
 async function buscarLetraLRCLIB(nomeMusica, artista) {
@@ -150,7 +178,11 @@ async function buscarContextoGenius(nomeMusica, artista, apiKey) {
   if (!apiKey) return null;
 
   try {
-    const query = encodeURIComponent(`${nomeMusica} ${artista}`);
+    // Limpa os termos para melhorar a busca
+    const nomeMusicaLimpo = limparTermoMusica(nomeMusica);
+    const artistaLimpo = limparTermoMusica(artista) || artista;
+
+    const query = encodeURIComponent(`${nomeMusicaLimpo} ${artistaLimpo}`);
     const url = `https://api.genius.com/search?q=${query}`;
     const resp = await fetch(url, {
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -189,131 +221,175 @@ async function buscarContextoGenius(nomeMusica, artista, apiKey) {
 }
 
 // ============================================================
-//  3. BUSCA GENÉRICA — DuckDuckGo HTML
+//  3. BUSCA GENÉRICA — DuckDuckGo Instant Answer API (fallback)
 // ============================================================
-async function buscarDuckDuckGo(query) {
+async function buscarDuckDuckGoAPI(query) {
   try {
-    const params = new URLSearchParams({ q: query });
-    const resp = await fetch(`${DUCKDUCKGO_HTML_URL}?${params}`, {
+    const params = new URLSearchParams({
+      q: query,
+      format: 'json',
+      no_html: '1',
+      skip_disambig: '1',
+    });
+    const url = `${DDG_INSTANT_API_URL}?${params}`;
+
+    console.log(`[DUCKDUCKGO API] Buscando: '${query}'`);
+    const resp = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Moovibe/1.0)' },
     });
 
     if (!resp.ok) return null;
 
-    const html = await resp.text();
-    const resultados = extrairResultadosDDG(html, 3);
+    const dados = await resp.json();
 
-    if (resultados.length === 0) return null;
+    // Tenta AbstractText (resumo principal)
+    if (dados.AbstractText) {
+      console.log('[DUCKDUCKGO API] ✓ Resumo encontrado via API Instant Answer.');
+      return dados.AbstractText.substring(0, 2000);
+    }
 
-    return resultados
-      .map((r, i) => `Resultado ${i + 1}: ${r.titulo}\n${r.descricao}`)
-      .join('\n\n');
-  } catch (err) {
-    console.error('[DUCKDUCKGO] Erro:', err);
-    return null;
-  }
-}
+    // Fallback: Definition
+    if (dados.Definition) {
+      console.log('[DUCKDUCKGO API] ✓ Definicao encontrada via API Instant Answer.');
+      return dados.Definition.substring(0, 2000);
+    }
 
-// ============================================================
-//  3.5 DADOS DO FILME — DuckDuckGo (fallback)
-// ============================================================
-async function buscarDadosFilmeDuckDuckGo(nomeFilme, ano) {
-  const query = ano ? `${nomeFilme} ${ano} filme sinopse` : `${nomeFilme} filme sinopse`;
-
-  try {
-    const params = new URLSearchParams({ q: query });
-    const resp = await fetch(`${DUCKDUCKGO_HTML_URL}?${params}`, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Moovibe/1.0)' },
-    });
-
-    if (!resp.ok) return null;
-
-    const html = await resp.text();
-    const resultados = extrairResultadosDDG(html, 3);
-
-    if (resultados.length === 0) return null;
-
-    const sinopseWeb = resultados.map((r, i) => `Resultado ${i + 1}: ${r.titulo}\n${r.descricao}`).join('\n\n');
-
-    // Tenta extrair menção a diretor nos resultados
-    let diretorWeb = 'Disponivel na Web';
-    for (const r of resultados) {
-      const matchDir = r.textoCombinado.match(
-        /(?:dire[cç][aã]o\s+(?:de\s+)?|diretor[:\s]+|dirigido\s+por\s+)([A-ZÀ-Ú][A-Za-zÀ-Ú\s]+)/i
-      );
-      if (matchDir) {
-        diretorWeb = matchDir[1].trim();
-        break;
+    // Fallback: primeiro RelatedTopic
+    if (dados.RelatedTopics && Array.isArray(dados.RelatedTopics) && dados.RelatedTopics.length > 0) {
+      const primeiro = dados.RelatedTopics[0];
+      if (typeof primeiro === 'object' && primeiro !== null) {
+        const texto = primeiro.Text || primeiro.Result || '';
+        if (texto) {
+          console.log('[DUCKDUCKGO API] ✓ Topico relacionado encontrado via API Instant Answer.');
+          return texto.substring(0, 2000);
+        }
       }
     }
 
-    return {
-      titulo_pt: nomeFilme,
-      titulo_original: nomeFilme,
-      ano: ano || 'Nao informado',
-      sinopse: sinopseWeb.substring(0, 2000),
-      poster: null,
-      diretor: diretorWeb,
-      imdb_id: null,
-      id_tmdb: null,
-      cenas: [],
-    };
+    // Fallback: Results
+    if (dados.Results && Array.isArray(dados.Results) && dados.Results.length > 0) {
+      const primeiro = dados.Results[0];
+      if (typeof primeiro === 'object' && primeiro !== null) {
+        const texto = primeiro.Text || '';
+        if (texto) {
+          console.log('[DUCKDUCKGO API] ✓ Resultado de busca encontrado via API Instant Answer.');
+          return texto.substring(0, 2000);
+        }
+      }
+    }
+
+    console.log('[DUCKDUCKGO API] ⚠ Nenhum resultado encontrado na API Instant Answer.');
+    return null;
   } catch (err) {
-    console.error('[DUCKDUCKGO FILME] Erro:', err);
+    console.error('[DUCKDUCKGO API] Erro:', err);
     return null;
   }
 }
 
 // ============================================================
-//  EXTRAIR RESULTADOS DO HTML DO DuckDuckGo
+//  3.5 DADOS DO FILME — Wikipedia API (fallback)
 // ============================================================
-function extrairResultadosDDG(html, max = 3) {
-  const resultados = [];
-
-  // Regex para capturar blocos de resultado: <a class="result__a"...>TITULO</a> ... snippet
-  const blocos = html.split(/<article\s+class="result\s+result--default"/i);
-
-  for (let i = 1; i < blocos.length && resultados.length < max; i++) {
-    const bloco = blocos[i];
-
-    // Título: <a class="result__a" ...>TEXTO</a>
-    const tituloMatch = bloco.match(/<a[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/i);
-    const titulo = tituloMatch ? limparHTML(tituloMatch[1]) : '';
-
-    // Descrição/snippet: <a class="result__snippet" ...>TEXTO</a>
-    const snippetMatch = bloco.match(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i);
-    const descricao = snippetMatch ? limparHTML(snippetMatch[1]) : '';
-
-    if (titulo || descricao) {
-      resultados.push({
-        titulo,
-        descricao,
-        textoCombinado: `${titulo} ${descricao}`,
-      });
+async function buscarDadosFilmeWikipedia(nomeFilme, ano) {
+  try {
+    // Monta lista de termos a tentar (primeiro PT, depois EN)
+    const termosPT = [];
+    if (ano) {
+      termosPT.push(`${nomeFilme} (${ano})`);
+      termosPT.push(`${nomeFilme} ${ano}`);
     }
+    termosPT.push(nomeFilme);
+
+    // Tenta Wikipedia PT
+    for (const termo of termosPT) {
+      const termoEncoded = encodeURIComponent(termo);
+      const url = `${WIKIPEDIA_PT_API}${termoEncoded}`;
+
+      console.log(`[WIKIPEDIA] Buscando: '${termo}'`);
+      const resp = await fetch(url, {
+        headers: { 'User-Agent': 'Moovibe/1.0 (movie recommendation app)' },
+      });
+
+      if (resp.status === 200) {
+        const dados = await resp.json();
+
+        if (dados.type === 'disambiguation') {
+          console.log(`[WIKIPEDIA] ⚠ Pagina de desambiguacao para '${termo}'.`);
+          continue;
+        }
+
+        if (dados.extract) {
+          console.log(`[WIKIPEDIA] ✓ Dados recuperados para '${termo}'.`);
+
+          // Tenta extrair o diretor
+          let diretorWiki = 'Disponivel na Web';
+          const matchDir = dados.extract.match(
+            /(?:dire[cç][aã]o\s+(?:de\s+)?|diretor[:\s]+|dirigido\s+por\s+)([A-ZÀ-Ú][A-Za-zÀ-Ú\s]+)/i
+          );
+          if (matchDir) {
+            diretorWiki = matchDir[1].trim();
+          }
+
+          return {
+            sinopse: dados.extract.substring(0, 2000),
+            diretor: diretorWiki,
+          };
+        }
+      } else if (resp.status === 404) {
+        console.log(`[WIKIPEDIA] ⚠ Pagina nao encontrada para '${termo}'.`);
+        continue;
+      }
+    }
+
+    // Fallback: Wikipedia EN
+    const termosEN = [];
+    if (ano) {
+      termosEN.push(`${nomeFilme} (${ano})`);
+    }
+    termosEN.push(nomeFilme);
+
+    for (const termo of termosEN) {
+      const termoEncoded = encodeURIComponent(termo);
+      const url = `${WIKIPEDIA_EN_API}${termoEncoded}`;
+
+      console.log(`[WIKIPEDIA EN] Buscando: '${termo}'`);
+      const resp = await fetch(url, {
+        headers: { 'User-Agent': 'Moovibe/1.0 (movie recommendation app)' },
+      });
+
+      if (resp.status === 200) {
+        const dados = await resp.json();
+
+        if (dados.type === 'disambiguation') {
+          continue;
+        }
+
+        if (dados.extract) {
+          console.log(`[WIKIPEDIA EN] ✓ Dados recuperados para '${termo}'.`);
+
+          let diretorWiki = 'Disponivel na Web';
+          const matchDir = dados.extract.match(
+            /(?:directed\s+by\s+|director[:\s]+)([A-Z][A-Za-z\s]+)/i
+          );
+          if (matchDir) {
+            diretorWiki = matchDir[1].trim();
+          }
+
+          return {
+            sinopse: dados.extract.substring(0, 2000),
+            diretor: diretorWiki,
+          };
+        }
+      } else if (resp.status === 404) {
+        continue;
+      }
+    }
+
+    console.log('[WIKIPEDIA] ⚠ Nenhum resultado encontrado na Wikipedia para este filme.');
+    return null;
+  } catch (err) {
+    console.error('[WIKIPEDIA] Erro:', err);
+    return null;
   }
-
-  return resultados;
-}
-
-function limparHTML(texto) {
-  // Mapeamento de entidades HTML para caracteres literais
-  var entidades = {
-    'amp': '&',
-    'lt': '<',
-    'gt': '>',
-    'quot': '"',
-    '#x27': "'",
-    '#x2F': '/'
-  };
-  return texto
-    .replace(/<[^>]*>/g, '')            // remove tags HTML
-    .replace(/&([a-zA-Z#0-9]+);/g, function(match, entidade) {
-      return entidades[entidade] || '';
-    })
-    .replace(/&#(\d+);/g, '')           // remove entidades numéricas
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 // ============================================================
@@ -326,9 +402,11 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
 
 CRITICO: Voce DEVE sugerir um filme REAL existente no banco de dados do TMDb. PROIBIDO inventar titulos de filmes. Use APENAS o titulo original ou oficial em ingles/portugues. NAO use caracteres asiaticos (como chines, japones, coreano) a menos que seja um filme autenticamente asiatico com titulo original nesses caracteres. Se nao tiver certeza, escolha um filme classico e bem conhecido.
 
+REGRA ABSOLUTA: No campo 'filme_sugerido', retorne APENAS o nome do filme, SEM o ano de lancamento junto. Por exemplo, retorne 'Fight Club' e JAMAIS 'Fight Club 1999'. O ano deve ser retornado EXCLUSIVAMENTE no campo separado 'ano_filme'.
+
 Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de formatacao markdown, apenas as chaves brutas). O JSON deve conter as seguintes chaves exatas:
 {
-  "filme_sugerido": "Nome exato do filme (de preferencia o titulo original em ingles ou o mais conhecido)",
+  "filme_sugerido": "Nome exato do filme (de preferencia o titulo original em ingles ou o mais conhecido, SEM o ano)",
   "ano_filme": "Ano de lancamento do filme sugerido (Apenas os 4 digitos numericos, ex: 2002)",
   "justificativa_vibe": "Uma explicacao poetica, profunda e envolvente (em portugues, ate 4 frases) conectando sentimentos da musica/letra com o filme.",
   "vibe_title": "Um titulo CURTO e impactante em MAIUSCULAS (2-3 palavras) que capture a vibe, ex: 'OPERATIC CHAOS' ou 'MELANCHOLIC DREAM'",
