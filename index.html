@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moovibe | Cinema Inside The Music</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Anton&family=Courier+Prime:ital,wght@0,400;0,700;1,400&family=Playfair+Display:ital,wght@0,400;0,600;0,800;1,400;1,600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <div class="film-strip-right" aria-hidden="true">
+        <div class="film-hole"></div>
+        <div class="film-hole"></div>
+        <div class="film-hole"></div>
+        <div class="film-hole"></div>
+        <div class="film-hole"></div>
+        <div class="film-hole"></div>
+        <div class="film-hole"></div>
+        <div class="film-hole"></div>
+        <div class="film-hole"></div>
+        <div class="film-hole"></div>
+    </div>
+
+    <header class="main-nav">
+        <div class="nav-logo">
+            <h1>MOOVIBE</h1>
+            <span class="ai-badge">AI</span>
+            <span class="nav-meta">VOL. I -<br>2026</span>
+        </div>
+        <nav class="nav-links">
+            <a href="#">EXPLORE</a>
+            <a href="#">HOW IT WORKS</a>
+            <a href="#">ABOUT</a>
+        </nav>
+    </header>
+
+    <main id="app">
+        
+        <section id="view-home" class="view-section active">
+            <div class="hero-container">
+                <div class="hero-text">
+                    <p class="hero-eyebrow"><span class="red-line"></span> THE CINEMA WAS ALWAYS INSIDE THE MUSIC</p>
+                    <h2 class="hero-title">MOOVIBE</h2>
+                    <p class="hero-subtitle"><em>Every song already has a film.</em> <strong>We find it.</strong></p>
+                </div>
+
+                <div class="search-widget brutalist-card">
+                    <div class="tape yellow-tape top-left"></div>
+                    
+                    <form id="search-form">
+                        <div class="input-group">
+                            <label for="song-title">SONG TITLE</label>
+                            <input type="text" id="song-title" placeholder='"Bohemian Rhapsody"' required>
+                        </div>
+
+                        <div class="input-group">
+                            <label for="artist-name">ARTIST — OPTIONAL</label>
+                            <input type="text" id="artist-name" placeholder="Queen">
+                        </div>
+
+                        <button type="submit" class="btn-primary">
+                            FIND MY MOVIE &rarr;
+                        </button>
+                    </form>
+
+                    <div class="try-suggestions">
+                        <span class="try-label">TRY:</span>
+                        <button class="tag-btn">Hurt</button>
+                        <button class="tag-btn">Clair de Lune</button>
+                        <button class="tag-btn">Dancing Queen</button>
+                        <button class="tag-btn">Africa</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="bottom-banner">
+                <div class="banner-text">
+                    CINEMA -<br>MUSIC -<br>FEELING -<br>AI-POWERED<br>VIBE MATCHING
+                </div>
+                <div class="color-blocks">
+                    <div class="block b-white"></div>
+                    <div class="block b-red"></div>
+                    <div class="block b-white"></div>
+                    <div class="block b-white"></div>
+                    <div class="block b-red"></div>
+                    <div class="block b-white"></div>
+                    <div class="block b-white"></div>
+                    <div class="block b-red"></div>
+                    <div class="block b-white"></div>
+                    <div class="block b-gold"></div>
+                    <div class="block b-white"></div>
+                    <div class="block b-white"></div>
+                    <div class="block b-gold"></div>
+                    <div class="block b-white"></div>
+                </div>
+            </div>
+        </section>
+
+        <section id="view-loading" class="view-section">
+            <div class="loading-container">
+                <div class="film-reel-loader"></div>
+                <h3 id="loading-text" class="loading-text">Listening to the atmosphere...</h3>
+                <div class="loading-progress">
+                    <div class="progress-bar"></div>
+                </div>
+            </div>
+        </section>
+
+        <section id="view-results" class="view-section">
+            <div class="results-header">
+                <p class="search-meta" id="res-search-meta">'Style' — Taylor Swift → detected vibe:</p>
+                <h2 class="results-title" id="res-vibe-title">CINEMATIC INTROSPECTION</h2>
+                <div class="vibe-tags" id="res-vibe-tags">
+                    <span class="tag t-red">CONTEMPLATIVE</span>
+                    <span class="tag t-gold">INTIMATE</span>
+                    <span class="tag t-blue">SEARCHING</span>
+                    <span class="tag t-green">LYRICAL</span>
+                </div>
+            </div>
+
+            <div class="results-layout">
+                <article class="editorial-block brutalist-card">
+                    <div class="tape red-tape top-center"></div>
+                    <h3>VIBE REPORT</h3>
+                    <p class="article-meta">CURATOR: AI MODEL <span id="res-year">2026</span></p>
+                    <div id="res-ai-explanation" class="article-body">
+                        </div>
+                    <div class="movie-meta-details">
+                        <p><strong>DIR:</strong> <span id="res-director"></span></p>
+                        <p><strong>RELEASE:</strong> <span id="res-release"></span></p>
+                        <p><strong>ORIGINAL TITLE:</strong> <span id="res-original-title"></span></p>
+                    </div>
+                    <div class="action-links">
+                        <a href="#" id="res-imdb" target="_blank" class="text-link">IMDb</a>
+                        <a href="#" id="res-letterboxd" target="_blank" class="text-link">Letterboxd</a>
+                        <a href="#" id="res-tiktok" target="_blank" class="text-link">TikTok</a>
+                    </div>
+                </article>
+
+                <div class="poster-container">
+                    <div class="polaroid main-poster rotate-right">
+                        <div class="tape yellow-tape top-left"></div>
+                        <img id="res-poster" src="" alt="Movie Poster">
+                        <div class="polaroid-caption">
+                            <h4 id="res-title">Movie Title</h4>
+                            <p class="synopsis" id="res-synopsis">Synopsis goes here...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="stills-collage">
+                    <div class="polaroid still-card rotate-left">
+                        <div class="tape blue-tape top-right"></div>
+                        <img id="res-still-1" src="" alt="Movie Still 1">
+                    </div>
+                    <div class="polaroid still-card rotate-right mt-offset">
+                        <div class="tape red-tape top-left"></div>
+                        <img id="res-still-2" src="" alt="Movie Still 2">
+                    </div>
+                    <div class="polaroid still-card rotate-left">
+                        <img id="res-still-3" src="" alt="Movie Still 3">
+                    </div>
+                </div>
+            </div>
+            
+            <div class="action-footer">
+                 <button class="btn-secondary" id="btn-search-again">&larr; NEW SEARCH</button>
+            </div>
+        </section>
+
+    </main>
+
+    <script src="js/script.js"></script>
+</body>
+</html>

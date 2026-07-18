@@ -1,2 +1,32 @@
+# Variáveis de ambiente
 .env
-.vscode
+
+# Configurações do VS Code
+.vscode/
+
+# Cache do Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ambiente virtual
+.venv/
+venv/
+env/
+
+# Arquivos de distribuição
+build/
+dist/
+*.egg-info/
+
+# Arquivos de log
+*.log
+
+# Cache de testes e ferramentas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Arquivos do sistema
+.DS_Store
+Thumbs.db
