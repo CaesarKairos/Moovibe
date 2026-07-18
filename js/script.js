@@ -126,8 +126,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const novoTiktokLink = tiktokLink.cloneNode(true);
         tiktokLink.parentNode.replaceChild(novoTiktokLink, tiktokLink);
         
-        // Salva o nome do filme para usar no clique
-        const nomeFilmeParaTikTok = data.movie.title || data.movie.original_title;
+        // Salva o nome ORIGINAL do filme para usar no clique (prioridade: original_title)
+        const nomeFilmeParaTikTok = data.movie.original_title || data.movie.title;
         
         novoTiktokLink.addEventListener('click', (e) => {
             e.preventDefault();
