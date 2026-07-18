@@ -27,31 +27,8 @@ document.addEventListener('DOMContentLoaded', () => {
         "Finding a cinematic soul..."
     ];
 
-    // --- Mock Backend Data ---
-    // In production, this would be fetched from your OpenRouter/TMDb backend route.
-    const mockApiResponse = {
-        song: "Bohemian Rhapsody",
-        artist: "Queen",
-        movie: {
-            title: "Magnolia",
-            original_title: "Magnolia",
-            release_year: "1999",
-            director: "Paul Thomas Anderson",
-            synopsis: "An epic mosaic of interrelated characters in search of love, forgiveness, and meaning in the San Fernando Valley. A cinematic crescendo.",
-            poster_url: "https://image.tmdb.org/t/p/w600_and_h900_bestv2/uqN2csO2Lz2R9O31O8TETLAnNto.jpg",
-            stills: [
-                "https://image.tmdb.org/t/p/w780/5NEM4f3XQ1k5R14iFk5Gk1BqAEE.jpg",
-                "https://image.tmdb.org/t/p/w780/6x8Z52w0F2iU9J2wH7M1L4R5v0V.jpg",
-                "https://image.tmdb.org/t/p/w780/7H2zQ8O6oG4M2vYwQ5M8B6pE0gL.jpg"
-            ],
-            ai_explanation: "<p>Both the song and the film are sprawling, operatic tapestries of human emotion. They defy traditional structural conventions, opting instead for a cascading series of crescendos.</p><p>Just as 'Bohemian Rhapsody' moves from a cappella to ballad, to opera, to hard rock, <em>Magnolia</em> sweeps through varying states of grief, regret, and sudden, miraculous catharsis. The feeling is one of overwhelming, chaotic grandeur that somehow resolves perfectly.</p>",
-            vibe_title: "OPERATIC CHAOS",
-            tags: ["GRANDIOSE", "TRAGICOMIC", "CATHARTIC", "MOSAIC"],
-            imdb_url: "https://www.imdb.com/title/tt0175880/",
-            letterboxd_url: "https://letterboxd.com/film/magnolia/",
-            tiktok_url: "#"
-        }
-    };
+    // --- API Configuration ---
+    const WORKER_URL = 'https://moovibe-api.cesarbatistasantos08.workers.dev/'; // Substitua pelo link real do seu Worker
 
     // --- Core Functions ---
 
@@ -66,7 +43,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    function startLoadingSequence(onComplete) {
+    function startLoadingSequence(fetchPromise) {
         switchView(viewLoading);
         
         let messageIndex = 0;
@@ -79,11 +56,19 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }, 800); // Change text every 800ms
 
-        // Simulate network request delay (3 seconds)
-        setTimeout(() => {
-            clearInterval(messageInterval);
-            onComplete();
-        }, 3500);
+        // Await the real fetch promise
+        fetchPromise
+            .then(data => {
+                clearInterval(messageInterval);
+                injectResults(data);
+                switchView(viewResults);
+            })
+            .catch(error => {
+                clearInterval(messageInterval);
+                console.error('Erro na requisição:', error);
+                switchView(viewHome);
+                alert('Falha ao buscar a vibe. Tente novamente.');
+            });
     }
 
     function injectResults(data) {
@@ -137,14 +122,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (!song) return;
 
-        // Update mock data for demonstration
-        mockApiResponse.song = song;
-        mockApiResponse.artist = artist;
-
-        startLoadingSequence(() => {
-            injectResults(mockApiResponse);
-            switchView(viewResults);
+        // Real fetch to the Cloudflare Worker API
+        const fetchPromise = fetch(`${WORKER_URL}/api/recommend`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ nome_musica: song, artista: artist })
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            return response.json();
         });
+
+        startLoadingSequence(fetchPromise);
     });
 
     btnSearchAgain.addEventListener('click', () => {
