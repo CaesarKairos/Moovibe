@@ -2,24 +2,20 @@
  * Moovibe - Cloudflare Pages Function
  * 
  * Responde em POST /recommend com orquestração completa:
- *   1. LRCLIB (letras)
- *   2. Contexto: Genius → Wikipedia PT → OpenRouter (fallback 3 camadas)
- *   3. OpenRouter (IA → recomendação de filme)
- *   4. TMDb → Wikipedia → "Sinopse indisponível" (dados do filme)
- *   5. Resposta JSON formatada para o frontend
+ *   Letra: LRCLIB → Genius → SearXNG
+ *   Contexto: Genius → SearXNG → Wikipedia → OpenRouter (mini-IA)
+ *   Filme: TMDb → Wikipedia → SearXNG
  */
 
-// ============================================================
-//  CONSTANTES
-// ============================================================
 const LRCLIB_URL = 'https://lrclib.net/api/search';
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
 const WIKIPEDIA_PT_API = 'https://pt.wikipedia.org/api/rest_v1/page/summary/';
 const WIKIPEDIA_EN_API = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
+const SEARXNG_URL = 'https://search.disroot.org/search';
 
 // ============================================================
-//  HANDLER PRINCIPAL (Pages Functions)
+//  HANDLER PRINCIPAL
 // ============================================================
 export async function onRequest(context) {
   const { request, env } = context;
@@ -36,13 +32,13 @@ export async function onRequest(context) {
       return jsonResponse({ error: 'nome_musica is required' }, 400);
     }
 
-    // ---- 1. BUSCAR LETRA (LRCLIB) ----
-    let letra = await buscarLetraLRCLIB(nome_musica, artista);
+    // ---- 1. LETRA (LRCLIB → Genius → SearXNG) ----
+    const letra = await buscarLetraMusica(nome_musica, artista, env);
 
-    // ---- 2. BUSCAR CONTEXTO (3 camadas de fallback) ----
+    // ---- 2. CONTEXTO (Genius → SearXNG → Wikipedia → OpenRouter mini-IA) ----
     const contextoExtra = await buscarContextoMusica(nome_musica, artista, env);
 
-    // ---- 3. RECOMENDAÇÃO IA (OpenRouter) ----
+    // ---- 3. RECOMENDAÇÃO IA ----
     const recomendacaoIA = await obterRecomendacaoIA(
       nome_musica, artista, letra, contextoExtra, env.OPENROUTER_API_KEY
     );
@@ -51,7 +47,6 @@ export async function onRequest(context) {
       return jsonResponse({ error: 'Falha ao obter recomendacao da IA' }, 500);
     }
 
-    // Suporta tanto 'filme' (novo) quanto 'filme_sugerido' (legado)
     const nomeFilme = recomendacaoIA.filme || recomendacaoIA.filme_sugerido || '';
     const anoFilme = recomendacaoIA.ano || recomendacaoIA.ano_filme || '';
     const justificativa = recomendacaoIA.justificativa || recomendacaoIA.justificativa_vibe || '';
@@ -62,14 +57,14 @@ export async function onRequest(context) {
       return jsonResponse({ error: 'IA nao retornou um nome de filme valido' }, 500);
     }
 
-    // ---- 4. DADOS DO FILME (TMDb → Wikipedia → "Sinopse indisponivel") ----
+    // ---- 4. DADOS DO FILME (TMDb → Wikipedia → SearXNG) ----
     let dadosFilme = null;
     if (env.TMDB_API_KEY) {
-      dadosFilme = await obterDetalhesTMDB(nomeFilme, anoFilme, env.TMDB_API_KEY);
+      dadosFilme = await obterDetalhesTMDB(nomeFilme, env.TMDB_API_KEY);
     }
 
     if (!dadosFilme || !dadosFilme.sinopse || dadosFilme.sinopse === 'Sem sinopse disponivel.') {
-      const fallback = await buscarDadosFilmeWikipedia(nomeFilme, anoFilme);
+      const fallback = await buscarDadosFilmeFallback(nomeFilme, anoFilme);
       if (fallback) {
         dadosFilme = {
           id_tmdb: null,
@@ -83,7 +78,6 @@ export async function onRequest(context) {
           cenas: [],
         };
       } else {
-        // Fallback final: sinopse padrao
         dadosFilme = {
           id_tmdb: null,
           titulo_pt: nomeFilme,
@@ -98,7 +92,7 @@ export async function onRequest(context) {
       }
     }
 
-    // ---- 5. MONTAR RESPOSTA ----
+    // ---- 5. RESPOSTA ----
     const resposta = {
       song: nome_musica,
       artist: artista || '',
@@ -140,186 +134,219 @@ function jsonResponse(data, status = 200) {
   });
 }
 
-// ============================================================
-//  UTILITÁRIO: Limpeza agressiva de termos
-// ============================================================
 function limparTermoMusica(termo) {
   if (!termo) return termo;
   let t = termo;
-  // Remove ano entre parenteses: (2014), (1999)
   t = t.replace(/\(\d{4}\)/g, '');
-  // Remove ano entre colchetes: [2014], [1999]
   t = t.replace(/\[\d{4}\]/g, '');
-  // Remove parenteses com palavras-chave promocionais
   t = t.replace(/\([^)]*(?:official|music\s*video|remaster|remastered|audio|lyric|video|visualizer|live|feat\.?|ft\.?|prod\.?|explicit|clean|edit|version|4k|hd|360|clip|single|lyrics|audio|official\s*audio)[^)]*\)/gi, '');
-  // Remove colchetes com palavras-chave promocionais
   t = t.replace(/\[[^\]]*(?:official|music\s*video|remaster|remastered|audio|lyric|video|visualizer|live|feat\.?|ft\.?|prod\.?|explicit|clean|edit|version|4k|hd|360|clip|single|lyrics|audio|official\s*audio)[^\]]*\]/gi, '');
-  // Remove "Feat.", "Ft." no final
   t = t.replace(/\s+(?:feat\.?|ft\.?)\..*$/i, '');
-  // Remove "Feat.", "Ft." no meio entre parenteses/colchetes
   t = t.replace(/\s+[\(\[].*?(?:feat\.?|ft\.?).*?[\)\]]/gi, '');
   return t.trim();
 }
 
 // ============================================================
-//  1. BUSCAR LETRA — LRCLIB
+//  BUSCA GENERICA: SearXNG
 // ============================================================
-async function buscarLetraLRCLIB(nomeMusica, artista) {
-  const params = new URLSearchParams({ track_name: nomeMusica, artist_name: artista || '' });
+async function buscarSearXNG(query, maxResults = 3) {
   try {
-    const resp = await fetch(`${LRCLIB_URL}?${params}`, { method: 'GET' });
-    if (!resp.ok) return null;
-    const dados = await resp.json();
-    if (Array.isArray(dados) && dados.length > 0 && dados[0].plainLyrics) {
-      return dados[0].plainLyrics;
-    }
-  } catch (err) {
-    console.error('[LRCLIB] Erro:', err);
-  }
-  return null;
-}
-
-// ============================================================
-//  2.1 CONTEXTO — CAMADA 1: Genius
-// ============================================================
-async function buscarContextoGenius(nomeMusica, artista, apiKey) {
-  if (!apiKey) return null;
-
-  try {
-    const nomeLimpo = limparTermoMusica(nomeMusica);
-    const artistaLimpo = limparTermoMusica(artista) || artista;
-    const query = encodeURIComponent(`${nomeLimpo} ${artistaLimpo}`);
-
-    const resp = await fetch(`https://api.genius.com/search?q=${query}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
+    const params = new URLSearchParams({
+      q: query,
+      format: 'json',
+      language: 'pt-BR',
+      categories: 'general',
     });
-    if (!resp.ok) return null;
-
-    const dados = await resp.json();
-    const hit = dados?.response?.hits?.[0]?.result;
-    if (!hit) return null;
-
-    const songUrl = hit.url;
-    if (!songUrl) return hit.title || null;
-
-    const pageResp = await fetch(songUrl, {
+    const url = `${SEARXNG_URL}?${params}`;
+    const resp = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Moovibe/1.0)' },
     });
-    if (!pageResp.ok) return hit.title || null;
+    if (!resp.ok) return null;
 
-    const html = await pageResp.text();
-    const metaMatch = html.match(/<meta\s+[^>]*name="description"[^>]*content="([^"]+)"/i);
-    if (metaMatch && metaMatch[1]) {
-      return metaMatch[1].substring(0, 2000);
+    const dados = await resp.json();
+    const resultados = dados?.results || [];
+    if (resultados.length === 0) return null;
+
+    const snippets = [];
+    for (const r of resultados.slice(0, maxResults)) {
+      const snippet = r.content || r.title || '';
+      if (snippet) snippets.push(snippet);
     }
-
-    return hit.title || null;
+    return snippets.length > 0 ? snippets.join('\n\n').substring(0, 3000) : null;
   } catch (err) {
-    console.error('[GENIUS] Erro:', err);
+    console.error('[SEARXNG] Erro:', err);
     return null;
   }
 }
 
 // ============================================================
-//  2.2 CONTEXTO — CAMADA 2: Wikipedia PT
+//  1. LETRA — LRCLIB → Genius → SearXNG
 // ============================================================
-async function buscarContextoWikipedia(nomeMusica, artista) {
-  try {
-    const termo = `${nomeMusica} ${artista}`;
-    const url = `${WIKIPEDIA_PT_API}${encodeURIComponent(termo)}`;
+async function buscarLetraMusica(nomeMusica, artista, env) {
+  const nomeLimpo = limparTermoMusica(nomeMusica);
+  const artistaLimpo = limparTermoMusica(artista) || artista;
 
-    console.log(`[WIKIPEDIA] Buscando contexto: '${termo}'`);
+  // CAMADA 1: LRCLIB
+  console.log('[LETRA] CAMADA 1: LRCLIB...');
+  try {
+    const params = new URLSearchParams({ track_name: nomeLimpo, artist_name: artistaLimpo });
+    const resp = await fetch(`${LRCLIB_URL}?${params}`);
+    if (resp.ok) {
+      const dados = await resp.json();
+      if (Array.isArray(dados) && dados.length > 0 && dados[0].plainLyrics) {
+        console.log('[LETRA] LRCLIB: Letra encontrada!');
+        return dados[0].plainLyrics;
+      }
+    }
+  } catch (err) {
+    console.error('[LETRA] LRCLIB erro:', err);
+  }
+
+  // CAMADA 2: Genius (letra)
+  console.log('[LETRA] CAMADA 2: Genius...');
+  const geniusKey = env?.GENIUS_API_KEY;
+  if (geniusKey) {
+    try {
+      const query = encodeURIComponent(`${nomeLimpo} ${artistaLimpo}`);
+      const resp = await fetch(`https://api.genius.com/search?q=${query}`, {
+        headers: { Authorization: `Bearer ${geniusKey}` },
+      });
+      if (resp.ok) {
+        const dados = await resp.json();
+        const hit = dados?.response?.hits?.[0]?.result;
+        if (hit?.url) {
+          const pageResp = await fetch(hit.url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Moovibe/1.0)' },
+          });
+          if (pageResp.ok) {
+            const html = await pageResp.text();
+            // Tenta extrair letra de meta ou JSON-LD
+            const lyricsMatch = html.match(/<div[^>]*class="lyrics"[^>]*>([\s\S]*?)<\/div>/i);
+            if (lyricsMatch) {
+              console.log('[LETRA] Genius: Letra encontrada!');
+              return limparHTML(lyricsMatch[1]).substring(0, 5000);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[LETRA] Genius erro:', err);
+    }
+  }
+
+  // CAMADA 3: SearXNG
+  console.log('[LETRA] CAMADA 3: SearXNG...');
+  const letraSearXNG = await buscarSearXNG(`${nomeLimpo} ${artistaLimpo} lyrics`);
+  if (letraSearXNG) {
+    console.log('[LETRA] SearXNG: Letra encontrada!');
+    return letraSearXNG.substring(0, 5000);
+  }
+
+  console.log('[LETRA] Todas as camadas falharam.');
+  return null;
+}
+
+// ============================================================
+//  2. CONTEXTO — Genius → SearXNG → Wikipedia → OpenRouter mini-IA
+// ============================================================
+async function buscarContextoMusica(nomeMusica, artista, env) {
+  const nomeLimpo = limparTermoMusica(nomeMusica);
+  const artistaLimpo = limparTermoMusica(artista) || artista;
+  const termoBusca = `${nomeLimpo} ${artistaLimpo}`;
+
+  // CAMADA 1: Genius (descrição)
+  console.log('[CONTEXTO] CAMADA 1: Genius...');
+  if (env.GENIUS_API_KEY) {
+    try {
+      const query = encodeURIComponent(`${nomeLimpo} ${artistaLimpo}`);
+      const resp = await fetch(`https://api.genius.com/search?q=${query}`, {
+        headers: { Authorization: `Bearer ${env.GENIUS_API_KEY}` },
+      });
+      if (resp.ok) {
+        const dados = await resp.json();
+        const hit = dados?.response?.hits?.[0]?.result;
+        if (hit?.url) {
+          const pageResp = await fetch(hit.url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Moovibe/1.0)' },
+          });
+          if (pageResp.ok) {
+            const html = await pageResp.text();
+            const metaMatch = html.match(/<meta\s+[^>]*name="description"[^>]*content="([^"]+)"/i);
+            if (metaMatch && metaMatch[1]) {
+              console.log('[CONTEXTO] Genius: Descricao encontrada!');
+              return metaMatch[1].substring(0, 2000);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[CONTEXTO] Genius erro:', err);
+    }
+  }
+
+  // CAMADA 2: SearXNG
+  console.log('[CONTEXTO] CAMADA 2: SearXNG...');
+  const ctxSearXNG = await buscarSearXNG(`${termoBusca} meaning explanation`);
+  if (ctxSearXNG) {
+    console.log('[CONTEXTO] SearXNG: Contexto encontrado!');
+    return ctxSearXNG.substring(0, 2000);
+  }
+
+  // CAMADA 3: Wikipedia PT
+  console.log('[CONTEXTO] CAMADA 3: Wikipedia PT...');
+  try {
+    const url = `${WIKIPEDIA_PT_API}${encodeURIComponent(termoBusca)}`;
     const resp = await fetch(url, {
       headers: { 'User-Agent': 'Moovibe/1.0 (movie recommendation app)' },
     });
-
     if (resp.status === 200) {
       const dados = await resp.json();
-      if (dados.type === 'disambiguation') {
-        console.log('[WIKIPEDIA] Pagina de desambiguacao.');
-        return null;
-      }
-      if (dados.extract) {
-        console.log('[WIKIPEDIA] Contexto encontrado!');
+      if (dados.type !== 'disambiguation' && dados.extract) {
+        console.log('[CONTEXTO] Wikipedia: Contexto encontrado!');
         return dados.extract.substring(0, 2000);
       }
-    } else if (resp.status === 404) {
-      console.log('[WIKIPEDIA] Pagina nao encontrada.');
     }
   } catch (err) {
-    console.error('[WIKIPEDIA] Erro:', err);
-  }
-  return null;
-}
-
-// ============================================================
-//  2.3 CONTEXTO — CAMADA 3: OpenRouter (fallback drástico)
-// ============================================================
-async function buscarContextoIAFallback(nomeMusica, artista, apiKey) {
-  if (!apiKey) return null;
-
-  console.log('[OPENROUTER FALLBACK] Gerando contexto via IA...');
-
-  const promptCurto = `Explique brevemente em um paragrafo de ate 3 linhas em portugues o significado e contexto cultural da musica '${nomeMusica}' de '${artista}'.`;
-
-  try {
-    const resp = await fetch(OPENROUTER_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'openrouter/free',
-        temperature: 0.3,
-        max_tokens: 300,
-        messages: [{ role: 'user', content: promptCurto }],
-      }),
-    });
-
-    if (!resp.ok) return null;
-
-    const dados = await resp.json();
-    const texto = dados?.choices?.[0]?.message?.content?.trim();
-    if (texto) {
-      console.log('[OPENROUTER FALLBACK] Contexto gerado com sucesso!');
-      return texto.substring(0, 2000);
-    }
-  } catch (err) {
-    console.error('[OPENROUTER FALLBACK] Erro:', err);
-  }
-  return null;
-}
-
-// ============================================================
-//  2.4 ORQUESTRADOR DE CONTEXTO (3 CAMADAS)
-// ============================================================
-async function buscarContextoMusica(nomeMusica, artista, env) {
-  // CAMADA 1: Genius
-  console.log('[CONTEXTO] CAMADA 1: Genius...');
-  if (env.GENIUS_API_KEY) {
-    const ctx = await buscarContextoGenius(nomeMusica, artista, env.GENIUS_API_KEY);
-    if (ctx) return ctx;
+    console.error('[CONTEXTO] Wikipedia erro:', err);
   }
 
-  // CAMADA 2: Wikipedia PT
-  console.log('[CONTEXTO] CAMADA 2: Wikipedia PT...');
-  const ctx2 = await buscarContextoWikipedia(nomeMusica, artista);
-  if (ctx2) return ctx2;
-
-  // CAMADA 3: OpenRouter fallback
-  console.log('[CONTEXTO] CAMADA 3: OpenRouter (fallback drastico)...');
+  // CAMADA 4: OpenRouter mini-IA
+  console.log('[CONTEXTO] CAMADA 4: OpenRouter (mini-IA)...');
   if (env.OPENROUTER_API_KEY) {
-    const ctx3 = await buscarContextoIAFallback(nomeMusica, artista, env.OPENROUTER_API_KEY);
-    if (ctx3) return ctx3;
+    try {
+      const prompt = `Explique brevemente em um paragrafo curto em portugues o significado da musica '${nomeLimpo}' de '${artistaLimpo}'.`;
+      const resp = await fetch(OPENROUTER_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'openrouter/free',
+          temperature: 0.3,
+          max_tokens: 300,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+      if (resp.ok) {
+        const dados = await resp.json();
+        const texto = dados?.choices?.[0]?.message?.content?.trim();
+        if (texto) {
+          console.log('[CONTEXTO] OpenRouter: Contexto gerado via IA!');
+          return texto.substring(0, 2000);
+        }
+      }
+    } catch (err) {
+      console.error('[CONTEXTO] OpenRouter erro:', err);
+    }
   }
 
-  console.log('[CONTEXTO] Todas as 3 camadas falharam.');
+  console.log('[CONTEXTO] Todas as camadas falharam.');
   return null;
 }
 
 // ============================================================
-//  3. INTELIGÊNCIA ARTIFICIAL — OpenRouter
+//  3. RECOMENDAÇÃO IA — OpenRouter
 // ============================================================
 async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey) {
   if (!apiKey) return null;
@@ -400,13 +427,14 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
 }
 
 // ============================================================
-//  4. DADOS DO FILME — TMDb
+//  4. DADOS DO FILME — TMDb (sem language filter)
 // ============================================================
-async function obterDetalhesTMDB(nomeFilme, ano, apiKey) {
+async function obterDetalhesTMDB(nomeFilme, apiKey) {
   if (!apiKey) return null;
 
   try {
-    const paramsBusca = new URLSearchParams({ api_key: apiKey, query: nomeFilme, language: 'pt-BR' });
+    // SEM language filter para pegar poster original
+    const paramsBusca = new URLSearchParams({ api_key: apiKey, query: nomeFilme });
     const respBusca = await fetch(`${TMDB_BUSCA_URL}?${paramsBusca}`);
     if (!respBusca.ok) return null;
 
@@ -417,10 +445,12 @@ async function obterDetalhesTMDB(nomeFilme, ano, apiKey) {
     const filmeBasico = filmes[0];
     const filmeId = filmeBasico.id;
 
-    const paramsDetalhes = new URLSearchParams({ api_key: apiKey, language: 'pt-BR' });
+    // Detalhes SEM language filter
+    const paramsDetalhes = new URLSearchParams({ api_key: apiKey });
     const respDetalhes = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}?${paramsDetalhes}`);
     const detalhes = respDetalhes.ok ? await respDetalhes.json() : {};
 
+    // Créditos
     let diretor = 'Nao encontrado';
     const respCreditos = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}/credits?api_key=${apiKey}`);
     if (respCreditos.ok) {
@@ -433,6 +463,7 @@ async function obterDetalhesTMDB(nomeFilme, ano, apiKey) {
       }
     }
 
+    // Imagens SEM language filter
     const respImagens = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}/images?api_key=${apiKey}`);
     const cenas = [];
     if (respImagens.ok) {
@@ -442,13 +473,18 @@ async function obterDetalhesTMDB(nomeFilme, ano, apiKey) {
       }
     }
 
+    // Poster: prioriza poster_path original (sem filtro de idioma)
+    const posterUrl = filmeBasico.poster_path
+      ? `https://image.tmdb.org/t/p/w500${filmeBasico.poster_path}`
+      : null;
+
     return {
       id_tmdb: filmeId,
       titulo_pt: filmeBasico.title,
       titulo_original: filmeBasico.original_title,
       ano: (filmeBasico.release_date || '----').substring(0, 4),
       sinopse: filmeBasico.overview || 'Sem sinopse disponivel.',
-      poster: filmeBasico.poster_path ? `https://image.tmdb.org/t/p/w500${filmeBasico.poster_path}` : null,
+      poster: posterUrl,
       diretor: diretor,
       imdb_id: detalhes?.imdb_id || null,
       cenas: cenas,
@@ -460,77 +496,80 @@ async function obterDetalhesTMDB(nomeFilme, ano, apiKey) {
 }
 
 // ============================================================
-//  5. FALLBACK DE FILME — Wikipedia API
+//  5. FALLBACK FILME — Wikipedia → SearXNG
 // ============================================================
-async function buscarDadosFilmeWikipedia(nomeFilme, ano) {
+async function buscarDadosFilmeFallback(nomeFilme, ano) {
+  // CAMADA 1: Wikipedia PT (com 'filme' no termo)
+  console.log('[FILME FALLBACK] CAMADA 1: Wikipedia PT...');
   try {
-    const termosPT = [];
+    const termos = [];
     if (ano) {
-      termosPT.push(`${nomeFilme} (${ano})`);
-      termosPT.push(`${nomeFilme} ${ano}`);
+      termos.push(`${nomeFilme} (${ano}) filme`);
+      termos.push(`${nomeFilme} ${ano} filme`);
     }
-    termosPT.push(nomeFilme);
+    termos.push(`${nomeFilme} filme`);
+    termos.push(nomeFilme);
 
-    // Tenta Wikipedia PT
-    for (const termo of termosPT) {
+    for (const termo of termos) {
       const url = `${WIKIPEDIA_PT_API}${encodeURIComponent(termo)}`;
-      console.log(`[WIKIPEDIA] Buscando filme: '${termo}'`);
       const resp = await fetch(url, {
         headers: { 'User-Agent': 'Moovibe/1.0 (movie recommendation app)' },
       });
-
       if (resp.status === 200) {
         const dados = await resp.json();
-        if (dados.type === 'disambiguation') {
-          console.log(`[WIKIPEDIA] Desambiguacao para '${termo}'.`);
-          continue;
-        }
+        if (dados.type === 'disambiguation') continue;
         if (dados.extract) {
-          console.log(`[WIKIPEDIA] Dados do filme encontrados para '${termo}'.`);
           let diretor = 'Disponivel na Wikipedia';
           const matchDir = dados.extract.match(
             /(?:dire[cç][aã]o\s+(?:de\s+)?|diretor[:\s]+|dirigido\s+por\s+)([A-ZÀ-Ú][A-Za-zÀ-Ú\s]+)/i
           );
           if (matchDir) diretor = matchDir[1].trim();
+          console.log('[FILME FALLBACK] Wikipedia: Dados encontrados!');
           return { sinopse: dados.extract.substring(0, 2000), diretor };
         }
-      } else if (resp.status === 404) {
-        console.log(`[WIKIPEDIA] Pagina nao encontrada para '${termo}'.`);
       }
     }
-
-    // Tenta Wikipedia EN
-    const termosEN = [];
-    if (ano) termosEN.push(`${nomeFilme} (${ano})`);
-    termosEN.push(nomeFilme);
-
-    for (const termo of termosEN) {
-      const url = `${WIKIPEDIA_EN_API}${encodeURIComponent(termo)}`;
-      console.log(`[WIKIPEDIA EN] Buscando filme: '${termo}'`);
-      const resp = await fetch(url, {
-        headers: { 'User-Agent': 'Moovibe/1.0 (movie recommendation app)' },
-      });
-
-      if (resp.status === 200) {
-        const dados = await resp.json();
-        if (dados.type === 'disambiguation') continue;
-        if (dados.extract) {
-          console.log(`[WIKIPEDIA EN] Dados do filme encontrados para '${termo}'.`);
-          let diretor = 'Disponivel na Wikipedia';
-          const matchDir = dados.extract.match(
-            /(?:directed\s+by\s+|director[:\s]+)([A-Z][A-Za-z\s]+)/i
-          );
-          if (matchDir) diretor = matchDir[1].trim();
-          return { sinopse: dados.extract.substring(0, 2000), diretor };
-        }
-      } else if (resp.status === 404) {
-        continue;
-      }
-    }
-
-    console.log('[WIKIPEDIA] Nenhum resultado encontrado para o filme.');
   } catch (err) {
-    console.error('[WIKIPEDIA] Erro:', err);
+    console.error('[FILME FALLBACK] Wikipedia erro:', err);
   }
+
+  // CAMADA 2: SearXNG
+  console.log('[FILME FALLBACK] CAMADA 2: SearXNG...');
+  try {
+    let query = `${nomeFilme} movie plot synopsis`;
+    if (ano) query = `${nomeFilme} ${ano} movie plot synopsis`;
+    const resultado = await buscarSearXNG(query);
+    if (resultado) {
+      console.log('[FILME FALLBACK] SearXNG: Dados encontrados!');
+      return { sinopse: resultado.substring(0, 2000), diretor: 'Disponivel na Web' };
+    }
+  } catch (err) {
+    console.error('[FILME FALLBACK] SearXNG erro:', err);
+  }
+
+  console.log('[FILME FALLBACK] Todas as camadas falharam.');
   return null;
+}
+
+// ============================================================
+//  UTILITÁRIO: limpar HTML
+// ============================================================
+function limparHTML(texto) {
+  // Mapeamento de entidades HTML para caracteres literais
+  var entidades = {
+    'amp': '&',
+    'lt': '<',
+    'gt': '>',
+    'quot': '"',
+    '#x27': "'",
+    '#x2F': '/'
+  };
+  return texto
+    .replace(/<[^>]*>/g, '')
+    .replace(/&([a-zA-Z#0-9]+);/g, function(match, entidade) {
+      return entidades[entidade] || '';
+    })
+    .replace(/&#(\d+);/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
