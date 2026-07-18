@@ -2,9 +2,9 @@
  * Moovibe - Cloudflare Pages Function
  * 
  * Responde em POST /recommend com orquestração completa:
- *   Letra: LRCLIB → Genius → SearXNG
+ *   Letra: LRCLIB → Genius → SearXNG (com rotação)
  *   Contexto: Genius → SearXNG → Wikipedia → OpenRouter (mini-IA)
- *   Filme: TMDb → Wikipedia → SearXNG
+ *   Filme: TMDb → Wikipedia (poster, diretor limpo, 2 frases) → SearXNG
  */
 
 const LRCLIB_URL = 'https://lrclib.net/api/search';
@@ -12,7 +12,13 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
 const WIKIPEDIA_PT_API = 'https://pt.wikipedia.org/api/rest_v1/page/summary/';
 const WIKIPEDIA_EN_API = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
-const SEARXNG_URL = 'https://search.disroot.org/search';
+
+// Instancias SearXNG para rotacao
+const INSTANCIAS_SEARXNG = [
+  'https://search.disroot.org/search',
+  'https://searx.be/search',
+  'https://searx.space/search',
+];
 
 // ============================================================
 //  HANDLER PRINCIPAL
@@ -47,7 +53,10 @@ export async function onRequest(context) {
       return jsonResponse({ error: 'Falha ao obter recomendacao da IA' }, 500);
     }
 
-    const nomeFilme = recomendacaoIA.filme || recomendacaoIA.filme_sugerido || '';
+    // Sanitizacao do titulo do filme (remove ano colado)
+    const nomeFilme = sanitizarTituloFilme(
+      recomendacaoIA.filme || recomendacaoIA.filme_sugerido || ''
+    );
     const anoFilme = recomendacaoIA.ano || recomendacaoIA.ano_filme || '';
     const justificativa = recomendacaoIA.justificativa || recomendacaoIA.justificativa_vibe || '';
     const vibeTitle = recomendacaoIA.vibe_title || 'VIBE CINEMATICA';
@@ -71,9 +80,9 @@ export async function onRequest(context) {
           titulo_pt: nomeFilme,
           titulo_original: nomeFilme,
           ano: anoFilme || 'Nao informado',
-          sinopse: fallback.sinopse,
-          poster: null,
-          diretor: fallback.diretor,
+          sinopse: fallback.sinopse || 'Sinopse indisponivel.',
+          poster: fallback.poster || null,
+          diretor: fallback.diretor || 'Nao encontrado',
           imdb_id: null,
           cenas: [],
         };
@@ -146,37 +155,100 @@ function limparTermoMusica(termo) {
   return t.trim();
 }
 
+function sanitizarTituloFilme(titulo) {
+  if (!titulo || typeof titulo !== 'string') return '';
+  let t = titulo.trim();
+  t = t.replace(/\s+(?:19|20)\d{2}\s*$/, '');
+  t = t.replace(/\s*[\(\[]\s*(?:19|20)\d{2}\s*[\)\]]\s*$/, '');
+  t = t.replace(/\s*[-–—]\s*(?:19|20)\d{2}\s*$/, '');
+  return t.trim();
+}
+
+function extrairDuasPrimeirasFrases(texto) {
+  if (!texto) return '';
+  const textoLimpo = texto.replace(/\s+/g, ' ').trim();
+  const frases = textoLimpo.split(/(?<=[.!?])\s+/).filter(Boolean);
+  if (frases.length >= 2) {
+    return `${frases[0]} ${frases[1]}`;
+  }
+  if (frases.length === 1) {
+    return frases[0];
+  }
+  return textoLimpo.substring(0, 500);
+}
+
+function extrairDiretorWikipedia(extract) {
+  if (!extract) return 'Disponível na Wikipédia';
+
+  const matchPT = extract.match(
+    /(?:dirigido\s+por|dire[cç][aã]o\s+(?:de\s+)?|diretor[:\s]+)\s+([A-ZÀ-Ú][A-Za-zÀ-Ú0-9'\-\s]+?)(?=(?:,|\.|\s+e\s+|\s+\(|\s*$))/i
+  );
+  if (matchPT) {
+    let nome = matchPT[1].trim();
+    nome = nome.replace(/\s+e\s+.*$/, '').trim();
+    if (nome.length > 2) return nome;
+  }
+
+  const matchEN = extract.match(
+    /(?:directed\s+by|director[:\s]+)\s+([A-Z][A-Za-z0-9'\-\s]+?)(?=(?:,|\.|\s+and\s+|\s+\(|\s*$))/i
+  );
+  if (matchEN) {
+    let nome = matchEN[1].trim();
+    nome = nome.replace(/\s+and\s+.*$/, '').trim();
+    if (nome.length > 2) return nome;
+  }
+
+  return 'Disponível na Wikipédia';
+}
+
 // ============================================================
-//  BUSCA GENERICA: SearXNG
+//  BUSCA GENERICA: SearXNG (COM ROTACAO E VALIDACAO)
 // ============================================================
 async function buscarSearXNG(query, maxResults = 3) {
-  try {
-    const params = new URLSearchParams({
-      q: query,
-      format: 'json',
-      language: 'pt-BR',
-      categories: 'general',
-    });
-    const url = `${SEARXNG_URL}?${params}`;
-    const resp = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Moovibe/1.0)' },
-    });
-    if (!resp.ok) return null;
+  for (const instancia of INSTANCIAS_SEARXNG) {
+    try {
+      const params = new URLSearchParams({
+        q: query,
+        format: 'json',
+        language: 'en',
+        categories: 'general',
+      });
+      const url = `${instancia}?${params}`;
+      const resp = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Moovibe/1.0)' },
+      });
 
-    const dados = await resp.json();
-    const resultados = dados?.results || [];
-    if (resultados.length === 0) return null;
+      const contentType = (resp.headers.get('Content-Type') || '').toLowerCase();
+      if (!resp.ok) {
+        console.log(`[SEARXNG] Instancia ${instancia} falhou (status ${resp.status}, type ${contentType}).`);
+        continue;
+      }
 
-    const snippets = [];
-    for (const r of resultados.slice(0, maxResults)) {
-      const snippet = r.content || r.title || '';
-      if (snippet) snippets.push(snippet);
+      if (!contentType.includes('application/json')) {
+        const texto = await resp.text();
+        console.log(`[SEARXNG] Instancia ${instancia} retornou ${contentType || 'sem content-type'}: ${texto.substring(0, 200)}`);
+        continue;
+      }
+
+      const dados = await resp.json();
+      const resultados = dados?.results || [];
+      if (resultados.length === 0) continue;
+
+      const snippets = [];
+      for (const r of resultados.slice(0, maxResults)) {
+        const snippet = r.content || r.title || r.snippet || '';
+        if (snippet) snippets.push(snippet);
+      }
+      if (snippets.length > 0) {
+        console.log(`[SEARXNG] Instancia ${instancia} OK!`);
+        return snippets.join('\n\n').substring(0, 3000);
+      }
+    } catch (err) {
+      console.log(`[SEARXNG] Instancia ${instancia} erro: ${err.message}.`);
+      continue;
     }
-    return snippets.length > 0 ? snippets.join('\n\n').substring(0, 3000) : null;
-  } catch (err) {
-    console.error('[SEARXNG] Erro:', err);
-    return null;
   }
+  return null;
 }
 
 // ============================================================
@@ -220,7 +292,6 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
           });
           if (pageResp.ok) {
             const html = await pageResp.text();
-            // Tenta extrair letra de meta ou JSON-LD
             const lyricsMatch = html.match(/<div[^>]*class="lyrics"[^>]*>([\s\S]*?)<\/div>/i);
             if (lyricsMatch) {
               console.log('[LETRA] Genius: Letra encontrada!');
@@ -234,7 +305,7 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
     }
   }
 
-  // CAMADA 3: SearXNG
+  // CAMADA 3: SearXNG (com rotacao)
   console.log('[LETRA] CAMADA 3: SearXNG...');
   const letraSearXNG = await buscarSearXNG(`${nomeLimpo} ${artistaLimpo} lyrics`);
   if (letraSearXNG) {
@@ -254,7 +325,7 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
   const artistaLimpo = limparTermoMusica(artista) || artista;
   const termoBusca = `${nomeLimpo} ${artistaLimpo}`;
 
-  // CAMADA 1: Genius (descrição)
+  // CAMADA 1: Genius (descricao)
   console.log('[CONTEXTO] CAMADA 1: Genius...');
   if (env.GENIUS_API_KEY) {
     try {
@@ -286,7 +357,7 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
 
   // CAMADA 2: SearXNG
   console.log('[CONTEXTO] CAMADA 2: SearXNG...');
-  const ctxSearXNG = await buscarSearXNG(`${termoBusca} meaning explanation`);
+  const ctxSearXNG = await buscarSearXNG(`${nomeLimpo} ${artistaLimpo} song meaning explanation`);
   if (ctxSearXNG) {
     console.log('[CONTEXTO] SearXNG: Contexto encontrado!');
     return ctxSearXNG.substring(0, 2000);
@@ -310,7 +381,7 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
     console.error('[CONTEXTO] Wikipedia erro:', err);
   }
 
-  // CAMADA 4: OpenRouter mini-IA
+  // CAMADA 4: OpenRouter mini-IA (com fallback string seguro)
   console.log('[CONTEXTO] CAMADA 4: OpenRouter (mini-IA)...');
   if (env.OPENROUTER_API_KEY) {
     try {
@@ -433,7 +504,6 @@ async function obterDetalhesTMDB(nomeFilme, apiKey) {
   if (!apiKey) return null;
 
   try {
-    // SEM language filter para pegar poster original
     const paramsBusca = new URLSearchParams({ api_key: apiKey, query: nomeFilme });
     const respBusca = await fetch(`${TMDB_BUSCA_URL}?${paramsBusca}`);
     if (!respBusca.ok) return null;
@@ -445,12 +515,10 @@ async function obterDetalhesTMDB(nomeFilme, apiKey) {
     const filmeBasico = filmes[0];
     const filmeId = filmeBasico.id;
 
-    // Detalhes SEM language filter
     const paramsDetalhes = new URLSearchParams({ api_key: apiKey });
     const respDetalhes = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}?${paramsDetalhes}`);
     const detalhes = respDetalhes.ok ? await respDetalhes.json() : {};
 
-    // Créditos
     let diretor = 'Nao encontrado';
     const respCreditos = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}/credits?api_key=${apiKey}`);
     if (respCreditos.ok) {
@@ -463,20 +531,33 @@ async function obterDetalhesTMDB(nomeFilme, apiKey) {
       }
     }
 
-    // Imagens SEM language filter
-    const respImagens = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}/images?api_key=${apiKey}`);
+    const respImagens = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}/images?api_key=${apiKey}&include_image_language=en,null`);
     const cenas = [];
     if (respImagens.ok) {
       const imagens = await respImagens.json();
       for (const backdrop of (imagens?.backdrops || []).slice(0, 15)) {
-        cenas.push(`https://image.tmdb.org/t/p/w780${backdrop.file_path}`);
+        if (backdrop.file_path) {
+          cenas.push(`https://image.tmdb.org/t/p/w780${backdrop.file_path}`);
+        }
       }
     }
 
-    // Poster: prioriza poster_path original (sem filtro de idioma)
-    const posterUrl = filmeBasico.poster_path
-      ? `https://image.tmdb.org/t/p/w500${filmeBasico.poster_path}`
-      : null;
+    let posterUrl = null;
+    if (respImagens.ok) {
+      const imagens = await respImagens.json();
+      const posters = imagens?.posters || [];
+      for (const poster of posters) {
+        if (!poster.file_path) continue;
+        const idioma = (poster.iso_639_1 || '').toLowerCase();
+        if (idioma === 'en' || idioma === '') {
+          posterUrl = `https://image.tmdb.org/t/p/w500${poster.file_path}`;
+          break;
+        }
+      }
+    }
+    if (!posterUrl && filmeBasico.poster_path) {
+      posterUrl = `https://image.tmdb.org/t/p/w500${filmeBasico.poster_path}`;
+    }
 
     return {
       id_tmdb: filmeId,
@@ -519,13 +600,16 @@ async function buscarDadosFilmeFallback(nomeFilme, ano) {
         const dados = await resp.json();
         if (dados.type === 'disambiguation') continue;
         if (dados.extract) {
-          let diretor = 'Disponivel na Wikipedia';
-          const matchDir = dados.extract.match(
-            /(?:dire[cç][aã]o\s+(?:de\s+)?|diretor[:\s]+|dirigido\s+por\s+)([A-ZÀ-Ú][A-Za-zÀ-Ú\s]+)/i
-          );
-          if (matchDir) diretor = matchDir[1].trim();
+          const sinopse = extrairDuasPrimeirasFrases(dados.extract);
+          const diretor = extrairDiretorWikipedia(dados.extract);
+
+          let posterUrl = null;
+          if (dados.originalimage && dados.originalimage.source) {
+            posterUrl = dados.originalimage.source;
+          }
+
           console.log('[FILME FALLBACK] Wikipedia: Dados encontrados!');
-          return { sinopse: dados.extract.substring(0, 2000), diretor };
+          return { sinopse: sinopse.substring(0, 2000), diretor, poster: posterUrl };
         }
       }
     }
@@ -533,7 +617,7 @@ async function buscarDadosFilmeFallback(nomeFilme, ano) {
     console.error('[FILME FALLBACK] Wikipedia erro:', err);
   }
 
-  // CAMADA 2: SearXNG
+  // CAMADA 2: SearXNG (com rotacao)
   console.log('[FILME FALLBACK] CAMADA 2: SearXNG...');
   try {
     let query = `${nomeFilme} movie plot synopsis`;
@@ -541,7 +625,7 @@ async function buscarDadosFilmeFallback(nomeFilme, ano) {
     const resultado = await buscarSearXNG(query);
     if (resultado) {
       console.log('[FILME FALLBACK] SearXNG: Dados encontrados!');
-      return { sinopse: resultado.substring(0, 2000), diretor: 'Disponivel na Web' };
+      return { sinopse: resultado.substring(0, 2000), diretor: 'Disponível na Web', poster: null };
     }
   } catch (err) {
     console.error('[FILME FALLBACK] SearXNG erro:', err);
@@ -552,10 +636,9 @@ async function buscarDadosFilmeFallback(nomeFilme, ano) {
 }
 
 // ============================================================
-//  UTILITÁRIO: limpar HTML
+//  UTILITARIO: limpar HTML
 // ============================================================
 function limparHTML(texto) {
-  // Mapeamento de entidades HTML para caracteres literais
   var entidades = {
     'amp': '&',
     'lt': '<',

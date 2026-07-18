@@ -13,19 +13,21 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 GENIUS_API_KEY = os.getenv("GENIUS_API_KEY")
 
-# URLs
 URL_LRCLIB = "https://" + "lrclib.net/api/search"
 URL_OPENROUTER = "https://" + "openrouter.ai/api/v1/chat/completions"
 URL_TMDB_BUSCA = "https://" + "api.themoviedb.org/3/search/movie"
 URL_TMDB_BASE = "https://" + "api.themoviedb.org/3/movie"
 URL_WIKIPEDIA_PT = "https://" + "pt.wikipedia.org/api/rest_v1/page/summary/"
 URL_WIKIPEDIA_EN = "https://" + "en.wikipedia.org/api/rest_v1/page/summary/"
-URL_SEARXNG = "https://" + "search.disroot.org/search"
+
+# Instancias SearXNG para rotacao
+INSTANCIAS_SEARXNG = [
+    "https://" + "search.disroot.org/search",
+    "https://" + "searx.be/search",
+    "https://" + "searx.space/search",
+]
 
 
-# ==========================================
-# UTILITÁRIO: Limpeza agressiva de termos
-# ==========================================
 def limpar_termo_musica(termo):
     """Remove sufixos promocionais, ruidos e anos dos titulos."""
     if not termo:
@@ -46,40 +48,77 @@ def limpar_termo_musica(termo):
     return t.strip()
 
 
+def sanitizar_titulo_filme(titulo):
+    """
+    Remove qualquer ano colado ao nome do filme.
+    Ex: 'Interstellar 2014' -> 'Interstellar', 'Interstellar (2014)' -> 'Interstellar'
+    """
+    if not titulo:
+        return ""
+    if not isinstance(titulo, str):
+        return ""
+
+    t = titulo.strip()
+    t = re.sub(r'\s+(?:19|20)\d{2}\s*$', '', t)
+    t = re.sub(r'\s*[\(\[]\s*(?:19|20)\d{2}\s*[\)\]]\s*$', '', t)
+    t = re.sub(r'\s*[-–—]\s*(?:19|20)\d{2}\s*$', '', t)
+    return t.strip()
+
+
 # ==========================================
-# BUSCA GENERICA: SearXNG
+# BUSCA GENERICA: SearXNG (COM ROTACAO)
 # ==========================================
 def buscar_searxng(query, max_results=3):
     """
-    Busca em instancia publica SearXNG (search.disroot.org) e retorna
-    uma lista de snippets dos resultados.
+    Busca em instancias publicas SearXNG com rotacao, validacao e fallback gracioso.
+    Retorna snippets de texto ou None.
     """
-    try:
-        params = {
-            "q": query,
-            "format": "json",
-            "language": "pt-BR",
-            "categories": "general"
-        }
-        headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; Moovibe/1.0)"
-        }
-        resposta = requests.get(URL_SEARXNG, params=params, headers=headers, timeout=12)
+    for instancia in INSTANCIAS_SEARXNG:
+        try:
+            params = {
+                "q": query,
+                "format": "json",
+                "language": "en",
+                "categories": "general"
+            }
+            headers = {
+                "User-Agent": "Mozilla/5.0 (compatible; Moovibe/1.0)"
+            }
+            resposta = requests.get(instancia, params=params, headers=headers, timeout=10)
+            content_type = (resposta.headers.get("Content-Type", "") or "").lower()
 
-        if resposta.status_code == 200:
+            if resposta.status_code != 200:
+                print(f"[SEARXNG] Instancia {instancia} retornou status {resposta.status_code}. Tentando proxima...")
+                continue
+
+            if "application/json" not in content_type:
+                preview = " ".join((resposta.text or "")[:200].split())
+                print(f"[SEARXNG] Instancia {instancia} retornou {content_type or 'sem content-type'}: {preview}")
+                continue
+
             dados = resposta.json()
             resultados = dados.get("results", [])
             if resultados:
                 snippets = []
                 for r in resultados[:max_results]:
-                    snippet = r.get("content", "") or r.get("title", "")
+                    snippet = ""
+                    for field in ("content", "title", "snippet"):
+                        valor = r.get(field)
+                        if isinstance(valor, str) and valor.strip():
+                            snippet = valor.strip()
+                            break
                     if snippet:
                         snippets.append(snippet)
                 if snippets:
+                    print(f"[SEARXNG] Instancia {instancia} OK!")
                     return "\n\n".join(snippets)[:3000]
 
-    except Exception as e:
-        print(f"[SEARXNG] Erro: {e}")
+        except requests.exceptions.JSONDecodeError:
+            print(f"[SEARXNG] Instancia {instancia} retornou JSON invalido. Tentando proxima...")
+            continue
+        except Exception as e:
+            print(f"[SEARXNG] Instancia {instancia} erro: {e}. Tentando proxima...")
+            continue
 
     return None
 
@@ -89,47 +128,44 @@ def buscar_searxng(query, max_results=3):
 # ==========================================
 def buscar_letra_musica(nome_musica, artista):
     """
-    Obtem a letra seguindo esta ordem:
-      CAMADA 1: LRCLIB API
-      CAMADA 2: Genius API (extrair letra do corpo)
-      CAMADA 3: SearXNG
+    CAMADA 1: LRCLIB API
+    CAMADA 2: Genius API (letra)
+    CAMADA 3: SearXNG
     """
     nome_limpo = limpar_termo_musica(nome_musica)
     artista_limpo = limpar_termo_musica(artista) if artista else artista
 
-    # CAMADA 1: LRCLIB
     print("[LETRA] CAMADA 1: LRCLIB...")
     try:
         params = {"track_name": nome_limpo, "artist_name": artista_limpo}
         resp = requests.get(URL_LRCLIB, params=params, timeout=10)
-        if resp.status_code == 200 and resp.json():
-            letra = resp.json()[0].get("plainLyrics", "")
-            if letra:
-                print("[LETRA] LRCLIB: Letra encontrada!")
-                return letra
-    except Exception:
-        pass
+        if resp.status_code == 200:
+            dados = resp.json()
+            if isinstance(dados, list) and dados:
+                letra = dados[0].get("plainLyrics", "")
+                if letra:
+                    print("[LETRA] LRCLIB: Letra encontrada!")
+                    return letra[:5000]
+    except Exception as e:
+        print(f"[LETRA] LRCLIB erro: {e}")
 
-    # CAMADA 2: Genius (letra)
     print("[LETRA] CAMADA 2: Genius...")
     if GENIUS_API_KEY:
         try:
             genius = lyricsgenius.Genius(GENIUS_API_KEY, timeout=10, retries=2)
             genius.verbose = False
             musica = genius.search_song(nome_limpo, artista_limpo)
-            if musica and musica.lyrics:
+            if musica and getattr(musica, "lyrics", None):
                 letra_genius = musica.lyrics
-                # Remove cabecalhos do Genius ("Lyrics", "Embed", etc.)
                 letra_genius = re.sub(r'^\d+ Contributors.*$', '', letra_genius, flags=re.MULTILINE | re.DOTALL)
                 letra_genius = re.sub(r'\d+Embed$', '', letra_genius)
-                letra_genius = letra_genius.strip()
+                letra_genius = re.sub(r'\s+', ' ', letra_genius).strip()
                 if letra_genius:
                     print("[LETRA] Genius: Letra encontrada!")
                     return letra_genius[:5000]
         except Exception as e:
             print(f"[LETRA] Genius erro: {e}")
 
-    # CAMADA 3: SearXNG
     print("[LETRA] CAMADA 3: SearXNG...")
     query_searxng = f"{nome_limpo} {artista_limpo} lyrics"
     letra_searxng = buscar_searxng(query_searxng)
@@ -138,7 +174,7 @@ def buscar_letra_musica(nome_musica, artista):
         return letra_searxng[:5000]
 
     print("[LETRA] Todas as camadas falharam.")
-    return None
+    return ""
 
 
 # ==========================================
@@ -146,17 +182,15 @@ def buscar_letra_musica(nome_musica, artista):
 # ==========================================
 def buscar_contexto_musica(nome_musica, artista):
     """
-    Obtem o significado da musica seguindo:
-      CAMADA 1: Genius API (descricao)
-      CAMADA 2: SearXNG (meaning explanation)
-      CAMADA 3: Wikipedia PT
-      CAMADA 4: OpenRouter (mini-chamada IA)
+    CAMADA 1: Genius API (descricao)
+    CAMADA 2: SearXNG
+    CAMADA 3: Wikipedia PT
+    CAMADA 4: OpenRouter (mini-IA) - com fallback string seguro
     """
     nome_limpo = limpar_termo_musica(nome_musica)
     artista_limpo = limpar_termo_musica(artista) if artista else artista
     termo_busca = f"{nome_limpo} {artista_limpo}"
 
-    # CAMADA 1: Genius
     print("[CONTEXTO] CAMADA 1: Genius...")
     if GENIUS_API_KEY:
         try:
@@ -167,20 +201,20 @@ def buscar_contexto_musica(nome_musica, artista):
                 desc = musica.description
                 if desc:
                     desc_limpa = re.sub(r'<[^>]+>', '', desc)
-                    print("[CONTEXTO] Genius: Descricao encontrada!")
-                    return desc_limpa[:2000]
+                    desc_limpa = re.sub(r'\s+', ' ', desc_limpa).strip()
+                    if desc_limpa:
+                        print("[CONTEXTO] Genius: Descricao encontrada!")
+                        return desc_limpa[:2000]
         except Exception as e:
             print(f"[CONTEXTO] Genius erro: {e}")
 
-    # CAMADA 2: SearXNG
     print("[CONTEXTO] CAMADA 2: SearXNG...")
-    query_searxng = f"{termo_busca} meaning explanation"
+    query_searxng = f"{nome_limpo} {artista_limpo} song meaning explanation"
     ctx_searxng = buscar_searxng(query_searxng)
     if ctx_searxng:
         print("[CONTEXTO] SearXNG: Contexto encontrado!")
         return ctx_searxng[:2000]
 
-    # CAMADA 3: Wikipedia PT
     print("[CONTEXTO] CAMADA 3: Wikipedia PT...")
     try:
         url = f"{URL_WIKIPEDIA_PT}{urllib.parse.quote(termo_busca)}"
@@ -194,7 +228,6 @@ def buscar_contexto_musica(nome_musica, artista):
     except Exception as e:
         print(f"[CONTEXTO] Wikipedia erro: {e}")
 
-    # CAMADA 4: OpenRouter (mini-chamada)
     print("[CONTEXTO] CAMADA 4: OpenRouter (mini-IA)...")
     if OPENROUTER_API_KEY:
         try:
@@ -214,19 +247,21 @@ def buscar_contexto_musica(nome_musica, artista):
             }
             resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=15)
             resp.raise_for_status()
-            texto = resp.json()['choices'][0]['message']['content'].strip()
-            if texto:
-                print("[CONTEXTO] OpenRouter: Contexto gerado via IA!")
-                return texto[:2000]
+            texto = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            if texto and isinstance(texto, str):
+                texto = texto.strip()
+                if texto:
+                    print("[CONTEXTO] OpenRouter: Contexto gerado via IA!")
+                    return texto[:2000]
         except Exception as e:
             print(f"[CONTEXTO] OpenRouter erro: {e}")
 
     print("[CONTEXTO] Todas as camadas falharam.")
-    return None
+    return "Contexto não encontrado."
 
 
 # ==========================================
-# 3. INTELIGENCIA ARTIFICIAL (OpenRouter) - RECOMENDACAO PRINCIPAL
+# 3. INTELIGENCIA ARTIFICIAL - RECOMENDACAO PRINCIPAL
 # ==========================================
 def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
     headers = {
@@ -280,20 +315,29 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
     try:
         resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=25)
         resp.raise_for_status()
-        texto_ia = resp.json()['choices'][0]['message']['content'].strip()
+        texto_ia = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not isinstance(texto_ia, str):
+            return None
         texto_ia = texto_ia.replace("```json", "").replace("```", "").strip()
 
         try:
-            return json.loads(texto_ia)
+            dados = json.loads(texto_ia)
+            if isinstance(dados, dict):
+                dados["filme"] = sanitizar_titulo_filme(dados.get("filme") or dados.get("filme_sugerido", ""))
+                return dados
+            return None
         except json.JSONDecodeError:
             print("[DEBUG] JSON direto falhou. Tentando extrair com regex...")
             print(f"[DEBUG] Texto bruto:\n{texto_ia}")
             match_json = re.search(r'(\{.*\})', texto_ia, re.DOTALL)
             if match_json:
                 try:
-                    return json.loads(match_json.group(0))
+                    dados = json.loads(match_json.group(0))
+                    if isinstance(dados, dict):
+                        dados["filme"] = sanitizar_titulo_filme(dados.get("filme") or dados.get("filme_sugerido", ""))
+                        return dados
                 except json.JSONDecodeError:
-                    print(f"[DEBUG] Regex tambem falhou.")
+                    print("[DEBUG] Regex tambem falhou.")
                     return None
             print("[DEBUG] Nenhum JSON encontrado.")
             return None
@@ -308,8 +352,8 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
 # ==========================================
 def obter_detalhes_filme_tmdb(nome_filme):
     """
-    Busca dados do filme no TMDb.
-    SEM filtro de idioma (language removido) para pegar poster original.
+    Busca dados do filme no TMDb sem filtro de idioma forçado.
+    Prioriza poster original em inglês/internacional, evitando pôsteres com títulos adaptados.
     """
     if not TMDB_API_KEY:
         return None
@@ -317,36 +361,46 @@ def obter_detalhes_filme_tmdb(nome_filme):
     params_busca = {"api_key": TMDB_API_KEY, "query": nome_filme}
     try:
         resp_busca = requests.get(URL_TMDB_BUSCA, params=params_busca, timeout=10)
-        if resp_busca.status_code != 200 or not resp_busca.json().get("results"):
+        if resp_busca.status_code != 200:
+            return None
+        dados_busca = resp_busca.json()
+        if not dados_busca.get("results"):
             return None
 
-        filme_basico = resp_busca.json()["results"][0]
+        filme_basico = dados_busca["results"][0]
         filme_id = filme_basico["id"]
 
-        # Detalhes SEM language filter
         url_detalhes = f"{URL_TMDB_BASE}/{filme_id}"
-        resp_detalhes = requests.get(url_detalhes, params={"api_key": TMDB_API_KEY}, timeout=10).json()
+        resp_detalhes = requests.get(url_detalhes, params={"api_key": TMDB_API_KEY}, timeout=10)
+        detalhes = resp_detalhes.json() if resp_detalhes.status_code == 200 else {}
 
-        # Creditos
         url_creditos = f"{URL_TMDB_BASE}/{filme_id}/credits"
-        resp_creditos = requests.get(url_creditos, params={"api_key": TMDB_API_KEY}, timeout=10).json()
+        resp_creditos = requests.get(url_creditos, params={"api_key": TMDB_API_KEY}, timeout=10)
+        creditos = resp_creditos.json() if resp_creditos.status_code == 200 else {}
         diretor = "Nao encontrado"
-        for pessoa in resp_creditos.get("crew", []):
+        for pessoa in creditos.get("crew", []):
             if pessoa.get("job") == "Director":
                 diretor = pessoa.get("name")
                 break
 
-        # Imagens SEM language filter
         url_imagens = f"{URL_TMDB_BASE}/{filme_id}/images"
-        resp_imagens = requests.get(url_imagens, params={"api_key": TMDB_API_KEY}, timeout=10).json()
+        params_imagens = {"api_key": TMDB_API_KEY, "include_image_language": "en,null"}
+        resp_imagens = requests.get(url_imagens, params=params_imagens, timeout=10)
+        dados_imagens = resp_imagens.json() if resp_imagens.status_code == 200 else {}
 
         cenas = []
-        for backdrop in resp_imagens.get("backdrops", [])[:15]:
-            cenas.append(f"https://image.tmdb.org/t/p/w780{backdrop['file_path']}")
+        for backdrop in dados_imagens.get("backdrops", [])[:15]:
+            if backdrop.get("file_path"):
+                cenas.append(f"https://image.tmdb.org/t/p/w780{backdrop['file_path']}")
 
-        # Poster: prioriza o poster_path do resultado da busca (que ja vem sem filtro de idioma)
         poster_url = None
-        if filme_basico.get('poster_path'):
+        for poster in dados_imagens.get("posters", []):
+            if poster.get("file_path"):
+                lang = (poster.get("iso_639_1") or "").lower()
+                if lang in ("en", "") or lang is None:
+                    poster_url = f"https://image.tmdb.org/t/p/w500{poster['file_path']}"
+                    break
+        if not poster_url and filme_basico.get("poster_path"):
             poster_url = f"https://image.tmdb.org/t/p/w500{filme_basico['poster_path']}"
 
         return {
@@ -357,7 +411,7 @@ def obter_detalhes_filme_tmdb(nome_filme):
             "sinopse": filme_basico.get("overview", "Sem sinopse disponivel."),
             "poster": poster_url,
             "diretor": diretor,
-            "imdb_id": resp_detalhes.get("imdb_id"),
+            "imdb_id": detalhes.get("imdb_id"),
             "cenas": cenas
         }
     except Exception as e:
@@ -365,13 +419,58 @@ def obter_detalhes_filme_tmdb(nome_filme):
         return None
 
 
+def extrair_duas_primeiras_frases(texto):
+    """Extrai apenas as duas primeiras frases de um texto."""
+    if not texto:
+        return ""
+    texto_limpo = re.sub(r'\s+', ' ', texto).strip()
+    frases = [f.strip() for f in re.split(r'(?<=[.!?])\s+', texto_limpo) if f.strip()]
+    if len(frases) >= 2:
+        return f"{frases[0]} {frases[1]}"
+    elif frases:
+        return frases[0]
+    return texto_limpo[:500]
+
+
+def extrair_diretor_wikipedia(extract):
+    """
+    Extrai APENAS o nome do diretor do extract da Wikipedia,
+    eliminando complementos como 'e estrelado por...'.
+    """
+    if not extract:
+        return "Disponível na Wikipédia"
+
+    match = re.search(
+        r'(?:dirigido\s+por|dire[cç][aã]o\s+(?:de\s+)?|diretor[:\s]+)\s+([A-ZÀ-Ú][A-Za-zÀ-Ú0-9\'\-\s]+?)(?=(?:,|\.|\s+e\s+|\s+\(|\s*$))',
+        extract,
+        re.IGNORECASE
+    )
+    if match:
+        nome = match.group(1).strip()
+        nome = re.sub(r'\s+e\s+.*$', '', nome).strip()
+        if len(nome) > 2:
+            return nome
+
+    match_en = re.search(
+        r'(?:directed\s+by|director[:\s]+)\s+([A-Z][A-Za-z0-9\'\-\s]+?)(?=(?:,|\.|\s+and\s+|\s+\(|\s*$))',
+        extract,
+        re.IGNORECASE
+    )
+    if match_en:
+        nome = match_en.group(1).strip()
+        nome = re.sub(r'\s+and\s+.*$', '', nome).strip()
+        if len(nome) > 2:
+            return nome
+
+    return "Disponível na Wikipédia"
+
+
 def buscar_dados_filme_fallback(nome_filme, ano):
     """
     Fallback para dados do filme quando TMDb falha.
-      CAMADA 1: Wikipedia (forcando 'filme' no termo)
-      CAMADA 2: SearXNG (movie plot synopsis)
+    CAMADA 1: Wikipedia (forcando 'filme' no termo)
+    CAMADA 2: SearXNG (movie plot synopsis)
     """
-    # CAMADA 1: Wikipedia PT (com 'filme' no termo)
     print("[FILME FALLBACK] CAMADA 1: Wikipedia PT...")
     try:
         termos = []
@@ -391,20 +490,23 @@ def buscar_dados_filme_fallback(nome_filme, ano):
                     continue
                 extract = dados.get("extract", "")
                 if extract:
-                    diretor = "Disponivel na Wikipedia"
-                    match_dir = re.search(
-                        r'(?:dire[cç][aã]o\s+(?:de\s+)?|diretor[:\s]+|dirigido\s+por\s+)([A-ZÀ-Ú][A-Za-zÀ-Ú\s]+)',
-                        extract, re.IGNORECASE
-                    )
-                    if match_dir:
-                        diretor = match_dir.group(1).strip()
+                    sinopse = extrair_duas_primeiras_frases(extract)
+                    diretor = extrair_diretor_wikipedia(extract)
+                    poster_url = None
+                    originalimage = dados.get("originalimage") or {}
+                    if isinstance(originalimage, dict):
+                        poster_url = originalimage.get("source")
+
                     print("[FILME FALLBACK] Wikipedia: Dados encontrados!")
-                    return {"sinopse": extract[:2000], "diretor": diretor}
+                    return {
+                        "sinopse": sinopse[:2000],
+                        "diretor": diretor,
+                        "poster": poster_url
+                    }
 
     except Exception as e:
         print(f"[FILME FALLBACK] Wikipedia erro: {e}")
 
-    # CAMADA 2: SearXNG
     print("[FILME FALLBACK] CAMADA 2: SearXNG...")
     try:
         query = f"{nome_filme} movie plot synopsis"
@@ -413,7 +515,11 @@ def buscar_dados_filme_fallback(nome_filme, ano):
         resultado = buscar_searxng(query)
         if resultado:
             print("[FILME FALLBACK] SearXNG: Dados encontrados!")
-            return {"sinopse": resultado[:2000], "diretor": "Disponivel na Web"}
+            return {
+                "sinopse": resultado[:2000],
+                "diretor": "Disponível na Web",
+                "poster": None
+            }
     except Exception as e:
         print(f"[FILME FALLBACK] SearXNG erro: {e}")
 
@@ -476,7 +582,10 @@ def main():
             print("Falha ao obter recomendacao da IA. Tente novamente.")
             continue
 
-        nome_filme_ia = recomendacao_ia.get("filme") or recomendacao_ia.get("filme_sugerido", "")
+        # Sanitizacao do titulo do filme (remove ano colado)
+        nome_filme_ia = sanitizar_titulo_filme(
+            recomendacao_ia.get("filme") or recomendacao_ia.get("filme_sugerido", "")
+        )
         ano_filme_ia = recomendacao_ia.get("ano") or recomendacao_ia.get("ano_filme", "")
         justificativa = recomendacao_ia.get("justificativa") or recomendacao_ia.get("justificativa_vibe", "")
 
@@ -502,9 +611,9 @@ def main():
                     "titulo_pt": nome_filme_ia,
                     "titulo_original": nome_filme_ia,
                     "ano": ano_filme_ia if ano_filme_ia else "Nao informado",
-                    "sinopse": fallback["sinopse"],
-                    "poster": None,
-                    "diretor": fallback["diretor"],
+                    "sinopse": fallback.get("sinopse", "Sinopse indisponivel."),
+                    "poster": fallback.get("poster"),
+                    "diretor": fallback.get("diretor", "Nao encontrado"),
                     "imdb_id": None,
                     "cenas": []
                 }
