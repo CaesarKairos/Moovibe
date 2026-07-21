@@ -539,7 +539,19 @@ async function obterDetalhesTMDB(nomeFilme, apiKey) {
   if (!apiKey) return null;
 
   try {
-    const paramsBusca = new URLSearchParams({ api_key: apiKey, query: nomeFilme });
+    // Extrai o ano do nome do filme se existir e usa como parametro separado
+    let nomeLimpo = nomeFilme;
+    let anoExtraido = null;
+    const matchAno = nomeFilme.trim().match(/(?:19|20)\d{2}$/);
+    if (matchAno) {
+      anoExtraido = matchAno[0];
+      nomeLimpo = nomeFilme.trim().slice(0, -5).trim();
+    }
+
+    const paramsBusca = new URLSearchParams({ api_key: apiKey, query: nomeLimpo });
+    if (anoExtraido) {
+      paramsBusca.set('year', anoExtraido);
+    }
     const respBusca = await fetch(`${TMDB_BUSCA_URL}?${paramsBusca}`);
     if (!respBusca.ok) return null;
 

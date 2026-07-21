@@ -393,7 +393,17 @@ def obter_detalhes_filme_tmdb(nome_filme):
     if not TMDB_API_KEY:
         return None
 
-    params_busca = {"api_key": TMDB_API_KEY, "query": nome_filme}
+    # Extrai o ano do nome_filme se existir (ex: "Interstellar 2014") e usa como parametro separado
+    nome_limpo = nome_filme
+    ano_extraido = None
+    match_ano = re.search(r'(?:19|20)\d{2}$', nome_filme.strip())
+    if match_ano:
+        ano_extraido = match_ano.group(0)
+        nome_limpo = nome_filme.strip()[:-5].strip()
+
+    params_busca = {"api_key": TMDB_API_KEY, "query": nome_limpo}
+    if ano_extraido:
+        params_busca["year"] = ano_extraido
     try:
         resp_busca = requests.get(URL_TMDB_BUSCA, params=params_busca, timeout=10)
         if resp_busca.status_code != 200:
