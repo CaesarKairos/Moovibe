@@ -101,8 +101,24 @@ export async function onRequest(context) {
       }
     }
 
-    // ---- 5. BUSCAR CITACOES ----
-    const quotes = await buscarCitacoesFilme(nomeFilme);
+    // Extrai citacoes da resposta da IA (campo 'citacoes')
+    let quotes = recomendacaoIA.citacoes || [];
+    if (!Array.isArray(quotes) || quotes.length < 3) {
+      quotes = [
+        "Cada cena brilha como uma lembranca.",
+        "A musica ecoa na alma do cinema.",
+        "A vibe encontra seu filme."
+      ];
+    }
+    quotes = quotes.slice(0, 3);
+
+    // Se nao houver cenas (backdrops), usa o poster para preencher as 3 polaroids
+    if (dadosFilme && (!dadosFilme.cenas || dadosFilme.cenas.length === 0)) {
+      const poster = dadosFilme.poster;
+      if (poster) {
+        dadosFilme.cenas = [poster, poster, poster];
+      }
+    }
 
     // ---- 6. RESPOSTA ----
     const resposta = {
@@ -463,11 +479,14 @@ CRITICO: Voce DEVE sugerir um filme REAL existente no banco de dados do TMDb. PR
 
 REGRA ABSOLUTA: No campo 'filme', retorne APENAS o nome comercial puro do filme (em ingles ou portugues). E terminantemente PROIBIDO embutir o ano ao lado do nome do filme nesse campo. Por exemplo, retorne 'The Great Gatsby' e NUNCA 'The Great Gatsby 2013'. O ano de lancamento deve habitar estritamente e apenas o campo 'ano' do JSON.
 
+TAREFA EXTRA: Usando a letra da musica fornecida, extraia 3 trechos curtos (cada um entre 15 e 80 caracteres) que melhor capturem a vibe e a conexao emocional com o filme sugerido. Retorne esses trechos no campo 'citacoes' como um array de 3 strings.
+
 Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de formatacao markdown, apenas as chaves brutas). O JSON deve conter as seguintes chaves exatas:
 {
   "filme": "Nome exato do filme (de preferencia o titulo original em ingles ou o mais conhecido, SEM o ano)",
   "ano": "Ano de lancamento do filme sugerido (Apenas os 4 digitos numericos, ex: 2002)",
   "justificativa": "Uma explicacao poetica, profunda e envolvente (em portugues, ate 4 frases) conectando sentimentos da musica/letra com o filme.",
+  "citacoes": ["Trecho 1 da letra que conecta com o filme", "Trecho 2 da letra que conecta com o filme", "Trecho 3 da letra que conecta com o filme"],
   "vibe_title": "Um titulo CURTO e impactante em MAIUSCULAS (2-3 palavras) que capture a vibe, ex: 'OPERATIC CHAOS' ou 'MELANCHOLIC DREAM'",
   "tags": ["Array de 4 tags em MAIUSCULAS descrevendo a vibe, ex: GRANDIOSE, TRAGICOMIC, CATHARTIC, MOSAIC"]
 }`;
@@ -476,7 +495,8 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
   if (letra) {
     conteudoUsuario += `Use a letra da musica para capturar a essencia poetica profunda:\n${letra}\n\n`;
   } else {
-    conteudoUsuario += '(Nao encontramos a letra no banco de dados, baseie-se no tema geral da musica).\n\n';
+    conteudoUsuario += "(Nao encontramos a letra no banco de dados, baseie-se no tema geral da musica).\n";
+    conteudoUsuario += "Como nao temos a letra, gere 3 citacoes genericas sobre cinema ou inspiracao que combinem com o filme.\n\n";
   }
   if (contextoExtra) {
     conteudoUsuario += `Contexto historico, significado e fatos adicionais sobre a musica para te ajudar na escolha:\n${contextoExtra}\n`;
