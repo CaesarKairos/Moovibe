@@ -1,6 +1,7 @@
 /**
  * Moovibe - Frontend Logic
  * Handles SPA navigation, loading states, and dynamic content injection.
+ * Versão com blindagem defensiva total contra payloads parciais.
  */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -31,13 +32,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Core Functions ---
 
     function switchView(targetView) {
-        // Hide all views
         document.querySelectorAll('.view-section').forEach(view => {
             view.classList.remove('active');
         });
-        // Show target
         targetView.classList.add('active');
-        // Scroll to top
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
@@ -52,9 +50,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (messageIndex < loadingMessages.length) {
                 loadingText.textContent = loadingMessages[messageIndex];
             }
-        }, 800); // Change text every 800ms
+        }, 800);
 
-        // Await the real fetch promise
         fetchPromise
             .then(data => {
                 clearInterval(messageInterval);
@@ -70,9 +67,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     /**
-     * Abre o TikTok de forma inteligente:
-     * - Mobile: deep link nativo (tiktok://)
-     * - Desktop: URL web em nova aba
+     * Abre o TikTok de forma inteligente.
      */
     function abrirTikTok(nomeFilme) {
         if (!nomeFilme) return;
@@ -81,80 +76,116 @@ document.addEventListener('DOMContentLoaded', () => {
         const query = encodeURIComponent(nomeFilme + " edit");
         
         if (isMobile) {
-            // Deep link nativo para abrir o app TikTok
             window.location.href = "tiktok://search?keyword=" + query;
         } else {
-            // Desktop: abre em nova aba
             window.open("https://www.tiktok.com/search?q=" + query, "_blank");
         }
     }
 
+    /**
+     * Injeta dados no DOM com blindagem defensiva.
+     * Toda propriedade tem fallback seguro: string vazia, array vazio ou null.
+     */
     function injectResults(data) {
-        // Populate Meta
-        const artistStr = data.artist ? ` - ${data.artist}` : "";
-        document.getElementById('res-search-meta').textContent = `'${data.song}'${artistStr} → detected vibe:`;
-        document.getElementById('res-vibe-title').textContent = data.movie.vibe_title;
-        
+        // Garante que data.movie existe, mesmo que venha parcial
+        const movie = data && data.movie ? data.movie : {};
+        const safeStr = (val) => (val !== null && val !== undefined && typeof val === 'string') ? val : '';
+        const safeArr = (val) => Array.isArray(val) ? val : [];
+
+        // --- Meta ---
+        const song = safeStr(data && data.song);
+        const artist = safeStr(data && data.artist);
+        const artistStr = artist ? ` - ${artist}` : '';
+        const elMeta = document.getElementById('res-search-meta');
+        if (elMeta) elMeta.textContent = `'${song}'${artistStr} → detected vibe:`;
+
+        // Vibe Title
+        const elVibe = document.getElementById('res-vibe-title');
+        if (elVibe) elVibe.textContent = safeStr(movie.vibe_title);
+
         // Tags
+        const tags = safeArr(movie.tags);
         const tagsContainer = document.getElementById('res-vibe-tags');
-        tagsContainer.innerHTML = '';
-        const colors = ['t-red', 't-gold', 't-blue', 't-green'];
-        data.movie.tags.forEach((tag, index) => {
-            const span = document.createElement('span');
-            span.className = `tag ${colors[index % colors.length]}`;
-            span.textContent = tag;
-            tagsContainer.appendChild(span);
-        });
+        if (tagsContainer) {
+            tagsContainer.innerHTML = '';
+            const colors = ['t-red', 't-gold', 't-blue', 't-green'];
+            tags.forEach((tag, index) => {
+                const span = document.createElement('span');
+                span.className = `tag ${colors[index % colors.length]}`;
+                span.textContent = safeStr(tag);
+                tagsContainer.appendChild(span);
+            });
+        }
 
-        // Vibe Report / Details
-        document.getElementById('res-ai-explanation').innerHTML = data.movie.ai_explanation;
-        document.getElementById('res-director').textContent = data.movie.director;
-        document.getElementById('res-release').textContent = data.movie.release_year;
-        document.getElementById('res-original-title').textContent = data.movie.original_title;
+        // --- Vibe Report ---
+        const elExplanation = document.getElementById('res-ai-explanation');
+        if (elExplanation) elExplanation.innerHTML = safeStr(movie.ai_explanation) || '';
+
+        const elDirector = document.getElementById('res-director');
+        if (elDirector) elDirector.textContent = safeStr(movie.director);
+
+        const elRelease = document.getElementById('res-release');
+        if (elRelease) elRelease.textContent = safeStr(movie.release_year);
+
+        const elOrigTitle = document.getElementById('res-original-title');
+        if (elOrigTitle) elOrigTitle.textContent = safeStr(movie.original_title);
         
-        // Poster & Text
-        document.getElementById('res-poster').src = data.movie.poster_url;
-        document.getElementById('res-title').textContent = data.movie.title;
-        document.getElementById('res-synopsis').textContent = data.movie.synopsis;
+        // --- Poster & Text ---
+        const elPoster = document.getElementById('res-poster');
+        if (elPoster) elPoster.src = safeStr(movie.poster_url);
 
-        // Links
-        document.getElementById('res-imdb').href = data.movie.imdb_url;
-        document.getElementById('res-letterboxd').href = data.movie.letterboxd_url;
+        const elTitle = document.getElementById('res-title');
+        if (elTitle) elTitle.textContent = safeStr(movie.title);
 
-        // TikTok: substitui link estático por event listener inteligente
+        const elSynopsis = document.getElementById('res-synopsis');
+        if (elSynopsis) elSynopsis.textContent = safeStr(movie.synopsis);
+
+        // --- Links ---
+        const elImdb = document.getElementById('res-imdb');
+        if (elImdb) elImdb.href = safeStr(movie.imdb_url);
+
+        const elLb = document.getElementById('res-letterboxd');
+        if (elLb) elLb.href = safeStr(movie.letterboxd_url);
+
+        // --- TikTok: event listener inteligente ---
         const tiktokLink = document.getElementById('res-tiktok');
-        const novoTiktokLink = tiktokLink.cloneNode(true);
-        tiktokLink.parentNode.replaceChild(novoTiktokLink, tiktokLink);
-        
-        // Salva o nome ORIGINAL do filme para usar no clique (prioridade: original_title)
-        const nomeFilmeParaTikTok = data.movie.original_title || data.movie.title;
-        
-        novoTiktokLink.addEventListener('click', (e) => {
-            e.preventDefault();
-            abrirTikTok(nomeFilmeParaTikTok);
-        });
+        if (tiktokLink) {
+            const novoTiktokLink = tiktokLink.cloneNode(true);
+            tiktokLink.parentNode.replaceChild(novoTiktokLink, tiktokLink);
 
-        // Stills: itera sobre as 3 polaroids, exibe se existir, oculta se nao
+            const nomeFilmeTikTok = movie.original_title || movie.title || '';
+            novoTiktokLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                abrirTikTok(nomeFilmeTikTok);
+            });
+        }
+
+        // --- Stills: itera sobre as 3 polaroids, oculta se nao houver imagem ---
+        const stills = safeArr(movie.stills);
         const stillIds = ['res-still-1', 'res-still-2', 'res-still-3'];
-        const stills = data.movie.stills || [];
         stillIds.forEach((id, index) => {
             const img = document.getElementById(id);
             const polaroid = img ? img.closest('.polaroid') : null;
-            if (stills[index]) {
-                img.src = stills[index];
-                if (polaroid) polaroid.style.display = '';
-            } else {
-                if (polaroid) polaroid.style.display = 'none';
+            if (polaroid) {
+                if (stills[index]) {
+                    img.src = stills[index];
+                    polaroid.style.display = '';
+                } else {
+                    polaroid.style.display = 'none';
+                }
             }
         });
 
-        // Quotes: injeta citacoes nas polaroids
+        // --- Quotes: injeta citacoes, oculta se vazio ---
+        const quotes = safeArr(movie.quotes);
         const quoteIds = ['res-quote-1', 'res-quote-2', 'res-quote-3'];
-        const quotes = data.movie.quotes || [];
         quoteIds.forEach((id, index) => {
             const el = document.getElementById(id);
             if (el) {
-                el.textContent = quotes[index] || '';
+                const quoteText = quotes[index] ? safeStr(quotes[index]) : '';
+                el.textContent = quoteText;
+                // Oculta o elemento se vazio, exibe se tem conteudo
+                el.style.display = quoteText ? '' : 'none';
             }
         });
     }
@@ -164,13 +195,11 @@ document.addEventListener('DOMContentLoaded', () => {
     searchForm.addEventListener('submit', (e) => {
         e.preventDefault();
         
-        // Capture inputs
         const song = songInput.value.trim();
         const artist = artistInput.value.trim();
 
         if (!song) return;
 
-        // Real fetch to the Cloudflare Pages Function (/recommend)
         const fetchPromise = fetch('/recommend', {
             method: 'POST',
             headers: {
@@ -194,11 +223,10 @@ document.addEventListener('DOMContentLoaded', () => {
         switchView(viewHome);
     });
 
-    // Make suggestion buttons populate the input
     tagButtons.forEach(btn => {
         btn.addEventListener('click', (e) => {
             songInput.value = e.target.textContent;
-            artistInput.value = ''; // clear artist to let AI figure it out
+            artistInput.value = '';
         });
     });
 
