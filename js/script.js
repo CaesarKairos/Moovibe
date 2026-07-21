@@ -133,12 +133,30 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             abrirTikTok(nomeFilmeParaTikTok);
         });
-        // Stills
-        if (data.movie.stills.length >= 3) {
-            document.getElementById('res-still-1').src = data.movie.stills[0];
-            document.getElementById('res-still-2').src = data.movie.stills[1];
-            document.getElementById('res-still-3').src = data.movie.stills[2];
-        }
+
+        // Stills: itera sobre as 3 polaroids, exibe se existir, oculta se nao
+        const stillIds = ['res-still-1', 'res-still-2', 'res-still-3'];
+        const stills = data.movie.stills || [];
+        stillIds.forEach((id, index) => {
+            const img = document.getElementById(id);
+            const polaroid = img ? img.closest('.polaroid') : null;
+            if (stills[index]) {
+                img.src = stills[index];
+                if (polaroid) polaroid.style.display = '';
+            } else {
+                if (polaroid) polaroid.style.display = 'none';
+            }
+        });
+
+        // Quotes: injeta citacoes nas polaroids
+        const quoteIds = ['res-quote-1', 'res-quote-2', 'res-quote-3'];
+        const quotes = data.movie.quotes || [];
+        quoteIds.forEach((id, index) => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.textContent = quotes[index] || '';
+            }
+        });
     }
 
     // --- Event Listeners ---

@@ -124,6 +124,41 @@ def buscar_searxng(query, max_results=3):
 
 
 # ==========================================
+# BUSCA DE CITACOES DO FILME (SearXNG)
+# ==========================================
+def buscar_citacoes_filme(nome_filme):
+    """
+    Busca ate 3 citacoes/frases celebres do filme usando SearXNG.
+    Retorna uma lista de strings ou uma lista com 3 frases genericas se falhar.
+    """
+    try:
+        query = f'"{nome_filme}" movie quotes'
+        resultado = buscar_searxng(query, max_results=5)
+        if resultado:
+            frases = []
+            for linha in resultado.split("\n"):
+                linha = linha.strip()
+                # Tenta extrair trechos entre aspas
+                citacoes = re.findall(r'[""]([^""]{10,80})[""]', linha)
+                for c in citacoes:
+                    c = c.strip()
+                    if len(c) > 15 and c not in frases:
+                        frases.append(c)
+                    if len(frases) >= 3:
+                        break
+                if len(frases) >= 3:
+                    break
+            if len(frases) >= 3:
+                return frases[:3]
+    except Exception as e:
+        print(f"[CITACOES] Erro: {e}")
+
+    return ["Cinema is magic.",
+            "Every film is a journey.",
+            "Lights, camera, action!"]
+
+
+# ==========================================
 # 1. FLUXO DA LETRA DA MUSICA
 # ==========================================
 def buscar_letra_musica(nome_musica, artista):
@@ -629,6 +664,13 @@ def main():
                     "imdb_id": None,
                     "cenas": []
                 }
+
+        # --- BUSCA CITACOES DO FILME ---
+        print()
+        print("=== BUSCANDO CITACOES DO FILME ===")
+        citacoes = buscar_citacoes_filme(nome_filme_ia)
+        if dados_filme:
+            dados_filme["citacoes"] = citacoes
 
         print()
         print("==================================================")

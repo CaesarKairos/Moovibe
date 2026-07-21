@@ -101,7 +101,10 @@ export async function onRequest(context) {
       }
     }
 
-    // ---- 5. RESPOSTA ----
+    // ---- 5. BUSCAR CITACOES ----
+    const quotes = await buscarCitacoesFilme(nomeFilme);
+
+    // ---- 6. RESPOSTA ----
     const resposta = {
       song: nome_musica,
       artist: artista || '',
@@ -113,6 +116,7 @@ export async function onRequest(context) {
         synopsis: dadosFilme?.sinopse || 'Sinopse nao disponivel.',
         poster_url: dadosFilme?.poster || '',
         stills: dadosFilme?.cenas || [],
+        quotes: quotes,
         ai_explanation: `<p>${justificativa}</p>`,
         vibe_title: vibeTitle,
         tags: tags,
@@ -249,6 +253,37 @@ async function buscarSearXNG(query, maxResults = 3) {
     }
   }
   return null;
+}
+
+// ============================================================
+//  BUSCA DE CITACOES DO FILME (SearXNG)
+// ============================================================
+async function buscarCitacoesFilme(nomeFilme) {
+  try {
+    const query = `"${nomeFilme}" movie quotes`;
+    const resultado = await buscarSearXNG(query, 5);
+    if (resultado) {
+      const frases = [];
+      for (const linha of resultado.split('\n')) {
+        // Procura por trechos entre aspas simples ou duplas
+        const citacoes = linha.match(/"([^"]{10,80})"/g);
+        if (citacoes) {
+          for (const c of citacoes) {
+            const limpa = c.replace(/"/g, '').trim();
+            if (limpa.length > 15 && !frases.includes(limpa)) {
+              frases.push(limpa);
+            }
+            if (frases.length >= 3) break;
+          }
+        }
+        if (frases.length >= 3) break;
+      }
+      if (frases.length >= 3) return frases.slice(0, 3);
+    }
+  } catch (err) {
+    console.error('[CITACOES] Erro:', err);
+  }
+  return ['Cinema is magic.', 'Every film is a journey.', 'Lights, camera, action!'];
 }
 
 // ============================================================
