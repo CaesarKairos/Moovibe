@@ -103,12 +103,14 @@ export async function onRequest(context) {
 
     // Extrai citacoes da resposta da IA (campo 'citacoes')
     let quotes = recomendacaoIA.citacoes || [];
+    const QUOTES_PADRAO = ["Cada cena brilha como uma lembranca.", "A musica ecoa na alma do cinema.", "A vibe encontra seu filme."];
+    const isQuotesPadrao = !Array.isArray(quotes) || quotes.length < 3 || JSON.stringify(quotes.slice(0, 3)) === JSON.stringify(QUOTES_PADRAO);
     if (!Array.isArray(quotes) || quotes.length < 3) {
-      quotes = [
-        "Cada cena brilha como uma lembranca.",
-        "A musica ecoa na alma do cinema.",
-        "A vibe encontra seu filme."
-      ];
+      quotes = [...QUOTES_PADRAO];
+    }
+    // Tenta usar tagline do TMDb como fallback se as quotes sao genericas
+    if (isQuotesPadrao && dadosFilme && dadosFilme.tagline) {
+      quotes = [dadosFilme.tagline, quotes[1], quotes[2]];
     }
     quotes = quotes.slice(0, 3);
 
@@ -576,7 +578,7 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
     // Usa APENAS o nome limpo do filme na query; ano e passado separadamente
     let nomeLimpo = nomeFilme;
 
-    const paramsBusca = new URLSearchParams({ api_key: apiKey, query: nomeLimpo });
+    const paramsBusca = new URLSearchParams({ api_key: apiKey, query: nomeLimpo, language: 'pt-BR' });
     if (ano) {
       paramsBusca.set('primary_release_year', ano);
     }
@@ -590,12 +592,12 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
     const filmeBasico = filmes[0];
     const filmeId = filmeBasico.id;
 
-    const paramsDetalhes = new URLSearchParams({ api_key: apiKey });
+    const paramsDetalhes = new URLSearchParams({ api_key: apiKey, language: 'pt-BR' });
     const respDetalhes = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}?${paramsDetalhes}`);
     const detalhes = respDetalhes.ok ? await respDetalhes.json() : {};
 
     let diretor = 'Nao encontrado';
-    const respCreditos = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}/credits?api_key=${apiKey}`);
+    const respCreditos = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}/credits?api_key=${apiKey}&language=pt-BR`);
     if (respCreditos.ok) {
       const creditos = await respCreditos.json();
       for (const pessoa of (creditos?.crew || [])) {
@@ -634,6 +636,9 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
       posterUrl = `https://image.tmdb.org/t/p/w500${filmeBasico.poster_path}`;
     }
 
+    // Busca tagline do TMDb para usar como fallback de citacoes
+    const tagline = (detalhes && typeof detalhes === 'object' && detalhes.tagline) ? detalhes.tagline.trim() : '';
+
     return {
       id_tmdb: filmeId,
       titulo_pt: filmeBasico.title,
@@ -644,6 +649,7 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
       diretor: diretor,
       imdb_id: detalhes?.imdb_id || null,
       cenas: cenas,
+      tagline: tagline,
     };
   } catch (err) {
     console.error('[TMDB] Erro:', err);

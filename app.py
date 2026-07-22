@@ -448,7 +448,7 @@ def obter_detalhes_filme_tmdb(nome_filme, ano=None):
     # Usa APENAS o nome limpo do filme na query; ano e passado separadamente
     nome_limpo = nome_filme
 
-    params_busca = {"api_key": TMDB_API_KEY, "query": nome_limpo}
+    params_busca = {"api_key": TMDB_API_KEY, "query": nome_limpo, "language": "pt-BR"}
     if ano:
         params_busca["primary_release_year"] = ano
     try:
@@ -468,11 +468,11 @@ def obter_detalhes_filme_tmdb(nome_filme, ano=None):
         print(f"    Data: {filme_basico.get('release_date')}")
 
         url_detalhes = f"{URL_TMDB_BASE}/{filme_id}"
-        resp_detalhes = requests.get(url_detalhes, params={"api_key": TMDB_API_KEY}, timeout=10)
+        resp_detalhes = requests.get(url_detalhes, params={"api_key": TMDB_API_KEY, "language": "pt-BR"}, timeout=10)
         detalhes = resp_detalhes.json() if resp_detalhes.status_code == 200 else {}
 
         url_creditos = f"{URL_TMDB_BASE}/{filme_id}/credits"
-        resp_creditos = requests.get(url_creditos, params={"api_key": TMDB_API_KEY}, timeout=10)
+        resp_creditos = requests.get(url_creditos, params={"api_key": TMDB_API_KEY, "language": "pt-BR"}, timeout=10)
         creditos = resp_creditos.json() if resp_creditos.status_code == 200 else {}
         diretor = "Nao encontrado"
         for pessoa in creditos.get("crew", []):
@@ -779,12 +779,19 @@ def main():
         print()
         print("=== BUSCANDO CITACOES DO FILME ===")
         citacoes = buscar_citacoes_filme(nome_filme_ia)
-        # Se SearXNG falhou em obter 3 citacoes, tenta usar a tagline do TMDb como fallback
-        if len(citacoes) < 3 and dados_filme and dados_filme.get("tagline"):
+        # Detecta se o fallback generico foi usado (frases padrao)
+        CITACOES_PADRAO = ["Cinema is magic.", "Every film is a journey.", "Lights, camera, action!"]
+        is_fallback_padrao = (citacoes == CITACOES_PADRAO)
+        # Se SearXNG falhou (fallback padrao) ou retornou menos de 3, tenta usar a tagline do TMDb
+        if (is_fallback_padrao or len(citacoes) < 3) and dados_filme and dados_filme.get("tagline"):
             tagline = dados_filme["tagline"].strip()
-            if tagline and tagline not in citacoes:
-                citacoes.insert(0, tagline)
-                citacoes = citacoes[:3]
+            if tagline:
+                # Se for fallback padrao, substitui a primeira citacao pela tagline
+                if is_fallback_padrao:
+                    citacoes = [tagline, citacoes[1], citacoes[2]]
+                elif tagline not in citacoes:
+                    citacoes.insert(0, tagline)
+                    citacoes = citacoes[:3]
         if dados_filme:
             dados_filme["citacoes"] = citacoes
 
