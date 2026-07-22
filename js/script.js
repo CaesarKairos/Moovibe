@@ -176,16 +176,18 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        // --- Quotes: injeta citacoes, oculta se vazio ---
+        // --- Quotes: injeta citacoes, fallback para titulo do filme se vazio ---
         const quotes = safeArr(movie.quotes);
         const quoteIds = ['res-quote-1', 'res-quote-2', 'res-quote-3'];
+        const movieTitle = safeStr(movie.title);
         quoteIds.forEach((id, index) => {
             const el = document.getElementById(id);
             if (el) {
                 const quoteText = quotes[index] ? safeStr(quotes[index]) : '';
-                el.textContent = quoteText;
+                // Se nao ha citacao, usa o titulo do filme como fallback
+                el.textContent = quoteText || movieTitle;
                 // Oculta o elemento se vazio, exibe se tem conteudo
-                el.style.display = quoteText ? '' : 'none';
+                el.style.display = (quoteText || movieTitle) ? '' : 'none';
             }
         });
     }

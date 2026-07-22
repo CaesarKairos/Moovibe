@@ -69,7 +69,7 @@ export async function onRequest(context) {
     // ---- 4. DADOS DO FILME (TMDb → Wikipedia → SearXNG) ----
     let dadosFilme = null;
     if (env.TMDB_API_KEY) {
-      dadosFilme = await obterDetalhesTMDB(nomeFilme, env.TMDB_API_KEY);
+      dadosFilme = await obterDetalhesTMDB(nomeFilme, env.TMDB_API_KEY, anoFilme);
     }
 
     if (!dadosFilme || !dadosFilme.sinopse || dadosFilme.sinopse === 'Sem sinopse disponivel.') {
@@ -452,7 +452,14 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
       });
       if (resp.ok) {
         const dados = await resp.json();
-        const texto = dados?.choices?.[0]?.message?.content?.trim();
+        // Tratamento defensivo contra NoneType/choices=null
+        let texto = "";
+        if (dados && typeof dados === 'object') {
+          const choices = dados.choices;
+          if (choices && Array.isArray(choices) && choices.length > 0 && choices[0]) {
+            texto = choices[0].message?.content?.trim() || "";
+          }
+        }
         if (texto) {
           console.log('[CONTEXTO] OpenRouter: Contexto gerado via IA!');
           return texto.substring(0, 2000);
@@ -525,7 +532,14 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
     }
 
     const dados = await resp.json();
-    let textoIA = dados?.choices?.[0]?.message?.content?.trim();
+    // Tratamento defensivo contra NoneType/choices=null
+    let textoIA = "";
+    if (dados && typeof dados === 'object') {
+      const choices = dados.choices;
+      if (choices && Array.isArray(choices) && choices.length > 0 && choices[0]) {
+        textoIA = choices[0].message?.content?.trim() || "";
+      }
+    }
     if (!textoIA) return null;
 
     textoIA = textoIA.replace(/```json/g, '').replace(/```/g, '').trim();
@@ -555,22 +569,16 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
 // ============================================================
 //  4. DADOS DO FILME — TMDb (sem language filter)
 // ============================================================
-async function obterDetalhesTMDB(nomeFilme, apiKey) {
+async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
   if (!apiKey) return null;
 
   try {
-    // Extrai o ano do nome do filme se existir e usa como parametro separado
+    // Usa APENAS o nome limpo do filme na query; ano e passado separadamente
     let nomeLimpo = nomeFilme;
-    let anoExtraido = null;
-    const matchAno = nomeFilme.trim().match(/(?:19|20)\d{2}$/);
-    if (matchAno) {
-      anoExtraido = matchAno[0];
-      nomeLimpo = nomeFilme.trim().slice(0, -5).trim();
-    }
 
     const paramsBusca = new URLSearchParams({ api_key: apiKey, query: nomeLimpo });
-    if (anoExtraido) {
-      paramsBusca.set('year', anoExtraido);
+    if (ano) {
+      paramsBusca.set('primary_release_year', ano);
     }
     const respBusca = await fetch(`${TMDB_BUSCA_URL}?${paramsBusca}`);
     if (!respBusca.ok) return null;

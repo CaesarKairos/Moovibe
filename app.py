@@ -3,6 +3,7 @@ import json
 import re
 import requests
 import urllib.parse
+import time
 from dotenv import load_dotenv
 
 import lyricsgenius
@@ -280,9 +281,28 @@ def buscar_contexto_musica(nome_musica, artista):
                 "max_tokens": 300,
                 "messages": [{"role": "user", "content": prompt}]
             }
+
+            # === LOGS OPENROUTER CONTEXTO ===
+            print("\n=== [DEBUG] ENVIO OPENROUTER (CONTEXTO) ===")
+            print(f"Prompt: {prompt}")
+            tempo_inicio = time.time()
             resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=15)
+            tempo_resposta = round(time.time() - tempo_inicio, 2)
+            print(f"Status: {resp.status_code} | Tempo: {tempo_resposta}s")
+
             resp.raise_for_status()
-            texto = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            dados_resp = resp.json()
+            # Tratamento defensivo contra NoneType
+            if isinstance(dados_resp, dict):
+                choices = dados_resp.get("choices")
+                if choices and isinstance(choices, list) and len(choices) > 0 and choices[0]:
+                    texto = choices[0].get("message", {}).get("content", "")
+                else:
+                    texto = ""
+            else:
+                texto = ""
+            print(f"Resposta Bruta: {texto[:300]}...")
+
             if texto and isinstance(texto, str):
                 texto = texto.strip()
                 if texto:
@@ -348,31 +368,62 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
     }
 
     try:
+        # === LOGS OPENROUTER ===
+        print("\n=== [DEBUG] ENVIO PARA OPENROUTER ===")
+        print(f"Modelo: {payload['model']}")
+        print("Prompt Sistema:")
+        print(prompt_sistema)
+        print("\nConteudo Usuario:")
+        print(conteudo_usuario[:500] + ("..." if len(conteudo_usuario) > 500 else ""))
+
+        tempo_inicio = time.time()
         resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=25)
+        tempo_resposta = round(time.time() - tempo_inicio, 2)
+
+        print(f"\n=== [DEBUG] RESPOSTA OPENROUTER ===")
+        print(f"Status Code: {resp.status_code}")
+        print(f"Tempo: {tempo_resposta}s")
+
         resp.raise_for_status()
-        texto_ia = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+        dados_resp_ia = resp.json()
+        # Tratamento defensivo contra NoneType
+        if isinstance(dados_resp_ia, dict):
+            choices = dados_resp_ia.get("choices")
+            if choices and isinstance(choices, list) and len(choices) > 0 and choices[0]:
+                texto_ia = choices[0].get("message", {}).get("content", "")
+            else:
+                texto_ia = ""
+        else:
+            texto_ia = ""
+        print(f"Resposta Bruta (raw):\n{texto_ia}\n")
+
         if not isinstance(texto_ia, str):
+            print("[DEBUG] Resposta nao e string.")
             return None
         texto_ia = texto_ia.replace("```json", "").replace("```", "").strip()
 
         try:
             dados = json.loads(texto_ia)
+            print("=== [DEBUG] JSON PARSEADO COM SUCESSO ===")
+            print(json.dumps(dados, indent=2, ensure_ascii=False))
             if isinstance(dados, dict):
                 dados["filme"] = sanitizar_titulo_filme(dados.get("filme") or dados.get("filme_sugerido", ""))
                 return dados
             return None
-        except json.JSONDecodeError:
-            print("[DEBUG] JSON direto falhou. Tentando extrair com regex...")
-            print(f"[DEBUG] Texto bruto:\n{texto_ia}")
+        except json.JSONDecodeError as e:
+            print(f"[DEBUG] JSONDecodeError: {e}")
+            print(f"[DEBUG] Texto bruto apos limpeza:\n{texto_ia}")
             match_json = re.search(r'(\{.*\})', texto_ia, re.DOTALL)
             if match_json:
                 try:
                     dados = json.loads(match_json.group(0))
+                    print("=== [DEBUG] JSON EXTRAIDO VIA REGEX ===")
+                    print(json.dumps(dados, indent=2, ensure_ascii=False))
                     if isinstance(dados, dict):
                         dados["filme"] = sanitizar_titulo_filme(dados.get("filme") or dados.get("filme_sugerido", ""))
                         return dados
-                except json.JSONDecodeError:
-                    print("[DEBUG] Regex tambem falhou.")
+                except json.JSONDecodeError as e2:
+                    print(f"[DEBUG] Regex JSON falhou: {e2}")
                     return None
             print("[DEBUG] Nenhum JSON encontrado.")
             return None
@@ -385,25 +436,21 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
 # ==========================================
 # 4. DADOS DO FILME (TMDb + Fallbacks)
 # ==========================================
-def obter_detalhes_filme_tmdb(nome_filme):
+def obter_detalhes_filme_tmdb(nome_filme, ano=None):
     """
     Busca dados do filme no TMDb sem filtro de idioma forçado.
     Prioriza poster original em inglês/internacional, evitando pôsteres com títulos adaptados.
+    O parametro 'ano' e opcional e passado separadamente como 'primary_release_year'.
     """
     if not TMDB_API_KEY:
         return None
 
-    # Extrai o ano do nome_filme se existir (ex: "Interstellar 2014") e usa como parametro separado
+    # Usa APENAS o nome limpo do filme na query; ano e passado separadamente
     nome_limpo = nome_filme
-    ano_extraido = None
-    match_ano = re.search(r'(?:19|20)\d{2}$', nome_filme.strip())
-    if match_ano:
-        ano_extraido = match_ano.group(0)
-        nome_limpo = nome_filme.strip()[:-5].strip()
 
     params_busca = {"api_key": TMDB_API_KEY, "query": nome_limpo}
-    if ano_extraido:
-        params_busca["year"] = ano_extraido
+    if ano:
+        params_busca["primary_release_year"] = ano
     try:
         resp_busca = requests.get(URL_TMDB_BUSCA, params=params_busca, timeout=10)
         if resp_busca.status_code != 200:
@@ -414,6 +461,11 @@ def obter_detalhes_filme_tmdb(nome_filme):
 
         filme_basico = dados_busca["results"][0]
         filme_id = filme_basico["id"]
+
+        print(f">>> [TMDB] FILME ENCONTRADO:")
+        print(f"    ID: {filme_id}")
+        print(f"    Titulo: {filme_basico.get('title')} ({filme_basico.get('original_title')})")
+        print(f"    Data: {filme_basico.get('release_date')}")
 
         url_detalhes = f"{URL_TMDB_BASE}/{filme_id}"
         resp_detalhes = requests.get(url_detalhes, params={"api_key": TMDB_API_KEY}, timeout=10)
@@ -448,6 +500,32 @@ def obter_detalhes_filme_tmdb(nome_filme):
         if not poster_url and filme_basico.get("poster_path"):
             poster_url = f"https://image.tmdb.org/t/p/w500{filme_basico['poster_path']}"
 
+        # === LOGS TMDb ===
+        print(f"\n>>> [TMDB] DETALHES DO FILME:")
+        print(f"    ID: {filme_id}")
+        print(f"    Posters encontrados: {len(dados_imagens.get('posters', []))}")
+        print(f"    Backdrops encontrados: {len(dados_imagens.get('backdrops', []))}")
+        print(f"    Membros da equipe: {len(creditos.get('crew', []))}")
+        print(f"    Diretor extraido: {diretor}")
+        if cenas:
+            print(f"\n    URLs das 3 primeiras cenas:")
+            for i, cena in enumerate(cenas[:3], 1):
+                print(f"      Cena {i}: {cena}")
+        if poster_url:
+            print(f"\n    Poster URL: {poster_url}")
+        else:
+            print(f"\n    [ALERTA] Nenhum poster encontrado!")
+        sinopse_tmdb = filme_basico.get("overview", "")
+        if not sinopse_tmdb or sinopse_tmdb == "Sem sinopse disponivel.":
+            print(f"    [ALERTA] Sinopse vazia ou indisponivel!")
+        else:
+            print(f"    Sinopse: {sinopse_tmdb[:100]}...")
+
+        # Busca tagline do TMDb para usar como fallback de citacoes
+        tagline = detalhes.get("tagline") if isinstance(detalhes, dict) else None
+        if tagline and isinstance(tagline, str):
+            tagline = tagline.strip()
+
         return {
             "id_tmdb": filme_id,
             "titulo_pt": filme_basico.get("title"),
@@ -457,7 +535,8 @@ def obter_detalhes_filme_tmdb(nome_filme):
             "poster": poster_url,
             "diretor": diretor,
             "imdb_id": detalhes.get("imdb_id"),
-            "cenas": cenas
+            "cenas": cenas,
+            "tagline": tagline or ""
         }
     except Exception as e:
         print(f"Erro ao consultar o TMDb: {e}")
@@ -526,12 +605,14 @@ def buscar_dados_filme_fallback(nome_filme, ano):
         termos.append(nome_filme)
 
         for termo in termos:
+            print(f"[FALLBACK] Query Wikipedia: {termo}")
             url = f"{URL_WIKIPEDIA_PT}{urllib.parse.quote(termo)}"
             headers = {"User-Agent": "Moovibe/1.0 (movie recommendation app)"}
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200:
                 dados = resp.json()
                 if dados.get("type") == "disambiguation":
+                    print(f"[FALLBACK] Wikipedia: disambiguation encontrado para '{termo}'")
                     continue
                 extract = dados.get("extract", "")
                 if extract:
@@ -542,7 +623,11 @@ def buscar_dados_filme_fallback(nome_filme, ano):
                     if isinstance(originalimage, dict):
                         poster_url = originalimage.get("source")
 
-                    print("[FILME FALLBACK] Wikipedia: Dados encontrados!")
+                    print(f"[FALLBACK ATIVADO: Wikipedia PT]")
+                    print(f"  Termo: {termo}")
+                    print(f"  Sinopse extraida: {sinopse[:150]}...")
+                    print(f"  Diretor: {diretor}")
+                    print(f"  Poster: {poster_url}")
                     return {
                         "sinopse": sinopse[:2000],
                         "diretor": diretor,
@@ -557,9 +642,12 @@ def buscar_dados_filme_fallback(nome_filme, ano):
         query = f"{nome_filme} movie plot synopsis"
         if ano:
             query = f"{nome_filme} {ano} movie plot synopsis"
+        print(f"[FALLBACK] Query SearXNG: {query}")
         resultado = buscar_searxng(query)
         if resultado:
-            print("[FILME FALLBACK] SearXNG: Dados encontrados!")
+            print(f"[FALLBACK ATIVADO: SearXNG]")
+            print(f"  Resultado bruto: {resultado[:300]}...")
+            print(f"  Citacoes extraidas: 3")
             return {
                 "sinopse": resultado[:2000],
                 "diretor": "Disponível na Web",
@@ -586,6 +674,19 @@ def main():
         return
     if not TMDB_API_KEY:
         print("[AVISO] TMDB_API_KEY nao configurada. O app funcionara apenas com recomendacoes de texto.")
+
+    # ---- LOGS DE VARIAVEIS DE AMBIENTE ----
+    print("\n[DEBUG] VARIAVEIS DE AMBIENTE:")
+    env_vars = {
+        "OPENROUTER_API_KEY": OPENROUTER_API_KEY,
+        "TMDB_API_KEY": TMDB_API_KEY,
+        "GENIUS_API_KEY": GENIUS_API_KEY,
+        "GOOGLE_SEARCH_API_KEY": os.getenv("GOOGLE_SEARCH_API_KEY"),
+        "GOOGLE_CSE_CX": os.getenv("GOOGLE_CSE_CX"),
+    }
+    for key, val in env_vars.items():
+        status = "[OK]" if val else "[NAO CONFIGURADO]"
+        print(f"  {status} {key}")
 
     while True:
         print()
@@ -633,6 +734,8 @@ def main():
         )
         ano_filme_ia = recomendacao_ia.get("ano") or recomendacao_ia.get("ano_filme", "")
         justificativa = recomendacao_ia.get("justificativa") or recomendacao_ia.get("justificativa_vibe", "")
+        vibe_title = recomendacao_ia.get("vibe_title") or "CINEMATIC VIBE"
+        tags = recomendacao_ia.get("tags") or []
 
         if not nome_filme_ia:
             print("IA nao retornou um nome de filme valido. Tente novamente.")
@@ -640,15 +743,12 @@ def main():
 
         print()
         print("=== BUSCANDO DADOS DO FILME ===")
-        termo_busca_tmdb = nome_filme_ia
-        if ano_filme_ia:
-            termo_busca_tmdb = f"{nome_filme_ia} {ano_filme_ia}"
-
-        print(f"TMDb: '{termo_busca_tmdb}'...")
-        dados_filme = obter_detalhes_filme_tmdb(termo_busca_tmdb)
+        # Passa APENAS o nome limpo do filme, sem ano concatenado
+        print(f"TMDb: '{nome_filme_ia}' (ano separado: '{ano_filme_ia}')...")
+        dados_filme = obter_detalhes_filme_tmdb(nome_filme_ia, ano_filme_ia)
 
         if not dados_filme or not dados_filme.get("sinopse") or dados_filme["sinopse"] in ("Sem sinopse disponivel.", ""):
-            print("TMDb sem resultados. Buscando fallbacks...")
+            print("[FALLBACK ATIVADO: TMDb falhou, usando fallback]")
             fallback = buscar_dados_filme_fallback(nome_filme_ia, ano_filme_ia)
             if fallback:
                 dados_filme = {
@@ -679,6 +779,12 @@ def main():
         print()
         print("=== BUSCANDO CITACOES DO FILME ===")
         citacoes = buscar_citacoes_filme(nome_filme_ia)
+        # Se SearXNG falhou em obter 3 citacoes, tenta usar a tagline do TMDb como fallback
+        if len(citacoes) < 3 and dados_filme and dados_filme.get("tagline"):
+            tagline = dados_filme["tagline"].strip()
+            if tagline and tagline not in citacoes:
+                citacoes.insert(0, tagline)
+                citacoes = citacoes[:3]
         if dados_filme:
             dados_filme["citacoes"] = citacoes
 
@@ -726,6 +832,34 @@ def main():
         tiktok_query = urllib.parse.quote(f"{nome_filme_ia} edit")
         print(f"TikTok (Navegador): https://www.tiktok.com/search?q={tiktok_query}")
         print(f"TikTok (Abrir direto no App): tiktok://search?keyword={tiktok_query}")
+
+        # === PAYLOAD FINAL CONSOLIDADO ===
+        payload_final = {
+            "song": nome_musica,
+            "artist": artista,
+            "movie": {
+                "title": dados_filme.get("titulo_pt") if dados_filme else nome_filme_ia,
+                "original_title": dados_filme.get("titulo_original") if dados_filme else nome_filme_ia,
+                "release_year": dados_filme.get("ano") if dados_filme else "Nao informado",
+                "director": dados_filme.get("diretor") if dados_filme else "Nao encontrado",
+                "synopsis": dados_filme.get("sinopse") if dados_filme else "Sinopse indisponivel.",
+                "poster_url": dados_filme.get("poster") if dados_filme else None,
+                "stills": dados_filme.get("cenas", []) if dados_filme else [],
+                "quotes": dados_filme.get("citacoes", []) if dados_filme else [],
+                "ai_explanation": f"<p>{justificativa}</p>",
+                "vibe_title": vibe_title if 'vibe_title' in locals() else "CINEMATIC INTROSPECTION",
+                "tags": tags if 'tags' in locals() else [],
+                "imdb_url": f"https://www.imdb.com/title/{dados_filme['imdb_id']}/" if (dados_filme and dados_filme.get("imdb_id")) else f"https://www.imdb.com/find?q={urllib.parse.quote(nome_filme_ia)}",
+                "letterboxd_url": f"https://letterboxd.com/tmdb/{dados_filme['id_tmdb']}" if (dados_filme and dados_filme.get("id_tmdb")) else f"https://letterboxd.com/search/{urllib.parse.quote(nome_filme_ia)}/",
+                "tiktok_url": f"https://www.tiktok.com/search?q={tiktok_query}",
+            }
+        }
+        print("\n" + "="*60)
+        print(">>> [PAYLOAD FINAL CONSOLIDADO]")
+        print("="*60)
+        print(json.dumps(payload_final, indent=2, ensure_ascii=False))
+        print("="*60)
+
         print("==================================================")
 
 if __name__ == "__main__":

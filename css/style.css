@@ -485,6 +485,11 @@ h1, h2, h3, h4, .font-display {
     gap: 2rem;
 }
 
+.still-card {
+    display: flex;
+    flex-direction: column;
+}
+
 .polaroid-quote {
     font-family: var(--font-body);
     font-style: italic;
