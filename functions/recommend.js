@@ -2,9 +2,9 @@
  * Moovibe - Cloudflare Pages Function
  * 
  * Responde em POST /recommend com orquestração completa:
- *   Letra: LRCLIB → Genius → SearXNG (com rotação)
- *   Contexto: Genius → SearXNG → Wikipedia → OpenRouter (mini-IA)
- *   Filme: TMDb → Wikipedia (poster, diretor limpo, 2 frases) → SearXNG
+ *   Letra: LRCLIB → Genius → Brave Search
+ *   Contexto: Genius → Brave Search → Wikipedia → OpenRouter (mini-IA)
+ *   Filme: TMDb → Wikipedia → Brave Search
  */
 
 const LRCLIB_URL = 'https://lrclib.net/api/search';
@@ -12,13 +12,6 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
 const WIKIPEDIA_PT_API = 'https://pt.wikipedia.org/api/rest_v1/page/summary/';
 const WIKIPEDIA_EN_API = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
-
-// Instancias SearXNG para rotacao
-const INSTANCIAS_SEARXNG = [
-  'https://search.disroot.org/search',
-  'https://searx.be/search',
-  'https://searx.space/search',
-];
 
 // ============================================================
 //  HANDLER PRINCIPAL
@@ -38,10 +31,10 @@ export async function onRequest(context) {
       return jsonResponse({ error: 'nome_musica is required' }, 400);
     }
 
-    // ---- 1. LETRA (LRCLIB → Genius → SearXNG) ----
+    // ---- 1. LETRA (LRCLIB → Genius → Brave Search) ----
     const letra = await buscarLetraMusica(nome_musica, artista, env);
 
-    // ---- 2. CONTEXTO (Genius → SearXNG → Wikipedia → OpenRouter mini-IA) ----
+    // ---- 2. CONTEXTO (Genius → Brave Search → Wikipedia → OpenRouter mini-IA) ----
     const contextoExtra = await buscarContextoMusica(nome_musica, artista, env);
 
     // ---- 3. RECOMENDAÇÃO IA ----
@@ -66,7 +59,7 @@ export async function onRequest(context) {
       return jsonResponse({ error: 'IA nao retornou um nome de filme valido' }, 500);
     }
 
-    // ---- 4. DADOS DO FILME (TMDb → Wikipedia → SearXNG) ----
+    // ---- 4. DADOS DO FILME (TMDb → Wikipedia → Brave Search) ----
     let dadosFilme = null;
     if (env.TMDB_API_KEY) {
       dadosFilme = await obterDetalhesTMDB(nomeFilme, env.TMDB_API_KEY, anoFilme);
@@ -224,70 +217,57 @@ function extrairDiretorWikipedia(extract) {
 }
 
 // ============================================================
-//  BUSCA GENERICA: SearXNG (COM ROTACAO E VALIDACAO)
+//  BUSCA GENERICA: Brave Search
 // ============================================================
-async function buscarSearXNG(query, maxResults = 3) {
-  for (const instancia of INSTANCIAS_SEARXNG) {
-    try {
-      const params = new URLSearchParams({
-        q: query,
-        format: 'json',
-        language: 'en',
-        categories: 'general',
-      });
-      const url = `${instancia}?${params}`;
-      const resp = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Moovibe/1.0)' },
-      });
-
-      const contentType = (resp.headers.get('Content-Type') || '').toLowerCase();
-      if (!resp.ok) {
-        console.log(`[SEARXNG] Instancia ${instancia} falhou (status ${resp.status}, type ${contentType}).`);
-        continue;
-      }
-
-      if (!contentType.includes('application/json')) {
-        const texto = await resp.text();
-        console.log(`[SEARXNG] Instancia ${instancia} retornou ${contentType || 'sem content-type'}: ${texto.substring(0, 200)}`);
-        continue;
-      }
-
-      const dados = await resp.json();
-      const resultados = dados?.results || [];
-      if (resultados.length === 0) continue;
-
-      const snippets = [];
-      for (const r of resultados.slice(0, maxResults)) {
-        const snippet = r.content || r.title || r.snippet || '';
-        if (snippet) snippets.push(snippet);
-      }
-      if (snippets.length > 0) {
-        console.log(`[SEARXNG] Instancia ${instancia} OK!`);
-        return snippets.join('\n\n').substring(0, 3000);
-      }
-    } catch (err) {
-      console.log(`[SEARXNG] Instancia ${instancia} erro: ${err.message}.`);
-      continue;
+async function buscarBrave(query) {
+  try {
+    const url = `https://search.brave.com/search?q=${encodeURIComponent(query)}`;
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+    });
+    if (!resp.ok) {
+      console.log(`[BRAVE] Status ${resp.status}`);
+      return null;
     }
+
+    const html = await resp.text();
+    // Remove blocos <script> e <style> primeiro
+    let texto = html.replace(/<script[^>]*>.*?<\/script>/gi, '');
+    texto = texto.replace(/<style[^>]*>.*?<\/style>/gi, '');
+    // Remove tags HTML restantes
+    texto = texto.replace(/<[^>]+>/g, '');
+    // Limpa espacos duplicados
+    texto = texto.replace(/\s+/g, ' ').trim();
+    // Trunca para evitar excesso
+    texto = texto.substring(0, 5000);
+    if (texto) {
+      console.log(`[BRAVE] OK! ${texto.length} chars obtidos.`);
+      return texto;
+    }
+    return null;
+  } catch (err) {
+    console.error('[BRAVE] Erro:', err);
+    return null;
   }
-  return null;
 }
 
 // ============================================================
-//  BUSCA DE CITACOES DO FILME (SearXNG)
+//  BUSCA DE CITACOES DO FILME (Brave Search)
 // ============================================================
 async function buscarCitacoesFilme(nomeFilme) {
   try {
-    const query = `"${nomeFilme}" movie quotes`;
-    const resultado = await buscarSearXNG(query, 5);
+    const query = `"${nomeFilme}" movie quotes memorable lines`;
+    const resultado = await buscarBrave(query);
     if (resultado) {
       const frases = [];
       for (const linha of resultado.split('\n')) {
-        // Procura por trechos entre aspas simples ou duplas
-        const citacoes = linha.match(/"([^"]{10,80})"/g);
+        // Procura por trechos entre aspas (normais e tipograficas)
+        const citacoes = linha.match(/["""\u201C\u201D]([^""\u201C\u201D]{10,80})["""\u201C\u201D]/g);
         if (citacoes) {
           for (const c of citacoes) {
-            const limpa = c.replace(/"/g, '').trim();
+            const limpa = c.replace(/["""\u201C\u201D]/g, '').trim();
             if (limpa.length > 15 && !frases.includes(limpa)) {
               frases.push(limpa);
             }
@@ -305,7 +285,7 @@ async function buscarCitacoesFilme(nomeFilme) {
 }
 
 // ============================================================
-//  1. LETRA — LRCLIB → Genius → SearXNG
+//  1. LETRA — LRCLIB → Genius → Brave Search
 // ============================================================
 async function buscarLetraMusica(nomeMusica, artista, env) {
   const nomeLimpo = limparTermoMusica(nomeMusica);
@@ -358,12 +338,12 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
     }
   }
 
-  // CAMADA 3: SearXNG (com rotacao)
-  console.log('[LETRA] CAMADA 3: SearXNG...');
-  const letraSearXNG = await buscarSearXNG(`${nomeLimpo} ${artistaLimpo} lyrics`);
-  if (letraSearXNG) {
-    console.log('[LETRA] SearXNG: Letra encontrada!');
-    return letraSearXNG.substring(0, 5000);
+  // CAMADA 3: Brave Search
+  console.log('[LETRA] CAMADA 3: Brave Search...');
+  const letraBrave = await buscarBrave(`${nomeLimpo} ${artistaLimpo} lyrics`);
+  if (letraBrave) {
+    console.log('[LETRA] Brave Search: Letra encontrada!');
+    return letraBrave.substring(0, 5000);
   }
 
   console.log('[LETRA] Todas as camadas falharam.');
@@ -371,7 +351,7 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
 }
 
 // ============================================================
-//  2. CONTEXTO — Genius → SearXNG → Wikipedia → OpenRouter mini-IA
+//  2. CONTEXTO — Genius → Brave Search → Wikipedia → OpenRouter mini-IA
 // ============================================================
 async function buscarContextoMusica(nomeMusica, artista, env) {
   const nomeLimpo = limparTermoMusica(nomeMusica);
@@ -408,12 +388,12 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
     }
   }
 
-  // CAMADA 2: SearXNG
-  console.log('[CONTEXTO] CAMADA 2: SearXNG...');
-  const ctxSearXNG = await buscarSearXNG(`${nomeLimpo} ${artistaLimpo} song meaning explanation`);
-  if (ctxSearXNG) {
-    console.log('[CONTEXTO] SearXNG: Contexto encontrado!');
-    return ctxSearXNG.substring(0, 2000);
+  // CAMADA 2: Brave Search
+  console.log('[CONTEXTO] CAMADA 2: Brave Search...');
+  const ctxBrave = await buscarBrave(`significado da musica ${nomeLimpo} ${artistaLimpo}`);
+  if (ctxBrave) {
+    console.log('[CONTEXTO] Brave Search: Contexto encontrado!');
+    return ctxBrave.substring(0, 2000);
   }
 
   // CAMADA 3: Wikipedia PT
@@ -658,7 +638,7 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
 }
 
 // ============================================================
-//  5. FALLBACK FILME — Wikipedia → SearXNG
+//  5. FALLBACK FILME — Wikipedia → Brave Search
 // ============================================================
 async function buscarDadosFilmeFallback(nomeFilme, ano) {
   // CAMADA 1: Wikipedia PT (com 'filme' no termo)
@@ -698,18 +678,18 @@ async function buscarDadosFilmeFallback(nomeFilme, ano) {
     console.error('[FILME FALLBACK] Wikipedia erro:', err);
   }
 
-  // CAMADA 2: SearXNG (com rotacao)
-  console.log('[FILME FALLBACK] CAMADA 2: SearXNG...');
+  // CAMADA 2: Brave Search
+  console.log('[FILME FALLBACK] CAMADA 2: Brave Search...');
   try {
     let query = `${nomeFilme} movie plot synopsis`;
     if (ano) query = `${nomeFilme} ${ano} movie plot synopsis`;
-    const resultado = await buscarSearXNG(query);
+    const resultado = await buscarBrave(query);
     if (resultado) {
-      console.log('[FILME FALLBACK] SearXNG: Dados encontrados!');
+      console.log('[FILME FALLBACK] Brave Search: Dados encontrados!');
       return { sinopse: resultado.substring(0, 2000), diretor: 'Disponível na Web', poster: null };
     }
   } catch (err) {
-    console.error('[FILME FALLBACK] SearXNG erro:', err);
+    console.error('[FILME FALLBACK] Brave Search erro:', err);
   }
 
   console.log('[FILME FALLBACK] Todas as camadas falharam.');
@@ -737,3 +717,4 @@ function limparHTML(texto) {
     .replace(/\s+/g, ' ')
     .trim();
 }
+

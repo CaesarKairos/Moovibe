@@ -21,13 +21,6 @@ URL_TMDB_BASE = "https://" + "api.themoviedb.org/3/movie"
 URL_WIKIPEDIA_PT = "https://" + "pt.wikipedia.org/api/rest_v1/page/summary/"
 URL_WIKIPEDIA_EN = "https://" + "en.wikipedia.org/api/rest_v1/page/summary/"
 
-# Instancias SearXNG para rotacao
-INSTANCIAS_SEARXNG = [
-    "https://" + "search.disroot.org/search",
-    "https://" + "searx.be/search",
-    "https://" + "searx.space/search",
-]
-
 
 def limpar_termo_musica(termo):
     """Remove sufixos promocionais, ruidos e anos dos titulos."""
@@ -67,80 +60,60 @@ def sanitizar_titulo_filme(titulo):
 
 
 # ==========================================
-# BUSCA GENERICA: SearXNG (COM ROTACAO)
+# BUSCA GENERICA: Brave Search
 # ==========================================
-def buscar_searxng(query, max_results=3):
+def buscar_brave(query):
     """
-    Busca em instancias publicas SearXNG com rotacao, validacao e fallback gracioso.
-    Retorna snippets de texto ou None.
+    Busca no Brave Search, remove blocos <script>, <style> e tags HTML,
+    retorna o texto limpo ou None.
     """
-    for instancia in INSTANCIAS_SEARXNG:
-        try:
-            params = {
-                "q": query,
-                "format": "json",
-                "language": "en",
-                "categories": "general"
-            }
-            headers = {
-                "User-Agent": "Mozilla/5.0 (compatible; Moovibe/1.0)"
-            }
-            resposta = requests.get(instancia, params=params, headers=headers, timeout=10)
-            content_type = (resposta.headers.get("Content-Type", "") or "").lower()
+    try:
+        url = f"https://search.brave.com/search?q={urllib.parse.quote(query)}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            print(f"[BRAVE] Status {resp.status_code}")
+            return None
 
-            if resposta.status_code != 200:
-                print(f"[SEARXNG] Instancia {instancia} retornou status {resposta.status_code}. Tentando proxima...")
-                continue
-
-            if "application/json" not in content_type:
-                preview = " ".join((resposta.text or "")[:200].split())
-                print(f"[SEARXNG] Instancia {instancia} retornou {content_type or 'sem content-type'}: {preview}")
-                continue
-
-            dados = resposta.json()
-            resultados = dados.get("results", [])
-            if resultados:
-                snippets = []
-                for r in resultados[:max_results]:
-                    snippet = ""
-                    for field in ("content", "title", "snippet"):
-                        valor = r.get(field)
-                        if isinstance(valor, str) and valor.strip():
-                            snippet = valor.strip()
-                            break
-                    if snippet:
-                        snippets.append(snippet)
-                if snippets:
-                    print(f"[SEARXNG] Instancia {instancia} OK!")
-                    return "\n\n".join(snippets)[:3000]
-
-        except requests.exceptions.JSONDecodeError:
-            print(f"[SEARXNG] Instancia {instancia} retornou JSON invalido. Tentando proxima...")
-            continue
-        except Exception as e:
-            print(f"[SEARXNG] Instancia {instancia} erro: {e}. Tentando proxima...")
-            continue
-
-    return None
+        html = resp.text
+        # Remove blocos <script>...</script> e <style>...</style>
+        html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        # Remove tags HTML restantes
+        texto = re.sub(r'<[^>]+>', '', html)
+        # Limpa espacos duplicados
+        texto = re.sub(r'\s+', ' ', texto).strip()
+        # Trunca para evitar excesso
+        texto = texto[:5000]
+        if texto:
+            print(f"[BRAVE] OK! {len(texto)} chars obtidos.")
+            return texto
+        return None
+    except Exception as e:
+        print(f"[BRAVE] Erro: {e}")
+        return None
 
 
 # ==========================================
-# BUSCA DE CITACOES DO FILME (SearXNG)
+# BUSCA DE CITACOES DO FILME (Brave Search)
 # ==========================================
 def buscar_citacoes_filme(nome_filme):
     """
-    Busca ate 3 citacoes/frases celebres do filme usando SearXNG.
+    Busca ate 3 citacoes/frases celebres do filme usando Brave Search.
+    Suporta aspas normais e tipograficas.
     Retorna uma lista de strings ou uma lista com 3 frases genericas se falhar.
     """
     try:
-        query = f'"{nome_filme}" movie quotes'
-        resultado = buscar_searxng(query, max_results=5)
+        query = f'"{nome_filme}" movie quotes memorable lines'
+        resultado = buscar_brave(query)
         if resultado:
             frases = []
             for linha in resultado.split("\n"):
                 linha = linha.strip()
-                # Tenta extrair trechos entre aspas
-                citacoes = re.findall(r'[""]([^""]{10,80})[""]', linha)
+                # Tenta extrair trechos entre aspas (normais e tipograficas: ", ", ”, “)
+                citacoes = re.findall(r'["""\u201C\u201D]([^""\u201C\u201D]{10,80})["""\u201C\u201D]', linha)
                 for c in citacoes:
                     c = c.strip()
                     if len(c) > 15 and c not in frases:
@@ -166,7 +139,7 @@ def buscar_letra_musica(nome_musica, artista):
     """
     CAMADA 1: LRCLIB API
     CAMADA 2: Genius API (letra)
-    CAMADA 3: SearXNG
+    CAMADA 3: Brave Search
     """
     nome_limpo = limpar_termo_musica(nome_musica)
     artista_limpo = limpar_termo_musica(artista) if artista else artista
@@ -202,12 +175,12 @@ def buscar_letra_musica(nome_musica, artista):
         except Exception as e:
             print(f"[LETRA] Genius erro: {e}")
 
-    print("[LETRA] CAMADA 3: SearXNG...")
-    query_searxng = f"{nome_limpo} {artista_limpo} lyrics"
-    letra_searxng = buscar_searxng(query_searxng)
-    if letra_searxng:
-        print("[LETRA] SearXNG: Letra encontrada!")
-        return letra_searxng[:5000]
+    print("[LETRA] CAMADA 3: Brave Search...")
+    query_brave = f"{nome_limpo} {artista_limpo} lyrics"
+    letra_brave = buscar_brave(query_brave)
+    if letra_brave:
+        print("[LETRA] Brave Search: Letra encontrada!")
+        return letra_brave[:5000]
 
     print("[LETRA] Todas as camadas falharam.")
     return ""
@@ -219,7 +192,7 @@ def buscar_letra_musica(nome_musica, artista):
 def buscar_contexto_musica(nome_musica, artista):
     """
     CAMADA 1: Genius API (descricao)
-    CAMADA 2: SearXNG
+    CAMADA 2: Brave Search
     CAMADA 3: Wikipedia PT
     CAMADA 4: OpenRouter (mini-IA) - com fallback string seguro
     """
@@ -244,12 +217,12 @@ def buscar_contexto_musica(nome_musica, artista):
         except Exception as e:
             print(f"[CONTEXTO] Genius erro: {e}")
 
-    print("[CONTEXTO] CAMADA 2: SearXNG...")
-    query_searxng = f"{nome_limpo} {artista_limpo} song meaning explanation"
-    ctx_searxng = buscar_searxng(query_searxng)
-    if ctx_searxng:
-        print("[CONTEXTO] SearXNG: Contexto encontrado!")
-        return ctx_searxng[:2000]
+    print("[CONTEXTO] CAMADA 2: Brave Search...")
+    query_brave = f"significado da musica {nome_limpo} {artista_limpo}"
+    ctx_brave = buscar_brave(query_brave)
+    if ctx_brave:
+        print("[CONTEXTO] Brave Search: Contexto encontrado!")
+        return ctx_brave[:2000]
 
     print("[CONTEXTO] CAMADA 3: Wikipedia PT...")
     try:
@@ -593,7 +566,7 @@ def buscar_dados_filme_fallback(nome_filme, ano):
     """
     Fallback para dados do filme quando TMDb falha.
     CAMADA 1: Wikipedia (forcando 'filme' no termo)
-    CAMADA 2: SearXNG (movie plot synopsis)
+    CAMADA 2: Brave Search (movie plot synopsis)
     """
     print("[FILME FALLBACK] CAMADA 1: Wikipedia PT...")
     try:
@@ -637,24 +610,23 @@ def buscar_dados_filme_fallback(nome_filme, ano):
     except Exception as e:
         print(f"[FILME FALLBACK] Wikipedia erro: {e}")
 
-    print("[FILME FALLBACK] CAMADA 2: SearXNG...")
+    print("[FILME FALLBACK] CAMADA 2: Brave Search...")
     try:
         query = f"{nome_filme} movie plot synopsis"
         if ano:
             query = f"{nome_filme} {ano} movie plot synopsis"
-        print(f"[FALLBACK] Query SearXNG: {query}")
-        resultado = buscar_searxng(query)
+        print(f"[FALLBACK] Query Brave: {query}")
+        resultado = buscar_brave(query)
         if resultado:
-            print(f"[FALLBACK ATIVADO: SearXNG]")
+            print(f"[FALLBACK ATIVADO: Brave Search]")
             print(f"  Resultado bruto: {resultado[:300]}...")
-            print(f"  Citacoes extraidas: 3")
             return {
                 "sinopse": resultado[:2000],
                 "diretor": "Disponível na Web",
                 "poster": None
             }
     except Exception as e:
-        print(f"[FILME FALLBACK] SearXNG erro: {e}")
+        print(f"[FILME FALLBACK] Brave Search erro: {e}")
 
     print("[FILME FALLBACK] Todas as camadas falharam.")
     return None
@@ -782,7 +754,7 @@ def main():
         # Detecta se o fallback generico foi usado (frases padrao)
         CITACOES_PADRAO = ["Cinema is magic.", "Every film is a journey.", "Lights, camera, action!"]
         is_fallback_padrao = (citacoes == CITACOES_PADRAO)
-        # Se SearXNG falhou (fallback padrao) ou retornou menos de 3, tenta usar a tagline do TMDb
+        # Se Brave falhou (fallback padrao) ou retornou menos de 3, tenta usar a tagline do TMDb
         if (is_fallback_padrao or len(citacoes) < 3) and dados_filme and dados_filme.get("tagline"):
             tagline = dados_filme["tagline"].strip()
             if tagline:
@@ -871,3 +843,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
