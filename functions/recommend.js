@@ -252,39 +252,24 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
   if (env.OPENROUTER_API_KEY) {
     try {
       const prompt = `Explique brevemente em um paragrafo curto em portugues o significado da musica '${nomeLimpo}' de '${artistaLimpo}'.`;
-      const modelos = [
-        'google/gemini-2.0-flash-lite-preview-02-05:free',
-        'meta-llama/llama-3.3-70b-instruct:free',
-        'mistralai/mistral-7b-instruct:free'
-      ];
       const payload = {
+        model: 'openrouter/auto',
         temperature: 0.3,
         max_tokens: 300,
-        // response_format removido para evitar erro 400
         messages: [{ role: 'user', content: prompt }],
       };
 
-      console.log('[CONTEXTO] Tentando modelos OpenRouter...');
-      let resp = null;
-      for (const modelo of modelos) {
-        payload.model = modelo;
-        try {
-          resp = await fetch(OPENROUTER_URL, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload),
-          });
-          if (resp.ok) break;
-          console.log(`[CONTEXTO] Modelo ${modelo} falhou: ${resp.status}`);
-        } catch (err) {
-          console.error(`[CONTEXTO] Erro com modelo ${modelo}:`, err);
-        }
-      }
+      console.log('[CONTEXTO] Tentando OpenRouter auto...');
+      const resp = await fetch(OPENROUTER_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
 
-      if (resp && resp.ok) {
+      if (resp.ok) {
         const dados = await resp.json();
         let texto = '';
         if (dados && typeof dados === 'object') {
@@ -293,10 +278,13 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
             texto = choices[0].message?.content?.trim() || '';
           }
         }
+        console.log(`[CONTEXTO] Resposta Bruta: ${texto.substring(0, 300)}...`);
         if (texto) {
           console.log('[CONTEXTO] OpenRouter: Contexto gerado via IA!');
           return texto.substring(0, 2000);
         }
+      } else {
+        console.log(`[CONTEXTO] OpenRouter falhou: ${resp.status}`);
       }
     } catch (err) {
       console.error('[CONTEXTO] OpenRouter erro:', err);
@@ -307,18 +295,12 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
   return null;
 }
 
-const FALLBACK_MOVIE = {
-  filme: 'The Great Gatsby',
-  ano: '2013',
-  justificativa: 'A atmosfera nostálgica e elegantemente melancólica ressoa profundamente com o esplendor visual e o desejo emocional do clássico de Baz Luhrmann. A produção visual deslumbrante, a energia contagiante e a exploração de temas como o tempo, a memória e a busca por um amor impossível criam uma sinergia perfeita com a vibe da música.',
-};
-
 function extrairQuotesDaLetra(letra, maxQuotes = 3) {
   if (!letra || typeof letra !== 'string') return [];
   
   const linhas = letra.split('\n');
   const quotes = [];
-  const estruturas = /^\[.*?\]$|^\(.*?\)$|^[a-zA-Z\s]+:$|^---.*?---$/i;
+  const estruturas = /^\[.*?\]$|^\(.*?\)$|^[A-Za-z\s]+:$|^---.*?---$/i;
   
   for (const linha of linhas) {
     const limpa = linha.trim();
@@ -332,6 +314,29 @@ function extrairQuotesDaLetra(letra, maxQuotes = 3) {
   
   return quotes;
 }
+
+function extrairJSON(texto) {
+  if (!texto || typeof texto !== 'string') return null;
+  
+  const Limpo = texto.replace(/```json/g, '').replace(/```/g, '').trim();
+  
+  const match = Limpo.match(/\{[\s\S]*\}/);
+  if (match) {
+    try {
+      return JSON.parse(match[0]);
+    } catch (e) {
+      console.error('[OPENROUTER] Regex JSON parse falhou:', e);
+    }
+  }
+  
+  return null;
+}
+
+const FALLBACK_MOVIE = {
+  filme: 'The Great Gatsby',
+  ano: '2013',
+  justificativa: 'A atmosfera nostálgica e elegantemente melancólica ressoa profundamente com o esplendor visual e o desejo emocional do clássico de Baz Luhrmann.',
+};
 
 async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey) {
   if (!apiKey) return null;
@@ -366,48 +371,31 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
   }
 
   try {
-    const modelos = [
-      'google/gemini-2.0-flash-lite-preview-02-05:free',
-      'meta-llama/llama-3.3-70b-instruct:free',
-      'mistralai/mistral-7b-instruct:free'
-    ];
-    
-    let resp = null;
-    for (const modelo of modelos) {
-      const body = {
-        model: modelo,
-        temperature: 0.3,
-        // response_format removido para evitar erro 400
-        messages: [
-          { role: 'system', content: promptSistema },
-          { role: 'user', content: conteudoUsuario },
-        ],
-      };
+    const body = {
+      model: 'openrouter/auto',
+      temperature: 0.3,
+      max_tokens: 300,
+      messages: [
+        { role: 'system', content: promptSistema },
+        { role: 'user', content: conteudoUsuario },
+      ],
+    };
 
-      console.log(`[OPENROUTER] Tentando modelo: ${modelo}`);
-      resp = await fetch(OPENROUTER_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
+    console.log('[OPENROUTER] Tentando modelo: openrouter/auto');
+    const resp = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
 
-      if (resp.ok) break;
-      console.log(`[OPENROUTER] Modelo ${modelo} falhou: ${resp.status}`);
-    }
+    console.log(`[OPENROUTER] Status: ${resp.status}`);
 
-    if (!resp || !resp.ok) {
-      console.error('[OPENROUTER] Todos os modelos falharam, usando fallback.');
-      // Fallback com quotes da letra
-      const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
-      return {
-        ...FALLBACK_MOVIE,
-        citacoes: quotesDaLetra.length >= 3 ? quotesDaLetra : ['Every film is a journey.', 'Lights, camera, action!', 'Cinema is magic.'],
-        vibe_title: 'CINEMATIC INTROSPECTION',
-        tags: ['UNICO', 'ESSENCIAL', 'ETERO', 'VIBE'],
-      };
+    if (!resp.ok) {
+      console.error('[OPENROUTER] HTTP', resp.status);
+      return { ...FALLBACK_MOVIE, citacoes: extrairQuotesDaLetra(letra, 3) };
     }
 
     const dados = await resp.json();
@@ -418,86 +406,37 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
         textoIA = choices[0].message?.content?.trim() || '';
       }
     }
+
+    console.log(`[OPENROUTER] Resposta Bruta:\n${textoIA}\n`);
+
     if (!textoIA) {
-      const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
-      return {
-        ...FALLBACK_MOVIE,
-        citacoes: quotesDaLetra.length >= 3 ? quotesDaLetra : ['Every film is a journey.', 'Lights, camera, action!', 'Cinema is magic.'],
-        vibe_title: 'CINEMATIC INTROSPECTION',
-        tags: ['UNICO', 'ESSENCIAL', 'ETERO', 'VIBE'],
-      };
+      return { ...FALLBACK_MOVIE, citacoes: extrairQuotesDaLetra(letra, 3) };
     }
 
     textoIA = textoIA.replace(/```json/g, '').replace(/```/g, '').trim();
 
     if (/User Safety/i.test(textoIA) || /\bsafe\b/i.test(textoIA)) {
-      console.error('[OPENROUTER] Resposta de seguranca detectada, usando fallback.');
-      const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
-      return {
-        ...FALLBACK_MOVIE,
-        citacoes: quotesDaLetra.length >= 3 ? quotesDaLetra : ['Every film is a journey.', 'Lights, camera, action!', 'Cinema is magic.'],
-        vibe_title: 'CINEMATIC INTROSPECTION',
-        tags: ['UNICO', 'ESSENCIAL', 'ETERO', 'VIBE'],
-      };
+      console.error('[OPENROUTER] Resposta de seguranca detectada.');
+      return { ...FALLBACK_MOVIE, citacoes: extrairQuotesDaLetra(letra, 3) };
     }
 
-    try {
-      const parsed = JSON.parse(textoIA);
-      if (parsed && typeof parsed === 'object') {
-        parsed.filme = sanitizarTituloFilme(parsed.filme || parsed.filme_sugerido || '');
-        // Garantir que citacoes existem
-        if (!parsed.citacoes || !Array.isArray(parsed.citacoes) || parsed.citacoes.length < 3) {
-          const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
-          parsed.citacoes = quotesDaLetra.length >= 3 ? quotesDaLetra : FALLBACK_QUOTES;
-        }
-        return parsed;
+    const parsed = extrairJSON(textoIA);
+    if (parsed && typeof parsed === 'object') {
+      parsed.filme = sanitizarTituloFilme(parsed.filme || parsed.filme_sugerido || '');
+      if (!parsed.citacoes || !Array.isArray(parsed.citacoes) || parsed.citacoes.length < 3) {
+        const quotes = extrairQuotesDaLetra(letra, 3);
+        parsed.citacoes = quotes.length >= 3 ? quotes : ['Every film is a journey.', 'Lights, camera, action!', 'Cinema is magic.'];
       }
-      const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
-      return {
-        ...FALLBACK_MOVIE,
-        citacoes: quotesDaLetra.length >= 3 ? quotesDaLetra : FALLBACK_QUOTES,
-        vibe_title: 'CINEMATIC INTROSPECTION',
-        tags: ['UNICO', 'ESSENCIAL', 'ETERO', 'VIBE'],
-      };
-    } catch (_) {
-      const matchJSON = textoIA.match(/(\{[\s\S]*\})/);
-      if (matchJSON) {
-        try {
-          const parsed = JSON.parse(matchJSON[0]);
-          if (parsed && typeof parsed === 'object') {
-            parsed.filme = sanitizarTituloFilme(parsed.filme || parsed.filme_sugerido || '');
-            // Garantir que citacoes existem
-            if (!parsed.citacoes || !Array.isArray(parsed.citacoes) || parsed.citacoes.length < 3) {
-              const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
-              parsed.citacoes = quotesDaLetra.length >= 3 ? quotesDaLetra : FALLBACK_QUOTES;
-            }
-            return parsed;
-          }
-        } catch (e) {
-          console.error('[OPENROUTER] Regex JSON parse falhou:', e);
-        }
-      }
-      const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
-      return {
-        ...FALLBACK_MOVIE,
-        citacoes: quotesDaLetra.length >= 3 ? quotesDaLetra : FALLBACK_QUOTES,
-        vibe_title: 'CINEMATIC INTROSPECTION',
-        tags: ['UNICO', 'ESSENCIAL', 'ETERO', 'VIBE'],
-      };
+      return parsed;
     }
+
+    console.error('[OPENROUTER] Nenhum JSON encontrado.');
+    return { ...FALLBACK_MOVIE, citacoes: extrairQuotesDaLetra(letra, 3) };
   } catch (err) {
     console.error('[OPENROUTER] Erro na requisicao:', err);
-    const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
-    return {
-      ...FALLBACK_MOVIE,
-      citacoes: quotesDaLetra.length >= 3 ? quotesDaLetra : FALLBACK_QUOTES,
-      vibe_title: 'CINEMATIC INTROSPECTION',
-      tags: ['UNICO', 'ESSENCIAL', 'ETERO', 'VIBE'],
-    };
+    return { ...FALLBACK_MOVIE, citacoes: extrairQuotesDaLetra(letra, 3) };
   }
 }
-
-const FALLBACK_QUOTES = ['Every film is a journey.', 'Lights, camera, action!', 'Cinema is magic.'];
 
 async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
   if (!apiKey) return null;
@@ -680,7 +619,7 @@ export async function onRequest(context) {
 
     const nomeFilme = sanitizarTituloFilme(recomendacaoIA.filme || recomendacaoIA.filme_sugerido || '');
     const anoFilme = recomendacaoIA.ano || recomendacaoIA.ano_filme || '';
-    const justificativa = recomendacaoIA.justificativa || recomendacaoIA.justificativa_vibe || FALLBACK_MOVIE.justificativa;
+    const justificativa = recomendacaoIA.justificativa || recomendacaoIA.justificativa_vibe || '';
     const vibeTitle = recomendacaoIA.vibe_title || 'VIBE CINEMATICA';
     const tags = recomendacaoIA.tags || ['UNICO', 'ESSENCIAL'];
 
@@ -726,7 +665,7 @@ export async function onRequest(context) {
     const QUOTES_PADRAO = ["Cada cena brilha como uma lembranca.", "A musica ecoa na alma do cinema.", "A vibe encontra seu filme."];
     const isQuotesPadrao = !Array.isArray(quotes) || quotes.length < 3 || JSON.stringify(quotes.slice(0, 3)) === JSON.stringify(QUOTES_PADRAO);
     
-    // Fallback: usar quotes da letra se as quotes da IA forem genéricas ou vazias
+    // Fallback: usar quotes da letra se as quotes da IA foren genéricas ou vazias
     if (isQuotesPadrao || quotes.length < 3) {
       const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
       if (quotesDaLetra.length >= 3) {

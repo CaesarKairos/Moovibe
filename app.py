@@ -21,7 +21,6 @@ URL_TMDB_BASE = "https://" + "api.themoviedb.org/3/movie"
 URL_WIKIPEDIA_PT = "https://" + "pt.wikipedia.org/api/rest_v1/page/summary/"
 URL_WIKIPEDIA_EN = "https://" + "en.wikipedia.org/api/rest_v1/page/summary/"
 
-#Fazer Deploy
 
 def limpar_termo_musica(termo):
     """Remove sufixos promocionais, ruidos e anos dos titulos."""
@@ -58,6 +57,35 @@ def sanitizar_titulo_filme(titulo):
     t = re.sub(r'\s*[\(\[]\s*(?:19|20)\d{2}\s*[\)\]]\s*$', '', t)
     t = re.sub(r'\s*[-–—]\s*(?:19|20)\d{2}\s*$', '', t)
     return t.strip()
+
+
+def extrair_json_de_texto(texto_bruto):
+    """
+    Extrai JSON de texto bruto usando regex robusta.
+    Retorna o objeto JSON parseado ou None se falhar.
+    """
+    if not texto_bruto or not isinstance(texto_bruto, str):
+        return None
+    
+    # Remove marcadores markdown
+    texto_limpo = texto_bruto.replace("```json", "").replace("```", "").strip()
+    
+    # Regex para encontrar objeto JSON completo
+    match = re.search(r'\{.*\}', texto_limpo, re.DOTALL)
+    if match:
+        texto_json = match.group(0)
+        try:
+            return json.loads(texto_json)
+        except json.JSONDecodeError:
+            pass
+    
+    # Tenta parse direto se não houver markdown
+    try:
+        return json.loads(texto_limpo)
+    except json.JSONDecodeError:
+        pass
+    
+    return None
 
 
 # ==========================================
@@ -274,15 +302,10 @@ def buscar_contexto_musica(nome_musica, artista):
                 f"Explique brevemente em um paragrafo curto em portugues "
                 f"o significado da musica '{nome_limpo}' de '{artista_limpo}'."
             )
-            modelos = [
-                "google/gemini-2.0-flash-lite-preview-02-05:free",
-                "meta-llama/llama-3.3-70b-instruct:free",
-                "mistralai/mistral-7b-instruct:free"
-            ]
             payload = {
+                "model": "openrouter/auto",
                 "temperature": 0.3,
                 "max_tokens": 300,
-                # "response_format": {"type": "json_object"},  # Removido para evitar erro 400
                 "messages": [{"role": "user", "content": prompt}]
             }
 
@@ -290,37 +313,22 @@ def buscar_contexto_musica(nome_musica, artista):
             print("\n=== [DEBUG] ENVIO OPENROUTER (CONTEXTO) ===")
             print(f"Prompt: {prompt}")
             tempo_inicio = time.time()
-            
-            resp = None
-            for modelo in modelos:
-                payload["model"] = modelo
-                try:
-                    print(f"Tentando modelo: {modelo}")
-                    resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=15)
-                    tempo_resposta = round(time.time() - tempo_inicio, 2)
-                    print(f"Status: {resp.status_code} | Tempo: {tempo_resposta}s")
-                    if resp.status_code == 200:
-                        break
-                except Exception as e:
-                    print(f"Erro com modelo {modelo}: {e}")
-                    continue
+            resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=15)
+            tempo_resposta = round(time.time() - tempo_inicio, 2)
+            print(f"Status: {resp.status_code} | Tempo: {tempo_resposta}s")
 
-            if not resp or resp.status_code != 200:
-                print("[CONTEXTO] Todos os modelos falharam, usando fallback.")
-                return "Contexto não encontrado."
-            
+            resp.raise_for_status()
             dados_resp = resp.json()
+            
             # Tratamento defensivo contra NoneType
+            texto = ""
             if isinstance(dados_resp, dict):
                 choices = dados_resp.get("choices")
                 if choices and isinstance(choices, list) and len(choices) > 0 and choices[0]:
                     texto = choices[0].get("message", {}).get("content", "")
-                else:
-                    texto = ""
-            else:
-                texto = ""
-            print(f"Resposta Bruta: {texto[:300]}...")
-
+            
+            print(f"Resposta Bruta (raw):\n{texto[:300]}...\n")
+            
             if texto and isinstance(texto, str):
                 texto = texto.strip()
                 if texto:
@@ -330,7 +338,7 @@ def buscar_contexto_musica(nome_musica, artista):
             print(f"[CONTEXTO] OpenRouter erro: {e}")
 
     print("[CONTEXTO] Todas as camadas falharam.")
-    return "Contexto não encontrado."
+    return None
 
 
 # ==========================================
@@ -376,16 +384,9 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
     if contexto_extra:
         conteudo_usuario += f"Contexto historico, significado e fatos adicionais sobre a musica para te ajudar na escolha:\n{contexto_extra}\n"
 
-    modelos = [
-        "google/gemini-2.0-flash-lite-preview-02-05:free",
-        "meta-llama/llama-3.3-70b-instruct:free",
-        "mistralai/mistral-7b-instruct:free"
-    ]
-    modelo_inicial = modelos[0]
     payload = {
-        "model": modelo_inicial,
+        "model": "openrouter/auto",
         "temperature": 0.3,
-        # "response_format": {"type": "json_object"},  # Removido para evitar erro 400
         "messages": [
             {"role": "system", "content": prompt_sistema},
             {"role": "user", "content": conteudo_usuario}
@@ -402,87 +403,45 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
         print(conteudo_usuario[:500] + ("..." if len(conteudo_usuario) > 500 else ""))
 
         tempo_inicio = time.time()
-        resp = None
-        for modelo in modelos:
-            payload["model"] = modelo
-            try:
-                print(f"Tentando modelo: {modelo}")
-                resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=25)
-                tempo_resposta = round(time.time() - tempo_inicio, 2)
-                print(f"Status Code: {resp.status_code} | Tempo: {tempo_resposta}s")
-                if resp.status_code == 200:
-                    break
-            except Exception as e:
-                print(f"Erro com modelo {modelo}: {e}")
-                continue
+        resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=25)
+        tempo_resposta = round(time.time() - tempo_inicio, 2)
 
-        if not resp or resp.status_code != 200:
-            print("[OPENROUTER] Todos os modelos falharam, usando fallback clássico.")
-            return {
-                "filme": "The Great Gatsby",
-                "ano": "2013",
-                "justificativa": "A atmosfera nostálgica e elegantemente melancólica de 'Style' ressoa profundamente com o esplendor visual e o desejo emocional do clássico de Baz Luhrmann. A produção visual deslumbrante, a energia contagiante e a exploração de temas como o tempo, a memória e a busca por um amor impossível criam uma sinergia perfeita com a vibe da música."
-            }
+        print(f"\n=== [DEBUG] RESPOSTA OPENROUTER ===")
+        print(f"Status Code: {resp.status_code}")
+        print(f"Tempo: {tempo_resposta}s")
 
         resp.raise_for_status()
         dados_resp_ia = resp.json()
+        
         # Tratamento defensivo contra NoneType
+        texto_ia = ""
         if isinstance(dados_resp_ia, dict):
             choices = dados_resp_ia.get("choices")
             if choices and isinstance(choices, list) and len(choices) > 0 and choices[0]:
                 texto_ia = choices[0].get("message", {}).get("content", "")
-            else:
-                texto_ia = ""
-        else:
-            texto_ia = ""
+        
         print(f"Resposta Bruta (raw):\n{texto_ia}\n")
 
         if not isinstance(texto_ia, str):
             print("[DEBUG] Resposta nao e string.")
             return None
-        texto_ia = texto_ia.replace("```json", "").replace("```", "").strip()
-
+        
         # Trata resposta de safety do OpenRouter
         if "User Safety" in texto_ia or "safe" in texto_ia.lower():
-            print("[DEBUG] Resposta de seguranca detectada, usando fallback...")
-            return {
-                "filme": "The Great Gatsby",
-                "ano": "2013",
-                "justificativa": "A atmosfera nostálgica e elegantemente melancólica de 'Style' ressoa profundamente com o esplendor visual e o desejo emocional do clássico de Baz Luhrmann. A produção visual deslumbrante, a energia contagiante e a exploração de temas como o tempo, a memória e a busca por um amor impossível criam uma sinergia perfeita com a vibe da música."
-            }
+            print("[DEBUG] Resposta de seguranca detectada.")
+            return None
 
-        try:
-            dados = json.loads(texto_ia)
-            print("=== [DEBUG] JSON PARSEADO COM SUCESSO ===")
+        # Parse robusto de JSON
+        dados = extrair_json_de_texto(texto_ia)
+        if dados and isinstance(dados, dict):
+            print("=== [DEBUG] JSON EXTRAIDO COM SUCESSO ===")
             print(json.dumps(dados, indent=2, ensure_ascii=False))
-            if isinstance(dados, dict):
+            if "filme" in dados:
                 dados["filme"] = sanitizar_titulo_filme(dados.get("filme") or dados.get("filme_sugerido", ""))
                 return dados
-            return None
-        except json.JSONDecodeError as e:
-            print(f"[DEBUG] JSONDecodeError: {e}")
-            print(f"[DEBUG] Texto bruto apos limpeza:\n{texto_ia}")
-
-        # Regex robusta para extrair JSON
-        match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
-        if match:
-            texto_json = match.group(0)
-            try:
-                dados = json.loads(texto_json)
-                print("=== [DEBUG] JSON EXTRAIDO VIA REGEX ===")
-                print(json.dumps(dados, indent=2, ensure_ascii=False))
-                if isinstance(dados, dict):
-                    dados["filme"] = sanitizar_titulo_filme(dados.get("filme") or dados.get("filme_sugerido", ""))
-                    return dados
-            except json.JSONDecodeError as e2:
-                print(f"[DEBUG] Regex JSON falhou: {e2}")
-
-        print("[DEBUG] Nenhum JSON encontrado, usando fallback.")
-        return {
-            "filme": "The Great Gatsby",
-            "ano": "2013",
-            "justificativa": "A atmosfera nostálgica e elegantemente melancólica de 'Style' ressoa profundamente com o esplendor visual e o desejo emocional do clássico de Baz Luhrmann. A produção visual deslumbrante, a energia contagiante e a exploração de temas como o tempo, a memória e a busca por um amor impossível criam uma sinergia perfeita com a vibe da música."
-        }
+        
+        print("[DEBUG] Nenhum JSON encontrado na resposta.")
+        return None
 
     except Exception as e:
         print(f"Erro ao conversar com a IA: {e}")
