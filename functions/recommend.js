@@ -285,7 +285,7 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
   return null;
 }
 
-async function buscarContextoMusica(nomeMusica, artista, env) {
+async function buscarContextoMusica(nomeMusica, artista, env, letra) {
   const nomeLimpo = limparTermoMusica(nomeMusica);
   const artistaLimpo = limparTermoMusica(artista) || artista;
   const termoBusca = `${nomeLimpo} ${artistaLimpo}`;
@@ -409,7 +409,7 @@ async function buscarCapaMusica(nomeMusica, artista) {
 async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey, songfacts, filmesExcluidos = '') {
   if (!apiKey) return null;
 
-  const exclusao = filmesExcluidos ? `\nREGRA OBRIGATÓRIA DE DIVERSIFICAÇÃO: NÃO recomende nenhum dos seguintes filmes sob nenhuma hipótese: ${filmesExcluidos}. Escolha um filme totalmente diferente que combine com a vibe da música.` : '';
+  const exclusao = typeof filmesExcluidos === 'string' && filmesExcluidos.trim().length > 0 ? `\nREGRA OBRIGATÓRIA DE DIVERSIFICAÇÃO: NÃO recomende nenhum dos seguintes filmes sob nenhuma hipótese: ${filmesExcluidos}. Escolha um filme totalmente diferente que combine com a vibe da música.` : '';
 
   const promptSistema = `Voce e um curador de cinema genial. O usuario vai te passar uma musica e voce deve sugerir EXATAMENTE UM filme que compartilhe exatamente da mesma atmosfera emocional, paleta de cores subtendida, ritmo psicologico ou alma lirica dessa musica. Nao se limite a conexoes obvias. Pense na vibe.${exclusao}
 
@@ -722,9 +722,9 @@ export async function onRequest(context) {
 
     console.log('\n=== INICIANDO PIPELINE ===');
     
-    const letra = await buscarLetraMusica(nomeMusica, artista, env);
-    let contextoExtra = await buscarContextoMusica(nomeMusica, artista, env);
-    const songfacts = await buscarSongfacts(nomeMusica, artista);
+    const letra = await buscarLetraMusica(nome_musica, artista, env);
+    let contextoExtra = await buscarContextoMusica(nome_musica, artista, env, letra);
+    const songfacts = await buscarSongfacts(nome_musica, artista);
 
     if (!validarContexto(contextoExtra, letra)) {
       contextoExtra = null;
@@ -738,7 +738,7 @@ export async function onRequest(context) {
     const filmesExcluidos = recentMovies.join(', ');
 
     const recomendacaoIA = await obterRecomendacaoIA(
-      nomeMusica,
+      nome_musica,
       artista,
       letra,
       contextoExtra,

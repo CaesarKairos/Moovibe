@@ -114,7 +114,7 @@ cp .env.example .env
 Abra o arquivo `.env` e preencha com suas credenciais:
 
 ```env
-OPENROUTER_API_KEY=sk-or-v1-sua-chave-aqui
+OPENROUTER_API_KEY=sk-or-v1-sua-chave-aqu
 TMDB_API_KEY=sua-chave-tmdb-aqui
 GENIUS_API_KEY=sua-chave-genius-aqui
 ```
