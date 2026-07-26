@@ -1,10 +1,5 @@
 /**
- * Moovibe - Cloudflare Pages Function
- * 
- * Responde em POST /recommend com orquestração completa:
- *   Letra: LRCLIB → Genius → Brave Search
- *   Contexto: Genius → Brave Search → Wikipedia → OpenRouter (mini-IA)
- *   Filme: TMDb → Wikipedia → Brave Search
+ * Moovibe - Cloudflare Pages Function (com fallbacks OpenRouter)
  */
 
 const LRCLIB_URL = 'https://lrclib.net/api/search';
@@ -13,144 +8,6 @@ const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
 const WIKIPEDIA_PT_API = 'https://pt.wikipedia.org/api/rest_v1/page/summary/';
 const WIKIPEDIA_EN_API = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
 
-// ============================================================
-//  HANDLER PRINCIPAL
-// ============================================================
-export async function onRequest(context) {
-  const { request, env } = context;
-
-  if (request.method !== 'POST') {
-    return new Response('Method Not Allowed', { status: 405 });
-  }
-
-  try {
-    const body = await request.json();
-    const { nome_musica, artista } = body;
-
-    if (!nome_musica) {
-      return jsonResponse({ error: 'nome_musica is required' }, 400);
-    }
-
-    // ---- 1. LETRA (LRCLIB → Genius → Brave Search) ----
-    const letra = await buscarLetraMusica(nome_musica, artista, env);
-
-    // ---- 2. CONTEXTO (Genius → Brave Search → Wikipedia → OpenRouter mini-IA) ----
-    const contextoExtra = await buscarContextoMusica(nome_musica, artista, env);
-
-    // ---- 3. RECOMENDAÇÃO IA ----
-    const recomendacaoIA = await obterRecomendacaoIA(
-      nome_musica, artista, letra, contextoExtra, env.OPENROUTER_API_KEY
-    );
-
-    if (!recomendacaoIA) {
-      return jsonResponse({ error: 'Falha ao obter recomendacao da IA' }, 500);
-    }
-
-    // Sanitizacao do titulo do filme (remove ano colado)
-    const nomeFilme = sanitizarTituloFilme(
-      recomendacaoIA.filme || recomendacaoIA.filme_sugerido || ''
-    );
-    const anoFilme = recomendacaoIA.ano || recomendacaoIA.ano_filme || '';
-    const justificativa = recomendacaoIA.justificativa || recomendacaoIA.justificativa_vibe || '';
-    const vibeTitle = recomendacaoIA.vibe_title || 'VIBE CINEMATICA';
-    const tags = recomendacaoIA.tags || ['UNICO', 'ESSENCIAL'];
-
-    if (!nomeFilme) {
-      return jsonResponse({ error: 'IA nao retornou um nome de filme valido' }, 500);
-    }
-
-    // ---- 4. DADOS DO FILME (TMDb → Wikipedia → Brave Search) ----
-    let dadosFilme = null;
-    if (env.TMDB_API_KEY) {
-      dadosFilme = await obterDetalhesTMDB(nomeFilme, env.TMDB_API_KEY, anoFilme);
-    }
-
-    if (!dadosFilme || !dadosFilme.sinopse || dadosFilme.sinopse === 'Sem sinopse disponivel.') {
-      const fallback = await buscarDadosFilmeFallback(nomeFilme, anoFilme);
-      if (fallback) {
-        dadosFilme = {
-          id_tmdb: null,
-          titulo_pt: nomeFilme,
-          titulo_original: nomeFilme,
-          ano: anoFilme || 'Nao informado',
-          sinopse: fallback.sinopse || 'Sinopse indisponivel.',
-          poster: fallback.poster || null,
-          diretor: fallback.diretor || 'Nao encontrado',
-          imdb_id: null,
-          cenas: [],
-        };
-      } else {
-        dadosFilme = {
-          id_tmdb: null,
-          titulo_pt: nomeFilme,
-          titulo_original: nomeFilme,
-          ano: anoFilme || 'Nao informado',
-          sinopse: 'Sinopse indisponivel.',
-          poster: null,
-          diretor: 'Nao encontrado',
-          imdb_id: null,
-          cenas: [],
-        };
-      }
-    }
-
-    // Extrai citacoes da resposta da IA (campo 'citacoes')
-    let quotes = recomendacaoIA.citacoes || [];
-    const QUOTES_PADRAO = ["Cada cena brilha como uma lembranca.", "A musica ecoa na alma do cinema.", "A vibe encontra seu filme."];
-    const isQuotesPadrao = !Array.isArray(quotes) || quotes.length < 3 || JSON.stringify(quotes.slice(0, 3)) === JSON.stringify(QUOTES_PADRAO);
-    if (!Array.isArray(quotes) || quotes.length < 3) {
-      quotes = [...QUOTES_PADRAO];
-    }
-    // Tenta usar tagline do TMDb como fallback se as quotes sao genericas
-    if (isQuotesPadrao && dadosFilme && dadosFilme.tagline) {
-      quotes = [dadosFilme.tagline, quotes[1], quotes[2]];
-    }
-    quotes = quotes.slice(0, 3);
-
-    // Se nao houver cenas (backdrops), usa o poster para preencher as 3 polaroids
-    if (dadosFilme && (!dadosFilme.cenas || dadosFilme.cenas.length === 0)) {
-      const poster = dadosFilme.poster;
-      if (poster) {
-        dadosFilme.cenas = [poster, poster, poster];
-      }
-    }
-
-    // ---- 6. RESPOSTA ----
-    const resposta = {
-      song: nome_musica,
-      artist: artista || '',
-      movie: {
-        title: dadosFilme?.titulo_pt || nomeFilme,
-        original_title: dadosFilme?.titulo_original || nomeFilme,
-        release_year: dadosFilme?.ano || anoFilme || 'Nao informado',
-        director: dadosFilme?.diretor || 'Nao encontrado',
-        synopsis: dadosFilme?.sinopse || 'Sinopse nao disponivel.',
-        poster_url: dadosFilme?.poster || '',
-        stills: dadosFilme?.cenas || [],
-        quotes: quotes,
-        ai_explanation: `<p>${justificativa}</p>`,
-        vibe_title: vibeTitle,
-        tags: tags,
-        imdb_url: dadosFilme?.imdb_id
-          ? `https://www.imdb.com/title/${dadosFilme.imdb_id}/`
-          : `https://www.imdb.com/find?q=${encodeURIComponent(nomeFilme)}`,
-        letterboxd_url: dadosFilme?.id_tmdb
-          ? `https://letterboxd.com/tmdb/${dadosFilme.id_tmdb}`
-          : `https://letterboxd.com/search/${encodeURIComponent(nomeFilme)}/`,
-        tiktok_url: `https://www.tiktok.com/search?q=${encodeURIComponent(nomeFilme + ' edit')}`,
-      },
-    };
-
-    return jsonResponse(resposta, 200);
-  } catch (error) {
-    console.error('Pages Function error:', error);
-    return jsonResponse({ error: 'Erro interno do servidor' }, 500);
-  }
-}
-
-// ============================================================
-//  HELPERS
-// ============================================================
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -216,9 +73,6 @@ function extrairDiretorWikipedia(extract) {
   return 'Disponível na Wikipédia';
 }
 
-// ============================================================
-//  BUSCA GENERICA: Brave Search
-// ============================================================
 async function buscarBrave(query) {
   try {
     const url = `https://search.brave.com/search?q=${encodeURIComponent(query)}`;
@@ -233,14 +87,10 @@ async function buscarBrave(query) {
     }
 
     const html = await resp.text();
-    // Remove blocos <script> e <style> primeiro
     let texto = html.replace(/<script[^>]*>.*?<\/script>/gi, '');
     texto = texto.replace(/<style[^>]*>.*?<\/style>/gi, '');
-    // Remove tags HTML restantes
     texto = texto.replace(/<[^>]+>/g, '');
-    // Limpa espacos duplicados
     texto = texto.replace(/\s+/g, ' ').trim();
-    // Trunca para evitar excesso
     texto = texto.substring(0, 5000);
     if (texto) {
       console.log(`[BRAVE] OK! ${texto.length} chars obtidos.`);
@@ -253,9 +103,6 @@ async function buscarBrave(query) {
   }
 }
 
-// ============================================================
-//  BUSCA DE CITACOES DO FILME (Brave Search)
-// ============================================================
 async function buscarCitacoesFilme(nomeFilme) {
   try {
     const query = `"${nomeFilme}" movie quotes memorable lines`;
@@ -263,7 +110,6 @@ async function buscarCitacoesFilme(nomeFilme) {
     if (resultado) {
       const frases = [];
       for (const linha of resultado.split('\n')) {
-        // Procura por trechos entre aspas (normais e tipograficas)
         const citacoes = linha.match(/["""\u201C\u201D]([^""\u201C\u201D]{10,80})["""\u201C\u201D]/g);
         if (citacoes) {
           for (const c of citacoes) {
@@ -284,14 +130,10 @@ async function buscarCitacoesFilme(nomeFilme) {
   return ['Cinema is magic.', 'Every film is a journey.', 'Lights, camera, action!'];
 }
 
-// ============================================================
-//  1. LETRA — LRCLIB → Genius → Brave Search
-// ============================================================
 async function buscarLetraMusica(nomeMusica, artista, env) {
   const nomeLimpo = limparTermoMusica(nomeMusica);
   const artistaLimpo = limparTermoMusica(artista) || artista;
 
-  // CAMADA 1: LRCLIB
   console.log('[LETRA] CAMADA 1: LRCLIB...');
   try {
     const params = new URLSearchParams({ track_name: nomeLimpo, artist_name: artistaLimpo });
@@ -307,7 +149,6 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
     console.error('[LETRA] LRCLIB erro:', err);
   }
 
-  // CAMADA 2: Genius (letra)
   console.log('[LETRA] CAMADA 2: Genius...');
   const geniusKey = env?.GENIUS_API_KEY;
   if (geniusKey) {
@@ -338,7 +179,6 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
     }
   }
 
-  // CAMADA 3: Brave Search
   console.log('[LETRA] CAMADA 3: Brave Search...');
   const letraBrave = await buscarBrave(`${nomeLimpo} ${artistaLimpo} lyrics`);
   if (letraBrave) {
@@ -350,15 +190,11 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
   return null;
 }
 
-// ============================================================
-//  2. CONTEXTO — Genius → Brave Search → Wikipedia → OpenRouter mini-IA
-// ============================================================
 async function buscarContextoMusica(nomeMusica, artista, env) {
   const nomeLimpo = limparTermoMusica(nomeMusica);
   const artistaLimpo = limparTermoMusica(artista) || artista;
   const termoBusca = `${nomeLimpo} ${artistaLimpo}`;
 
-  // CAMADA 1: Genius (descricao)
   console.log('[CONTEXTO] CAMADA 1: Genius...');
   if (env.GENIUS_API_KEY) {
     try {
@@ -388,7 +224,6 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
     }
   }
 
-  // CAMADA 2: Brave Search
   console.log('[CONTEXTO] CAMADA 2: Brave Search...');
   const ctxBrave = await buscarBrave(`significado da musica ${nomeLimpo} ${artistaLimpo}`);
   if (ctxBrave) {
@@ -396,7 +231,6 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
     return ctxBrave.substring(0, 2000);
   }
 
-  // CAMADA 3: Wikipedia PT
   console.log('[CONTEXTO] CAMADA 3: Wikipedia PT...');
   try {
     const url = `${WIKIPEDIA_PT_API}${encodeURIComponent(termoBusca)}`;
@@ -414,32 +248,49 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
     console.error('[CONTEXTO] Wikipedia erro:', err);
   }
 
-  // CAMADA 4: OpenRouter mini-IA (com fallback string seguro)
   console.log('[CONTEXTO] CAMADA 4: OpenRouter (mini-IA)...');
   if (env.OPENROUTER_API_KEY) {
     try {
       const prompt = `Explique brevemente em um paragrafo curto em portugues o significado da musica '${nomeLimpo}' de '${artistaLimpo}'.`;
-      const resp = await fetch(OPENROUTER_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'openrouter/free',
-          temperature: 0.3,
-          max_tokens: 300,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-      });
-      if (resp.ok) {
+      const modelos = [
+        'google/gemini-2.0-flash-exp:free',
+        'meta-llama/llama-4-maverick:free',
+        'mistralai/mistral-small-latest:free',
+        'google/gemini-2.0-flash-lite-preview-02-05:free'
+      ];
+      const payload = {
+        temperature: 0.3,
+        max_tokens: 300,
+        messages: [{ role: 'user', content: prompt }],
+      };
+
+      console.log('[CONTEXTO] Tentando modelos OpenRouter...');
+      let resp = null;
+      for (const modelo of modelos) {
+        payload.model = modelo;
+        try {
+          resp = await fetch(OPENROUTER_URL, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+          });
+          if (resp.ok) break;
+          console.log(`[CONTEXTO] Modelo ${modelo} falhou: ${resp.status}`);
+        } catch (err) {
+          console.error(`[CONTEXTO] Erro com modelo ${modelo}:`, err);
+        }
+      }
+
+      if (resp && resp.ok) {
         const dados = await resp.json();
-        // Tratamento defensivo contra NoneType/choices=null
-        let texto = "";
+        let texto = '';
         if (dados && typeof dados === 'object') {
           const choices = dados.choices;
           if (choices && Array.isArray(choices) && choices.length > 0 && choices[0]) {
-            texto = choices[0].message?.content?.trim() || "";
+            texto = choices[0].message?.content?.trim() || '';
           }
         }
         if (texto) {
@@ -456,9 +307,12 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
   return null;
 }
 
-// ============================================================
-//  3. RECOMENDAÇÃO IA — OpenRouter
-// ============================================================
+const FALLBACK_MOVIE = {
+  filme: 'The Great Gatsby',
+  ano: '2013',
+  justificativa: 'A atmosfera nostálgica e elegantemente melancólica ressoa profundamente com o esplendor visual e o desejo emocional do clássico de Baz Luhrmann. A produção visual deslumbrante, a energia contagiante e a exploração de temas como o tempo, a memória e a busca por um amor impossível criam uma sinergia perfeita com a vibe da música.',
+};
+
 async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey) {
   if (!apiKey) return null;
 
@@ -492,72 +346,94 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
   }
 
   try {
-    const resp = await fetch(OPENROUTER_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'openrouter/free',
+    const modelos = [
+      'google/gemini-2.0-flash-exp:free',
+      'meta-llama/llama-4-maverick:free',
+      'mistralai/mistral-small-latest:free',
+      'google/gemini-2.0-flash-lite-preview-02-05:free'
+    ];
+    
+    let resp = null;
+    for (const modelo of modelos) {
+      const body = {
+        model: modelo,
         temperature: 0.3,
         messages: [
           { role: 'system', content: promptSistema },
           { role: 'user', content: conteudoUsuario },
         ],
-      }),
-    });
+      };
 
-    if (!resp.ok) {
-      console.error('[OPENROUTER] HTTP', resp.status);
-      return null;
+      console.log(`[OPENROUTER] Tentando modelo: ${modelo}`);
+      resp = await fetch(OPENROUTER_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (resp.ok) break;
+      console.log(`[OPENROUTER] Modelo ${modelo} falhou: ${resp.status}`);
+    }
+
+    if (!resp || !resp.ok) {
+      console.error('[OPENROUTER] Todos os modelos falharam, usando fallback.');
+      return FALLBACK_MOVIE;
     }
 
     const dados = await resp.json();
-    // Tratamento defensivo contra NoneType/choices=null
-    let textoIA = "";
+    let textoIA = '';
     if (dados && typeof dados === 'object') {
       const choices = dados.choices;
       if (choices && Array.isArray(choices) && choices.length > 0 && choices[0]) {
-        textoIA = choices[0].message?.content?.trim() || "";
+        textoIA = choices[0].message?.content?.trim() || '';
       }
     }
-    if (!textoIA) return null;
+    if (!textoIA) return FALLBACK_MOVIE;
 
     textoIA = textoIA.replace(/```json/g, '').replace(/```/g, '').trim();
 
+    if (/User Safety/i.test(textoIA) || /\bsafe\b/i.test(textoIA)) {
+      console.error('[OPENROUTER] Resposta de seguranca detectada, usando fallback.');
+      return FALLBACK_MOVIE;
+    }
+
     try {
-      return JSON.parse(textoIA);
+      const parsed = JSON.parse(textoIA);
+      if (parsed && typeof parsed === 'object') {
+        parsed.filme = sanitizarTituloFilme(parsed.filme || parsed.filme_sugerido || '');
+        return parsed;
+      }
+      return FALLBACK_MOVIE;
     } catch (_) {
       const matchJSON = textoIA.match(/(\{[\s\S]*\})/);
       if (matchJSON) {
         try {
-          return JSON.parse(matchJSON[0]);
+          const parsed = JSON.parse(matchJSON[0]);
+          if (parsed && typeof parsed === 'object') {
+            parsed.filme = sanitizarTituloFilme(parsed.filme || parsed.filme_sugerido || '');
+            return parsed;
+          }
         } catch (e) {
           console.error('[OPENROUTER] Regex JSON parse falhou:', e);
-          console.error('[OPENROUTER] Texto bruto:', textoIA);
-          return null;
         }
       }
-      console.error('[OPENROUTER] Nenhum JSON encontrado.');
-      return null;
+      console.error('[OPENROUTER] Nenhum JSON encontrado, usando fallback.');
+      return FALLBACK_MOVIE;
     }
   } catch (err) {
     console.error('[OPENROUTER] Erro na requisicao:', err);
-    return null;
+    return FALLBACK_MOVIE;
   }
 }
 
-// ============================================================
-//  4. DADOS DO FILME — TMDb (sem language filter)
-// ============================================================
 async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
   if (!apiKey) return null;
 
   try {
-    // Usa APENAS o nome limpo do filme na query; ano e passado separadamente
     let nomeLimpo = nomeFilme;
-
     const paramsBusca = new URLSearchParams({ api_key: apiKey, query: nomeLimpo, language: 'pt-BR' });
     if (ano) {
       paramsBusca.set('primary_release_year', ano);
@@ -616,7 +492,6 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
       posterUrl = `https://image.tmdb.org/t/p/w500${filmeBasico.poster_path}`;
     }
 
-    // Busca tagline do TMDb para usar como fallback de citacoes
     const tagline = (detalhes && typeof detalhes === 'object' && detalhes.tagline) ? detalhes.tagline.trim() : '';
 
     return {
@@ -637,11 +512,7 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
   }
 }
 
-// ============================================================
-//  5. FALLBACK FILME — Wikipedia → Brave Search
-// ============================================================
 async function buscarDadosFilmeFallback(nomeFilme, ano) {
-  // CAMADA 1: Wikipedia PT (com 'filme' no termo)
   console.log('[FILME FALLBACK] CAMADA 1: Wikipedia PT...');
   try {
     const termos = [];
@@ -678,7 +549,6 @@ async function buscarDadosFilmeFallback(nomeFilme, ano) {
     console.error('[FILME FALLBACK] Wikipedia erro:', err);
   }
 
-  // CAMADA 2: Brave Search
   console.log('[FILME FALLBACK] CAMADA 2: Brave Search...');
   try {
     let query = `${nomeFilme} movie plot synopsis`;
@@ -696,11 +566,8 @@ async function buscarDadosFilmeFallback(nomeFilme, ano) {
   return null;
 }
 
-// ============================================================
-//  UTILITARIO: limpar HTML
-// ============================================================
 function limparHTML(texto) {
-  var entidades = {
+  const entidades = {
     'amp': '&',
     'lt': '<',
     'gt': '>',
@@ -718,3 +585,119 @@ function limparHTML(texto) {
     .trim();
 }
 
+export async function onRequest(context) {
+  const { request, env } = context;
+
+  if (request.method !== 'POST') {
+    return new Response('Method Not Allowed', { status: 405 });
+  }
+
+  try {
+    const body = await request.json();
+    const { nome_musica, artista } = body;
+
+    if (!nome_musica) {
+      return jsonResponse({ error: 'nome_musica is required' }, 400);
+    }
+
+    const letra = await buscarLetraMusica(nome_musica, artista, env);
+    const contextoExtra = await buscarContextoMusica(nome_musica, artista, env);
+    const recomendacaoIA = await obterRecomendacaoIA(nome_musica, artista, letra, contextoExtra, env.OPENROUTER_API_KEY);
+
+    if (!recomendacaoIA) {
+      return jsonResponse({ error: 'Falha ao obter recomendacao da IA' }, 500);
+    }
+
+    const nomeFilme = sanitizarTituloFilme(recomendacaoIA.filme || recomendacaoIA.filme_sugerido || '');
+    const anoFilme = recomendacaoIA.ano || recomendacaoIA.ano_filme || '';
+    const justificativa = recomendacaoIA.justificativa || recomendacaoIA.justificativa_vibe || FALLBACK_MOVIE.justificativa;
+    const vibeTitle = recomendacaoIA.vibe_title || 'VIBE CINEMATICA';
+    const tags = recomendacaoIA.tags || ['UNICO', 'ESSENCIAL'];
+
+    if (!nomeFilme) {
+      return jsonResponse({ error: 'IA nao retornou um nome de filme valido' }, 500);
+    }
+
+    let dadosFilme = null;
+    if (env.TMDB_API_KEY) {
+      dadosFilme = await obterDetalhesTMDB(nomeFilme, env.TMDB_API_KEY, anoFilme);
+    }
+
+    if (!dadosFilme || !dadosFilme.sinopse || dadosFilme.sinopse === 'Sem sinopse disponivel.') {
+      const fallback = await buscarDadosFilmeFallback(nomeFilme, anoFilme);
+      if (fallback) {
+        dadosFilme = {
+          id_tmdb: null,
+          titulo_pt: nomeFilme,
+          titulo_original: nomeFilme,
+          ano: anoFilme || 'Nao informado',
+          sinopse: fallback.sinopse || 'Sinopse indisponivel.',
+          poster: fallback.poster || null,
+          diretor: fallback.diretor || 'Nao encontrado',
+          imdb_id: null,
+          cenas: [],
+        };
+      } else {
+        dadosFilme = {
+          id_tmdb: null,
+          titulo_pt: nomeFilme,
+          titulo_original: nomeFilme,
+          ano: anoFilme || 'Nao informado',
+          sinopse: 'Sinopse indisponivel.',
+          poster: null,
+          diretor: 'Nao encontrado',
+          imdb_id: null,
+          cenas: [],
+        };
+      }
+    }
+
+    let quotes = recomendacaoIA.citacoes || [];
+    const QUOTES_PADRAO = ["Cada cena brilha como uma lembranca.", "A musica ecoa na alma do cinema.", "A vibe encontra seu filme."];
+    const isQuotesPadrao = !Array.isArray(quotes) || quotes.length < 3 || JSON.stringify(quotes.slice(0, 3)) === JSON.stringify(QUOTES_PADRAO);
+    if (!Array.isArray(quotes) || quotes.length < 3) {
+      quotes = [...QUOTES_PADRAO];
+    }
+    if (isQuotesPadrao && dadosFilme && dadosFilme.tagline) {
+      quotes = [dadosFilme.tagline, quotes[1], quotes[2]];
+    }
+    quotes = quotes.slice(0, 3);
+
+    if (dadosFilme && (!dadosFilme.cenas || dadosFilme.cenas.length === 0)) {
+      const poster = dadosFilme.poster;
+      if (poster) {
+        dadosFilme.cenas = [poster, poster, poster];
+      }
+    }
+
+    const resposta = {
+      song: nome_musica,
+      artist: artista || '',
+      movie: {
+        title: dadosFilme?.titulo_pt || nomeFilme,
+        original_title: dadosFilme?.titulo_original || nomeFilme,
+        release_year: dadosFilme?.ano || anoFilme || 'Nao informado',
+        director: dadosFilme?.diretor || 'Nao encontrado',
+        synopsis: dadosFilme?.sinopse || 'Sinopse nao disponivel.',
+        poster_url: dadosFilme?.poster || '',
+        stills: dadosFilme?.cenas || [],
+        quotes: quotes,
+        ai_explanation: `<p>${justificativa}</p>`,
+        vibe_title: vibeTitle,
+        tags: tags,
+        imdb_url: dadosFilme?.imdb_id
+          ? `https://www.imdb.com/title/${dadosFilme.imdb_id}/`
+          : `https://www.imdb.com/find?q=${encodeURIComponent(nomeFilme)}`,
+        letterboxd_url: dadosFilme?.id_tmdb
+          ? `https://letterboxd.com/tmdb/${dadosFilme.id_tmdb}`
+          : `https://letterboxd.com/search/${encodeURIComponent(nomeFilme)}/`,
+        tiktok_url: `https://www.tiktok.com/search?q=${encodeURIComponent(nomeFilme + ' edit')}`,
+      },
+    };
+
+    return jsonResponse(resposta, 200);
+  } catch (error) {
+    console.error('Pages Function error:', error);
+    return jsonResponse({ error: 'Erro interno do servidor' }, 500);
+  }
+}
