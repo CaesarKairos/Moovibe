@@ -126,60 +126,6 @@ def buscar_brave(query):
 
 
 # ==========================================
-# BUSCA DE FACTS/CURIOSIDADES (Songfacts)
-# ==========================================
-def buscar_songfacts(nome_musica, artista):
-    """
-    Pesquisa no Songfacts o nome da musica e do artista e extrai fatos/curiosidades
-    relevantes da pagina de busca.
-    """
-    query = f"{nome_musica} {artista}".strip()
-    if not query:
-        return None
-
-    try:
-        url = f"https://www.songfacts.com/search?q={urllib.parse.quote(query)}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code != 200:
-            print(f"[SONGFACTS] Status {resp.status_code}")
-            return None
-
-        html = resp.text
-        html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        texto = re.sub(r'<[^>]+>', ' ', html)
-        texto = re.sub(r'\s+', ' ', texto).strip()
-
-        if not texto:
-            print("[SONGFACTS] Pagina vazia apos limpeza.")
-            return None
-
-        fatos = []
-        for linha in texto.split("\n"):
-            linha = linha.strip()
-            if not linha:
-                continue
-            if len(fatos) >= 6:
-                break
-            if len(linha) < 15 or len(linha) > 240:
-                continue
-            fatos.append(linha)
-
-        if fatos:
-            print(f"[SONGFACTS] OK! {len(fatos)} fatos extraidos.")
-            return "\n".join(fatos)
-
-        print("[SONGFACTS] Nenhum fato util encontrado.")
-        return None
-    except Exception as e:
-        print(f"[SONGFACTS] Erro: {e}")
-        return None
-
-
-# ==========================================
 # BUSCA DE CITACOES DO FILME (Brave Search)
 # ==========================================
 def buscar_citacoes_filme(nome_filme):
@@ -290,6 +236,43 @@ def buscar_letra_musica(nome_musica, artista):
         print("[LETRA] Brave Search: Letra encontrada!")
         return letra_brave[:5000]
 
+    print("[LETRA] CAMADA 4 (FALLBACK FINAL): OpenRouter :online...")
+    if OPENROUTER_API_KEY:
+        try:
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            prompt = (
+                f"Encontre e retorne APENAS a letra completa da música '{nome_limpo}' "
+                f"do artista '{artista_limpo}'. Não adicione nenhum outro texto."
+            )
+            payload = {
+                "model": "openai/gpt-4o-mini:online",
+                "temperature": 0.3,
+                "max_tokens": 2000,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+            print(f"[LETRA] OpenRouter prompt: {prompt[:100]}...")
+            tempo_inicio = time.time()
+            resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=20)
+            tempo_resposta = round(time.time() - tempo_inicio, 2)
+            print(f"[LETRA] OpenRouter status: {resp.status_code} | Tempo: {tempo_resposta}s")
+            resp.raise_for_status()
+            dados_resp = resp.json()
+            texto = ""
+            if isinstance(dados_resp, dict):
+                choices = dados_resp.get("choices")
+                if choices and isinstance(choices, list) and len(choices) > 0 and choices[0]:
+                    texto = choices[0].get("message", {}).get("content", "")
+            if texto and isinstance(texto, str):
+                texto = texto.strip()
+                if texto:
+                    print("[LETRA] OpenRouter: Letra encontrada!")
+                    return texto[:5000]
+        except Exception as e:
+            print(f"[LETRA] OpenRouter erro: {e}")
+
     print("[LETRA] Todas as camadas falharam.")
     return ""
 
@@ -353,11 +336,11 @@ def buscar_contexto_musica(nome_musica, artista):
                 "Content-Type": "application/json"
             }
             prompt = (
-                f"Explique brevemente em um paragrafo curto em portugues "
-                f"o significado da musica '{nome_limpo}' de '{artista_limpo}'."
+                f"Pesquise na web o contexto oficial e o significado da música '{nome_limpo}' "
+                f"do artista '{artista_limpo}'. Explique brevemente em um parágrafo curto em português."
             )
             payload = {
-                "model": "openrouter/auto",
+                "model": "openrouter/auto:online",
                 "temperature": 0.3,
                 "max_tokens": 300,
                 "messages": [{"role": "user", "content": prompt}]
@@ -398,7 +381,7 @@ def buscar_contexto_musica(nome_musica, artista):
 # ==========================================
 # 3. INTELIGENCIA ARTIFICIAL - RECOMENDACAO PRINCIPAL
 # ==========================================
-def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, songfacts=None):
+def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
@@ -436,14 +419,11 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, song
     else:
         conteudo_usuario += "(Nao encontramos a letra no banco de dados, baseie-se no tema geral da musica).\n\n"
 
-    if songfacts:
-        conteudo_usuario += f"Fatos e curiosidades reais da musica para contribuir no mapeamento da vibe:\n{songfacts}\n\n"
-
     if contexto_extra:
         conteudo_usuario += f"Contexto historico, significado e fatos adicionais sobre a musica para te ajudar na escolha:\n{contexto_extra}\n"
 
     payload = {
-        "model": "openrouter/auto",
+        "model": "openrouter/auto:online",
         "temperature": 0.3,
         "messages": [
             {"role": "system", "content": prompt_sistema},
@@ -728,6 +708,58 @@ def buscar_dados_filme_fallback(nome_filme, ano):
     except Exception as e:
         print(f"[FILME FALLBACK] Brave Search erro: {e}")
 
+    print("[FILME FALLBACK] CAMADA 3 (FALLBACK FINAL): OpenRouter :online...")
+    if OPENROUTER_API_KEY:
+        try:
+            prompt = (
+                f"Pesquise na web informações sobre o filme '{nome_filme}' "
+                f"lançado no ano de '{ano}' (se houver). "
+                f"Retorne estritamente um JSON com: 'sinopse' (um breve resumo em português), "
+                f"'diretor' (nome do diretor), e 'poster' (URL de uma imagem, se possível, caso contrário null)."
+            )
+            payload = {
+                "model": "openai/gpt-4o-mini:online",
+                "temperature": 0.3,
+                "max_tokens": 500,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            tempo_inicio = time.time()
+            resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=20)
+            tempo_resposta = round(time.time() - tempo_inicio, 2)
+            print(f"[FILME FALLBACK] OpenRouter status: {resp.status_code} | Tempo: {tempo_resposta}s")
+            resp.raise_for_status()
+            dados_resp = resp.json()
+            texto = ""
+            if isinstance(dados_resp, dict):
+                choices = dados_resp.get("choices")
+                if choices and isinstance(choices, list) and len(choices) > 0 and choices[0]:
+                    texto = choices[0].get("message", {}).get("content", "")
+            if texto and isinstance(texto, str):
+                print(f"[FILME FALLBACK] OpenRouter resposta bruta: {texto[:300]}...")
+                dados = extrair_json_de_texto(texto)
+                if dados and isinstance(dados, dict):
+                    poster = dados.get("poster")
+                    if poster and not str(poster).startswith('http'):
+                        poster = None
+                    return {
+                        "sinopse": dados.get("sinopse", "Sinopse indisponível.") or "Sinopse indisponível.",
+                        "diretor": dados.get("diretor", "Não encontrado") or "Não encontrado",
+                        "poster": poster
+                    }
+                else:
+                    print("[FILME FALLBACK] OpenRouter JSON não encontrado, usando texto como sinopse.")
+                    return {
+                        "sinopse": texto[:2000],
+                        "diretor": "Encontrado via IA",
+                        "poster": None
+                    }
+        except Exception as e:
+            print(f"[FILME FALLBACK] OpenRouter erro: {e}")
+
     print("[FILME FALLBACK] Todas as camadas falharam.")
     return None
 
@@ -793,16 +825,8 @@ def main():
             print("✗ Contexto nao encontrado.")
 
         print()
-        print("=== BUSCANDO FACTS (SONGFACTS) ===")
-        songfacts = buscar_songfacts(nome_musica, artista)
-        if songfacts:
-            print("✓ Songfacts obtidos com sucesso.")
-        else:
-            print("✗ Songfacts nao encontrados. Seguindo sem fatos extras.")
-
-        print()
         print("=== ANALISANDO VIBE (IA) ===")
-        recomendacao_ia = obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra, songfacts)
+        recomendacao_ia = obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra)
 
         if not recomendacao_ia:
             print("Falha ao obter recomendacao da IA. Tente novamente.")

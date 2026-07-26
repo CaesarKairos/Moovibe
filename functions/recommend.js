@@ -8,8 +8,6 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3/movie';
 const WIKIPEDIA_PT_API = 'https://pt.wikipedia.org/api/rest_v1/page/summary/';
-const SONGFACTS_URL = 'https://www.songfacts.com/search';
-
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -176,55 +174,6 @@ async function buscarCitacoesFilme(nomeFilme) {
   return [];
 }
 
-async function buscarSongfacts(nomeMusica, artista) {
-  const query = `${nomeMusica} ${artista}`.trim();
-  if (!query) return null;
-
-  try {
-    const url = `${SONGFACTS_URL}?q=${encodeURIComponent(query)}`;
-    const resp = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      },
-    });
-    if (!resp.ok) {
-      console.log(`[SONGFACTS] Status ${resp.status}`);
-      return null;
-    }
-
-    const html = await resp.text();
-    let texto = html.replace(/<script[^>]*>.*?<\/script>/gi, '');
-    texto = texto.replace(/<style[^>]*>.*?<\/style>/gi, '');
-    texto = texto.replace(/<[^>]+>/g, ' ');
-    texto = texto.replace(/\s+/g, ' ').trim();
-
-    if (!texto) {
-      console.log('[SONGFACTS] Pagina vazia apos limpeza.');
-      return null;
-    }
-
-    const candidatos = texto.split('\n').map((l) => l.trim()).filter(Boolean);
-    const fatos = candidatos.filter((linha) => {
-      if (linha.length < 20 || linha.length > 240) return false;
-      if (/\b(verse|chorus|bridge|outro|intro|lyrics|letra)\b/i.test(linha)) return false;
-      if (/\[.*?\]|\(.*?\)/.test(linha)) return false;
-      return true;
-    });
-
-    if (fatos.length === 0) {
-      console.log('[SONGFACTS] Resultado parece letra/HTML ruidoso. Descartando Songfacts.');
-      return null;
-    }
-
-    const resultado = fatos.slice(0, 6).join('\n');
-    console.log(`[SONGFACTS] OK! ${fatos.length} fatos extraidos.`);
-    return resultado;
-  } catch (err) {
-    console.error('[SONGFACTS] Erro:', err);
-    return null;
-  }
-}
-
 async function buscarLetraMusica(nomeMusica, artista, env) {
   const nomeLimpo = limparTermoMusica(nomeMusica);
   const artistaLimpo = limparTermoMusica(artista) || artista;
@@ -279,6 +228,48 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
   if (letraBrave) {
     console.log('[LETRA] Brave Search: Letra encontrada!');
     return letraBrave.substring(0, 5000);
+  }
+
+  console.log('[LETRA] CAMADA 4 (FALLBACK FINAL): OpenRouter :online...');
+  if (env.OPENROUTER_API_KEY) {
+    try {
+      const prompt = `Encontre e retorne APENAS a letra completa da música '${nomeLimpo}' do artista '${artistaLimpo}'. Não adicione nenhum outro texto.`;
+      const payload = {
+        model: 'openai/gpt-4o-mini:online',
+        temperature: 0.3,
+        max_tokens: 2000,
+        messages: [{ role: 'user', content: prompt }],
+      };
+      console.log(`[LETRA] OpenRouter prompt: ${prompt.substring(0, 100)}...`);
+      const tempoInicio = Date.now();
+      const resp = await fetch(OPENROUTER_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+      const tempoResposta = ((Date.now() - tempoInicio) / 1000).toFixed(2);
+      console.log(`[LETRA] OpenRouter status: ${resp.status} | Tempo: ${tempoResposta}s`);
+
+      if (resp.ok) {
+        const dados = await resp.json();
+        let texto = '';
+        if (dados && typeof dados === 'object') {
+          const choices = dados.choices;
+          if (choices && Array.isArray(choices) && choices.length > 0 && choices[0]) {
+            texto = choices[0].message?.content?.trim() || '';
+          }
+        }
+        if (texto) {
+          console.log('[LETRA] OpenRouter: Letra encontrada!');
+          return texto.substring(0, 5000);
+        }
+      }
+    } catch (err) {
+      console.error('[LETRA] OpenRouter erro:', err);
+    }
   }
 
   console.log('[LETRA] Todas as camadas falharam.');
@@ -346,9 +337,9 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra) {
   console.log('[CONTEXTO] CAMADA 4: OpenRouter (mini-IA)...');
   if (env.OPENROUTER_API_KEY) {
     try {
-      const prompt = `Explique brevemente em um paragrafo curto em portugues o significado da musica '${nomeLimpo}' de '${artistaLimpo}'.`;
+      const prompt = `Pesquise na web o contexto oficial e o significado da música '${nomeLimpo}' do artista '${artistaLimpo}'. Explique brevemente em um parágrafo curto em português.`;
       const payload = {
-        model: 'openrouter/auto',
+        model: 'openrouter/auto:online',
         temperature: 0.3,
         max_tokens: 300,
         messages: [{ role: 'user', content: prompt }],
@@ -406,7 +397,7 @@ async function buscarCapaMusica(nomeMusica, artista) {
   }
 }
 
-async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey, songfacts, filmesExcluidos = '') {
+async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey, filmesExcluidos = '') {
   if (!apiKey) return null;
 
   const exclusao = typeof filmesExcluidos === 'string' && filmesExcluidos.trim().length > 0 ? `\nREGRA OBRIGATÓRIA DE DIVERSIFICAÇÃO: NÃO recomende nenhum dos seguintes filmes sob nenhuma hipótese: ${filmesExcluidos}. Escolha um filme totalmente diferente que combine com a vibe da música.` : '';
@@ -436,16 +427,13 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
     conteudoUsuario += "(Nao encontramos a letra no banco de dados, baseie-se no tema geral da musica).\n";
     conteudoUsuario += "Como nao temos a letra, gere 3 citacoes genericas sobre cinema ou inspiracao que combinem com o filme.\n\n";
   }
-  if (songfacts) {
-    conteudoUsuario += `Fatos e curiosidades reais da musica para contribuir no mapeamento da vibe:\n${songfacts}\n\n`;
-  }
   if (contextoExtra) {
     conteudoUsuario += `Contexto historico, significado e fatos adicionais sobre a musica para te ajudar na escolha:\n${contextoExtra}\n`;
   }
 
   try {
     const body = {
-      model: 'openrouter/auto',
+      model: 'openrouter/auto:online',
       temperature: 0.3,
       messages: [
         { role: 'system', content: promptSistema },
@@ -643,6 +631,62 @@ async function buscarDadosFilmeFallback(nomeFilme, ano) {
     console.error('[FILME FALLBACK] Brave Search erro:', err);
   }
 
+  console.log('[FILME FALLBACK] CAMADA 3 (FALLBACK FINAL): OpenRouter :online...');
+  if (env.OPENROUTER_API_KEY) {
+    try {
+      const prompt = `Pesquise na web informações sobre o filme '${nomeFilme}' lançado no ano de '${ano}' (se houver). Retorne estritamente um JSON com: 'sinopse' (um breve resumo em português), 'diretor' (nome do diretor), e 'poster' (URL de uma imagem, se possível, caso contrário null).`;
+      const payload = {
+        model: 'openai/gpt-4o-mini:online',
+        temperature: 0.3,
+        max_tokens: 500,
+        messages: [{ role: 'user', content: prompt }],
+      };
+      const resp = await fetch(OPENROUTER_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (resp.ok) {
+        const dados = await resp.json();
+        let texto = '';
+        if (dados && typeof dados === 'object') {
+          const choices = dados.choices;
+          if (choices && Array.isArray(choices) && choices.length > 0 && choices[0]) {
+            texto = choices[0].message?.content?.trim() || '';
+          }
+        }
+        if (texto) {
+          console.log(`[FILME FALLBACK] OpenRouter resposta bruta: ${texto.substring(0, 300)}...`);
+          const parsed = extrairJSON(texto);
+          if (parsed && typeof parsed === 'object') {
+            let poster = parsed.poster;
+            if (poster && !String(poster).startsWith('http')) {
+              poster = null;
+            }
+            return {
+              sinopse: parsed.sinopse || 'Sinopse indisponível.',
+              diretor: parsed.diretor || 'Não encontrado',
+              poster: poster,
+            };
+          } else {
+            console.log('[FILME FALLBACK] OpenRouter JSON não encontrado, usando texto como sinopse.');
+            return {
+              sinopse: texto.substring(0, 2000),
+              diretor: 'Encontrado via IA',
+              poster: null,
+            };
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[FILME FALLBACK] OpenRouter erro:', err);
+    }
+  }
+
   console.log('[FILME FALLBACK] Todas as camadas falharam.');
   return null;
 }
@@ -724,7 +768,6 @@ export async function onRequest(context) {
     
     const letra = await buscarLetraMusica(nome_musica, artista, env);
     let contextoExtra = await buscarContextoMusica(nome_musica, artista, env, letra);
-    const songfacts = await buscarSongfacts(nome_musica, artista);
 
     if (!validarContexto(contextoExtra, letra)) {
       contextoExtra = null;
@@ -743,7 +786,6 @@ export async function onRequest(context) {
       letra,
       contextoExtra,
       env.OPENROUTER_API_KEY,
-      songfacts,
       filmesExcluidos
     );
 
