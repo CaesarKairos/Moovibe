@@ -230,14 +230,15 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
     return letraBrave.substring(0, 5000);
   }
 
-  console.log('[LETRA] CAMADA 4 (FALLBACK FINAL): OpenRouter :online...');
+  console.log('[LETRA] CAMADA 4 (FALLBACK FINAL): OpenRouter web search...');
   if (env.OPENROUTER_API_KEY) {
     try {
       const prompt = `Encontre e retorne APENAS a letra completa da música '${nomeLimpo}' do artista '${artistaLimpo}'. Não adicione nenhum outro texto.`;
       const payload = {
-        model: 'openai/gpt-4o-mini:online',
+        model: 'openai/gpt-4o-mini',
         temperature: 0.3,
         max_tokens: 2000,
+        tools: [{ type: 'openrouter:web_search' }],
         messages: [{ role: 'user', content: prompt }],
       };
       console.log(`[LETRA] OpenRouter prompt: ${prompt.substring(0, 100)}...`);
@@ -337,11 +338,17 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra) {
   console.log('[CONTEXTO] CAMADA 4: OpenRouter (mini-IA)...');
   if (env.OPENROUTER_API_KEY) {
     try {
-      const prompt = `Pesquise na web o contexto oficial e o significado da música '${nomeLimpo}' do artista '${artistaLimpo}'. Explique brevemente em um parágrafo curto em português.`;
+      const prompt = `Pesquise na web a história real, inspiração e o significado da música '${nomeLimpo}' de '${artistaLimpo}'. Retorne apenas um parágrafo curto em português explicando o contexto.`;
       const payload = {
-        model: 'openrouter/auto:online',
+        model: 'openrouter/auto',
         temperature: 0.3,
         max_tokens: 300,
+        tools: [{
+          type: 'openrouter:web_search',
+          parameters: {
+            excluded_domains: ['letras.mus.br', 'vagalume.com.br', 'letras.com.br', 'azlyrics.com', 'cifraclub.com.br', 'genius.com']
+          }
+        }],
         messages: [{ role: 'user', content: prompt }],
       };
 
@@ -433,8 +440,9 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
 
   try {
     const body = {
-      model: 'openrouter/auto:online',
+      model: 'openrouter/auto',
       temperature: 0.3,
+      tools: [{ type: 'openrouter:web_search' }],
       messages: [
         { role: 'system', content: promptSistema },
         { role: 'user', content: conteudoUsuario },
@@ -636,9 +644,10 @@ async function buscarDadosFilmeFallback(nomeFilme, ano) {
     try {
       const prompt = `Pesquise na web informações sobre o filme '${nomeFilme}' lançado no ano de '${ano}' (se houver). Retorne estritamente um JSON com: 'sinopse' (um breve resumo em português), 'diretor' (nome do diretor), e 'poster' (URL de uma imagem, se possível, caso contrário null).`;
       const payload = {
-        model: 'openai/gpt-4o-mini:online',
+        model: 'openai/gpt-4o-mini',
         temperature: 0.3,
         max_tokens: 500,
+        tools: [{ type: 'openrouter:web_search' }],
         messages: [{ role: 'user', content: prompt }],
       };
       const resp = await fetch(OPENROUTER_URL, {

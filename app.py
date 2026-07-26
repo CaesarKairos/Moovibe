@@ -236,7 +236,7 @@ def buscar_letra_musica(nome_musica, artista):
         print("[LETRA] Brave Search: Letra encontrada!")
         return letra_brave[:5000]
 
-    print("[LETRA] CAMADA 4 (FALLBACK FINAL): OpenRouter :online...")
+    print("[LETRA] CAMADA 4 (FALLBACK FINAL): OpenRouter web search...")
     if OPENROUTER_API_KEY:
         try:
             headers = {
@@ -248,9 +248,10 @@ def buscar_letra_musica(nome_musica, artista):
                 f"do artista '{artista_limpo}'. Não adicione nenhum outro texto."
             )
             payload = {
-                "model": "openai/gpt-4o-mini:online",
+                "model": "openai/gpt-4o-mini",
                 "temperature": 0.3,
                 "max_tokens": 2000,
+                "tools": [{"type": "openrouter:web_search"}],
                 "messages": [{"role": "user", "content": prompt}]
             }
             print(f"[LETRA] OpenRouter prompt: {prompt[:100]}...")
@@ -340,9 +341,15 @@ def buscar_contexto_musica(nome_musica, artista):
                 f"do artista '{artista_limpo}'. Explique brevemente em um parágrafo curto em português."
             )
             payload = {
-                "model": "openrouter/auto:online",
+                "model": "openrouter/auto",
                 "temperature": 0.3,
                 "max_tokens": 300,
+                "tools": [{
+                    "type": "openrouter:web_search",
+                    "parameters": {
+                        "excluded_domains": ["letras.mus.br", "vagalume.com.br", "letras.com.br", "azlyrics.com", "cifraclub.com.br", "genius.com"]
+                    }
+                }],
                 "messages": [{"role": "user", "content": prompt}]
             }
 
@@ -423,8 +430,9 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
         conteudo_usuario += f"Contexto historico, significado e fatos adicionais sobre a musica para te ajudar na escolha:\n{contexto_extra}\n"
 
     payload = {
-        "model": "openrouter/auto:online",
+        "model": "openrouter/auto",
         "temperature": 0.3,
+        "tools": [{"type": "openrouter:web_search"}],
         "messages": [
             {"role": "system", "content": prompt_sistema},
             {"role": "user", "content": conteudo_usuario}
@@ -718,9 +726,10 @@ def buscar_dados_filme_fallback(nome_filme, ano):
                 f"'diretor' (nome do diretor), e 'poster' (URL de uma imagem, se possível, caso contrário null)."
             )
             payload = {
-                "model": "openai/gpt-4o-mini:online",
+                "model": "openai/gpt-4o-mini",
                 "temperature": 0.3,
                 "max_tokens": 500,
+                "tools": [{"type": "openrouter:web_search"}],
                 "messages": [{"role": "user", "content": prompt}]
             }
             headers = {
