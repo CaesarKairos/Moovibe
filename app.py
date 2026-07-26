@@ -248,7 +248,7 @@ def buscar_letra_musica(nome_musica, artista):
                 f"do artista '{artista_limpo}'. Não adicione nenhum outro texto."
             )
             payload = {
-                "model": "openai/gpt-4o-mini",
+                "model": "openrouter/auto",
                 "temperature": 0.3,
                 "max_tokens": 2000,
                 "tools": [{"type": "openrouter:web_search"}],
@@ -726,7 +726,7 @@ def buscar_dados_filme_fallback(nome_filme, ano):
                 f"'diretor' (nome do diretor), e 'poster' (URL de uma imagem, se possível, caso contrário null)."
             )
             payload = {
-                "model": "openai/gpt-4o-mini",
+                "model": "openrouter/auto",
                 "temperature": 0.3,
                 "max_tokens": 500,
                 "tools": [{"type": "openrouter:web_search"}],

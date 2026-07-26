@@ -235,7 +235,7 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
     try {
       const prompt = `Encontre e retorne APENAS a letra completa da música '${nomeLimpo}' do artista '${artistaLimpo}'. Não adicione nenhum outro texto.`;
       const payload = {
-        model: 'openai/gpt-4o-mini',
+        model: 'openrouter/auto',
         temperature: 0.3,
         max_tokens: 2000,
         tools: [{ type: 'openrouter:web_search' }],
@@ -644,7 +644,7 @@ async function buscarDadosFilmeFallback(nomeFilme, ano) {
     try {
       const prompt = `Pesquise na web informações sobre o filme '${nomeFilme}' lançado no ano de '${ano}' (se houver). Retorne estritamente um JSON com: 'sinopse' (um breve resumo em português), 'diretor' (nome do diretor), e 'poster' (URL de uma imagem, se possível, caso contrário null).`;
       const payload = {
-        model: 'openai/gpt-4o-mini',
+        model: 'openrouter/auto',
         temperature: 0.3,
         max_tokens: 500,
         tools: [{ type: 'openrouter:web_search' }],
