@@ -662,6 +662,40 @@ export async function onRequest(context) {
     return jsonResponse({ items });
   }
 
+  if (request.method === 'GET' && request.url.includes('/recommend')) {
+    try {
+      const kv = env.MOOVIBE_DB;
+      if (!kv) {
+        return jsonResponse([]);
+      }
+
+      const listResult = await kv.list({ limit: 20 });
+      const keys = listResult.keys || [];
+
+      if (keys.length === 0) {
+        return jsonResponse([]);
+      }
+
+      const recommendations = await Promise.all(
+        keys.map(async (key) => {
+          try {
+            const raw = await kv.get(key.name, 'json');
+            return raw || null;
+          } catch (err) {
+            console.error('[KV] Falha ao ler chave:', err);
+            return null;
+          }
+        })
+      );
+
+      const validItems = recommendations.filter((item) => item !== null);
+      return jsonResponse(validItems);
+    } catch (err) {
+      console.error('[KV] Falha ao listar histórico:', err);
+      return jsonResponse([]);
+    }
+  }
+
   if (request.method !== 'POST') {
     return new Response('Method Not Allowed', { status: 405 });
   }

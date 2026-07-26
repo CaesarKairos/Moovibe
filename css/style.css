@@ -544,7 +544,16 @@ h1, h2, h3, h4, .font-display {
         grid-column: span 2;
         flex-direction: row;
         overflow-x: auto;
+        padding: 0 1.5rem;
+        gap: 1.25rem;
     }
+    .stills-collage .polaroid {
+        min-width: 260px;
+        max-width: 320px;
+        flex-shrink: 0;
+    }
+    .rotate-left { transform: rotate(-1.5deg); }
+    .rotate-right { transform: rotate(1.5deg); }
     .hero-container {
         grid-template-columns: 1fr;
     }
@@ -555,7 +564,20 @@ h1, h2, h3, h4, .font-display {
     .film-strip-right { display: none; }
     .view-section { padding: 2rem 1.5rem; }
     .results-layout { grid-template-columns: 1fr; }
-    .stills-collage { grid-column: span 1; flex-direction: column; }
+    .stills-collage {
+        grid-column: span 1;
+        flex-direction: row;
+        overflow-x: auto;
+        padding: 0 1.5rem;
+        gap: 1rem;
+    }
+    .stills-collage .polaroid {
+        min-width: 240px;
+        max-width: 280px;
+        flex-shrink: 0;
+    }
+    .rotate-left { transform: rotate(-1deg); }
+    .rotate-right { transform: rotate(1deg); }
     .results-title { font-size: 3rem; }
 }
 

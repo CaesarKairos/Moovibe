@@ -98,14 +98,13 @@ document.addEventListener('DOMContentLoaded', () => {
         grid.innerHTML = '<p class="hall-subtitle">Loading matches...</p>';
 
         try {
-            const response = await fetch('/recommend-history');
+            const response = await fetch('/recommend', { method: 'GET' });
             if (!response.ok) {
                 throw new Error('Failed to load history');
             }
-            const data = await response.json();
-            const items = Array.isArray(data?.items) ? data.items : [];
+            const items = await response.json();
 
-            if (items.length === 0) {
+            if (!Array.isArray(items) || items.length === 0) {
                 grid.innerHTML = '<p class="hall-subtitle">No matches yet. Be the first to discover one.</p>';
                 return;
             }
