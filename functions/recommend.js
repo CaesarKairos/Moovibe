@@ -1,10 +1,12 @@
 /**
  * Moovibe - Cloudflare Pages Function
+ * Lógica espelhada de app.py (Python → JavaScript)
  */
 
 const LRCLIB_URL = 'https://lrclib.net/api/search';
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3/movie';
 const WIKIPEDIA_PT_API = 'https://pt.wikipedia.org/api/rest_v1/page/summary/';
 
 function jsonResponse(data, status = 200) {
@@ -33,6 +35,43 @@ function sanitizarTituloFilme(titulo) {
   t = t.replace(/\s*[\(\[]\s*(?:19|20)\d{2}\s*[\)\]]\s*$/, '');
   t = t.replace(/\s*[-–—]\s*(?:19|20)\d{2}\s*$/, '');
   return t.trim();
+}
+
+function extrairJSON(texto) {
+  if (!texto || typeof texto !== 'string') return null;
+  
+  const Limpo = texto.replace(/```json/g, '').replace(/```/g, '').trim();
+  
+  const match = Limpo.match(/\{[\s\S]*\}/);
+  if (match) {
+    try {
+      return JSON.parse(match[0]);
+    } catch (e) {
+      console.error('[OPENROUTER] Regex JSON parse falhou:', e);
+    }
+  }
+  
+  return null;
+}
+
+function extrairQuotesDaLetra(letra, maxQuotes = 3) {
+  if (!letra || typeof letra !== 'string') return [];
+  
+  const linhas = letra.split('\n');
+  const quotes = [];
+  const estruturas = /^\[.*?\]$|^\(.*?\)$|^[A-Za-z\s]+:$|^---.*?---$/i;
+  
+  for (const linha of linhas) {
+    const limpa = linha.trim();
+    if (!limpa) continue;
+    if (estruturas.test(limpa)) continue;
+    if (limpa.length < 15 || limpa.length > 120) continue;
+    
+    quotes.push(limpa);
+    if (quotes.length >= maxQuotes) break;
+  }
+  
+  return quotes;
 }
 
 function extrairDuasPrimeirasFrases(texto) {
@@ -290,43 +329,6 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
   return null;
 }
 
-function extrairQuotesDaLetra(letra, maxQuotes = 3) {
-  if (!letra || typeof letra !== 'string') return [];
-  
-  const linhas = letra.split('\n');
-  const quotes = [];
-  const estruturas = /^\[.*?\]$|^\(.*?\)$|^[A-Za-z\s]+:$|^---.*?---$/i;
-  
-  for (const linha of linhas) {
-    const limpa = linha.trim();
-    if (!limpa) continue;
-    if (estruturas.test(limpa)) continue;
-    if (limpa.length < 15 || limpa.length > 120) continue;
-    
-    quotes.push(limpa);
-    if (quotes.length >= maxQuotes) break;
-  }
-  
-  return quotes;
-}
-
-function extrairJSON(texto) {
-  if (!texto || typeof texto !== 'string') return null;
-  
-  const Limpo = texto.replace(/```json/g, '').replace(/```/g, '').trim();
-  
-  const match = Limpo.match(/\{[\s\S]*\}/);
-  if (match) {
-    try {
-      return JSON.parse(match[0]);
-    } catch (e) {
-      console.error('[OPENROUTER] Regex JSON parse falhou:', e);
-    }
-  }
-  
-  return null;
-}
-
 async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey) {
   if (!apiKey) return null;
 
@@ -363,7 +365,6 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
     const body = {
       model: 'openrouter/auto',
       temperature: 0.3,
-      max_tokens: 300,
       messages: [
         { role: 'system', content: promptSistema },
         { role: 'user', content: conteudoUsuario },
@@ -447,11 +448,11 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
     const filmeId = filmeBasico.id;
 
     const paramsDetalhes = new URLSearchParams({ api_key: apiKey, language: 'pt-BR' });
-    const respDetalhes = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}?${paramsDetalhes}`);
+    const respDetalhes = await fetch(`${TMDB_BASE_URL}/${filmeId}?${paramsDetalhes}`);
     const detalhes = respDetalhes.ok ? await respDetalhes.json() : {};
 
     let diretor = 'Nao encontrado';
-    const respCreditos = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}/credits?api_key=${apiKey}&language=pt-BR`);
+    const respCreditos = await fetch(`${TMDB_BASE_URL}/${filmeId}/credits?api_key=${apiKey}&language=pt-BR`);
     if (respCreditos.ok) {
       const creditos = await respCreditos.json();
       for (const pessoa of (creditos?.crew || [])) {
@@ -462,7 +463,7 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
       }
     }
 
-    const respImagens = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}/images?api_key=${apiKey}&include_image_language=en,null`);
+    const respImagens = await fetch(`${TMDB_BASE_URL}/${filmeId}/images?api_key=${apiKey}&include_image_language=en,null`);
     const cenas = [];
     let posterUrl = null;
     
@@ -595,7 +596,7 @@ export async function onRequest(context) {
     const { nome_musica, artista } = body;
 
     if (!nome_musica) {
-      return jsonResponse({ error: true, message: 'Nome da música é obrigatório.' }, 400);
+      return jsonResponse({ error: { message: 'Nome da música é obrigatório.' } }, 400);
     }
 
     console.log('\n=== INICIANDO PIPELINE ===');
@@ -607,8 +608,7 @@ export async function onRequest(context) {
     if (!recomendacaoIA) {
       console.error('FALHA CRÍTICA: IA não retornou recomendação válida');
       return jsonResponse({
-        error: true,
-        message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.'
+        error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.' }
       }, 500);
     }
 
@@ -621,8 +621,7 @@ export async function onRequest(context) {
     if (!nomeFilme) {
       console.error('FALHA CRÍTICA: IA não retornou nome de filme válido');
       return jsonResponse({
-        error: true,
-        message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.'
+        error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.' }
       }, 500);
     }
 
@@ -661,8 +660,9 @@ export async function onRequest(context) {
       }
     }
 
+    // --- Lógica de quotes igual ao app.py ---
     let quotes = recomendacaoIA.citacoes || [];
-    const QUOTES_PADRAO = ["Cada cena brilha como uma lembranca.", "A musica ecoa na alma do cinema.", "A vibe encontra seu filme."];
+    const QUOTES_PADRAO = ["Cinema is magic.", "Every film is a journey.", "Lights, camera, action!"];
     const isQuotesPadrao = !Array.isArray(quotes) || quotes.length < 3 || JSON.stringify(quotes.slice(0, 3)) === JSON.stringify(QUOTES_PADRAO);
     
     if (isQuotesPadrao || quotes.length < 3) {
@@ -721,8 +721,7 @@ export async function onRequest(context) {
   } catch (error) {
     console.error('Pages Function error:', error);
     return jsonResponse({
-      error: true,
-      message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.'
+      error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.' }
     }, 500);
   }
 }

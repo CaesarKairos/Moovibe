@@ -64,9 +64,9 @@ document.addEventListener('DOMContentLoaded', () => {
         fetchPromise
             .then(data => {
                 clearInterval(messageInterval);
-                if (data && data.error) {
+                if (data && data.error && data.error.message) {
                     // Backend retornou erro amigável
-                    showError(data.message || 'Não foi possível encontrar a vibe dessa música.');
+                    showError(data.error.message);
                 } else {
                     injectResults(data);
                     switchView(viewResults);
