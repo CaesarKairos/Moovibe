@@ -253,14 +253,14 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
     try {
       const prompt = `Explique brevemente em um paragrafo curto em portugues o significado da musica '${nomeLimpo}' de '${artistaLimpo}'.`;
       const modelos = [
-        'google/gemini-2.0-flash-exp:free',
-        'meta-llama/llama-4-maverick:free',
-        'mistralai/mistral-small-latest:free',
-        'google/gemini-2.0-flash-lite-preview-02-05:free'
+        'google/gemini-2.0-flash-lite-preview-02-05:free',
+        'meta-llama/llama-3.3-70b-instruct:free',
+        'mistralai/mistral-7b-instruct:free'
       ];
       const payload = {
         temperature: 0.3,
         max_tokens: 300,
+        // response_format removido para evitar erro 400
         messages: [{ role: 'user', content: prompt }],
       };
 
@@ -313,6 +313,26 @@ const FALLBACK_MOVIE = {
   justificativa: 'A atmosfera nostálgica e elegantemente melancólica ressoa profundamente com o esplendor visual e o desejo emocional do clássico de Baz Luhrmann. A produção visual deslumbrante, a energia contagiante e a exploração de temas como o tempo, a memória e a busca por um amor impossível criam uma sinergia perfeita com a vibe da música.',
 };
 
+function extrairQuotesDaLetra(letra, maxQuotes = 3) {
+  if (!letra || typeof letra !== 'string') return [];
+  
+  const linhas = letra.split('\n');
+  const quotes = [];
+  const estruturas = /^\[.*?\]$|^\(.*?\)$|^[a-zA-Z\s]+:$|^---.*?---$/i;
+  
+  for (const linha of linhas) {
+    const limpa = linha.trim();
+    if (!limpa) continue;
+    if (estruturas.test(limpa)) continue;
+    if (limpa.length < 15 || limpa.length > 120) continue;
+    
+    quotes.push(limpa);
+    if (quotes.length >= maxQuotes) break;
+  }
+  
+  return quotes;
+}
+
 async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey) {
   if (!apiKey) return null;
 
@@ -347,10 +367,9 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
 
   try {
     const modelos = [
-      'google/gemini-2.0-flash-exp:free',
-      'meta-llama/llama-4-maverick:free',
-      'mistralai/mistral-small-latest:free',
-      'google/gemini-2.0-flash-lite-preview-02-05:free'
+      'google/gemini-2.0-flash-lite-preview-02-05:free',
+      'meta-llama/llama-3.3-70b-instruct:free',
+      'mistralai/mistral-7b-instruct:free'
     ];
     
     let resp = null;
@@ -358,6 +377,7 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
       const body = {
         model: modelo,
         temperature: 0.3,
+        // response_format removido para evitar erro 400
         messages: [
           { role: 'system', content: promptSistema },
           { role: 'user', content: conteudoUsuario },
@@ -380,7 +400,14 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
 
     if (!resp || !resp.ok) {
       console.error('[OPENROUTER] Todos os modelos falharam, usando fallback.');
-      return FALLBACK_MOVIE;
+      // Fallback com quotes da letra
+      const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
+      return {
+        ...FALLBACK_MOVIE,
+        citacoes: quotesDaLetra.length >= 3 ? quotesDaLetra : ['Every film is a journey.', 'Lights, camera, action!', 'Cinema is magic.'],
+        vibe_title: 'CINEMATIC INTROSPECTION',
+        tags: ['UNICO', 'ESSENCIAL', 'ETERO', 'VIBE'],
+      };
     }
 
     const dados = await resp.json();
@@ -391,22 +418,47 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
         textoIA = choices[0].message?.content?.trim() || '';
       }
     }
-    if (!textoIA) return FALLBACK_MOVIE;
+    if (!textoIA) {
+      const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
+      return {
+        ...FALLBACK_MOVIE,
+        citacoes: quotesDaLetra.length >= 3 ? quotesDaLetra : ['Every film is a journey.', 'Lights, camera, action!', 'Cinema is magic.'],
+        vibe_title: 'CINEMATIC INTROSPECTION',
+        tags: ['UNICO', 'ESSENCIAL', 'ETERO', 'VIBE'],
+      };
+    }
 
     textoIA = textoIA.replace(/```json/g, '').replace(/```/g, '').trim();
 
     if (/User Safety/i.test(textoIA) || /\bsafe\b/i.test(textoIA)) {
       console.error('[OPENROUTER] Resposta de seguranca detectada, usando fallback.');
-      return FALLBACK_MOVIE;
+      const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
+      return {
+        ...FALLBACK_MOVIE,
+        citacoes: quotesDaLetra.length >= 3 ? quotesDaLetra : ['Every film is a journey.', 'Lights, camera, action!', 'Cinema is magic.'],
+        vibe_title: 'CINEMATIC INTROSPECTION',
+        tags: ['UNICO', 'ESSENCIAL', 'ETERO', 'VIBE'],
+      };
     }
 
     try {
       const parsed = JSON.parse(textoIA);
       if (parsed && typeof parsed === 'object') {
         parsed.filme = sanitizarTituloFilme(parsed.filme || parsed.filme_sugerido || '');
+        // Garantir que citacoes existem
+        if (!parsed.citacoes || !Array.isArray(parsed.citacoes) || parsed.citacoes.length < 3) {
+          const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
+          parsed.citacoes = quotesDaLetra.length >= 3 ? quotesDaLetra : FALLBACK_QUOTES;
+        }
         return parsed;
       }
-      return FALLBACK_MOVIE;
+      const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
+      return {
+        ...FALLBACK_MOVIE,
+        citacoes: quotesDaLetra.length >= 3 ? quotesDaLetra : FALLBACK_QUOTES,
+        vibe_title: 'CINEMATIC INTROSPECTION',
+        tags: ['UNICO', 'ESSENCIAL', 'ETERO', 'VIBE'],
+      };
     } catch (_) {
       const matchJSON = textoIA.match(/(\{[\s\S]*\})/);
       if (matchJSON) {
@@ -414,20 +466,38 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
           const parsed = JSON.parse(matchJSON[0]);
           if (parsed && typeof parsed === 'object') {
             parsed.filme = sanitizarTituloFilme(parsed.filme || parsed.filme_sugerido || '');
+            // Garantir que citacoes existem
+            if (!parsed.citacoes || !Array.isArray(parsed.citacoes) || parsed.citacoes.length < 3) {
+              const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
+              parsed.citacoes = quotesDaLetra.length >= 3 ? quotesDaLetra : FALLBACK_QUOTES;
+            }
             return parsed;
           }
         } catch (e) {
           console.error('[OPENROUTER] Regex JSON parse falhou:', e);
         }
       }
-      console.error('[OPENROUTER] Nenhum JSON encontrado, usando fallback.');
-      return FALLBACK_MOVIE;
+      const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
+      return {
+        ...FALLBACK_MOVIE,
+        citacoes: quotesDaLetra.length >= 3 ? quotesDaLetra : FALLBACK_QUOTES,
+        vibe_title: 'CINEMATIC INTROSPECTION',
+        tags: ['UNICO', 'ESSENCIAL', 'ETERO', 'VIBE'],
+      };
     }
   } catch (err) {
     console.error('[OPENROUTER] Erro na requisicao:', err);
-    return FALLBACK_MOVIE;
+    const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
+    return {
+      ...FALLBACK_MOVIE,
+      citacoes: quotesDaLetra.length >= 3 ? quotesDaLetra : FALLBACK_QUOTES,
+      vibe_title: 'CINEMATIC INTROSPECTION',
+      tags: ['UNICO', 'ESSENCIAL', 'ETERO', 'VIBE'],
+    };
   }
 }
+
+const FALLBACK_QUOTES = ['Every film is a journey.', 'Lights, camera, action!', 'Cinema is magic.'];
 
 async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
   if (!apiKey) return null;
@@ -655,9 +725,17 @@ export async function onRequest(context) {
     let quotes = recomendacaoIA.citacoes || [];
     const QUOTES_PADRAO = ["Cada cena brilha como uma lembranca.", "A musica ecoa na alma do cinema.", "A vibe encontra seu filme."];
     const isQuotesPadrao = !Array.isArray(quotes) || quotes.length < 3 || JSON.stringify(quotes.slice(0, 3)) === JSON.stringify(QUOTES_PADRAO);
-    if (!Array.isArray(quotes) || quotes.length < 3) {
-      quotes = [...QUOTES_PADRAO];
+    
+    // Fallback: usar quotes da letra se as quotes da IA forem genéricas ou vazias
+    if (isQuotesPadrao || quotes.length < 3) {
+      const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
+      if (quotesDaLetra.length >= 3) {
+        quotes = quotesDaLetra;
+      } else if (!Array.isArray(quotes) || quotes.length < 3) {
+        quotes = [...QUOTES_PADRAO];
+      }
     }
+    
     if (isQuotesPadrao && dadosFilme && dadosFilme.tagline) {
       quotes = [dadosFilme.tagline, quotes[1], quotes[2]];
     }

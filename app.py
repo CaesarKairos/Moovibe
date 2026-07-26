@@ -133,6 +133,31 @@ def buscar_citacoes_filme(nome_filme):
             "Lights, camera, action!"]
 
 
+def extrair_quotes_da_letra(letra, max_quotes=3):
+    """Extrai versos da letra para usar como quotes de fallback."""
+    if not letra or not isinstance(letra, str):
+        return []
+    
+    linhas = letra.split('\n')
+    quotes = []
+    estruturas = re.compile(r'^\[.*?\]$|^\(.*?\)$|^[A-Za-z\s]+:$|^---.*?---$')
+    
+    for linha in linhas:
+        limpa = linha.strip()
+        if not limpa:
+            continue
+        if estruturas.match(limpa):
+            continue
+        if len(limpa) < 15 or len(limpa) > 120:
+            continue
+        
+        quotes.append(limpa)
+        if len(quotes) >= max_quotes:
+            break
+    
+    return quotes
+
+
 # ==========================================
 # 1. FLUXO DA LETRA DA MUSICA
 # ==========================================
@@ -250,14 +275,14 @@ def buscar_contexto_musica(nome_musica, artista):
                 f"o significado da musica '{nome_limpo}' de '{artista_limpo}'."
             )
             modelos = [
-                "google/gemini-2.0-flash-exp:free",
-                "meta-llama/llama-4-maverick:free",
-                "mistralai/mistral-small-latest:free",
-                "google/gemini-2.0-flash-lite-preview-02-05:free"
+                "google/gemini-2.0-flash-lite-preview-02-05:free",
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "mistralai/mistral-7b-instruct:free"
             ]
             payload = {
                 "temperature": 0.3,
                 "max_tokens": 300,
+                # "response_format": {"type": "json_object"},  # Removido para evitar erro 400
                 "messages": [{"role": "user", "content": prompt}]
             }
 
@@ -352,15 +377,15 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
         conteudo_usuario += f"Contexto historico, significado e fatos adicionais sobre a musica para te ajudar na escolha:\n{contexto_extra}\n"
 
     modelos = [
-        "google/gemini-2.0-flash-exp:free",
-        "meta-llama/llama-4-maverick:free",
-        "mistralai/mistral-small-latest:free",
-        "google/gemini-2.0-flash-lite-preview-02-05:free"
+        "google/gemini-2.0-flash-lite-preview-02-05:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "mistralai/mistral-7b-instruct:free"
     ]
     modelo_inicial = modelos[0]
     payload = {
         "model": modelo_inicial,
         "temperature": 0.3,
+        # "response_format": {"type": "json_object"},  # Removido para evitar erro 400
         "messages": [
             {"role": "system", "content": prompt_sistema},
             {"role": "user", "content": conteudo_usuario}
@@ -812,6 +837,16 @@ def main():
         # Detecta se o fallback generico foi usado (frases padrao)
         CITACOES_PADRAO = ["Cinema is magic.", "Every film is a journey.", "Lights, camera, action!"]
         is_fallback_padrao = (citacoes == CITACOES_PADRAO)
+        
+        # Fallback: usar quotes da letra se as quotes do Brave falharem
+        if is_fallback_padrao or len(citacoes) < 3:
+            quotes_da_letra = extrair_quotes_da_letra(letra, 3)
+            if quotes_da_letra and len(quotes_da_letra) >= 3:
+                citacoes = quotes_da_letra
+            elif is_fallback_padrao:
+                # Manter fallback padrao se nao houver letra
+                citacoes = CITACOES_PADRAO
+        
         # Se Brave falhou (fallback padrao) ou retornou menos de 3, tenta usar a tagline do TMDb
         if (is_fallback_padrao or len(citacoes) < 3) and dados_filme and dados_filme.get("tagline"):
             tagline = dados_filme["tagline"].strip()
