@@ -17,7 +17,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const viewHome = document.getElementById('view-home');
     const viewLoading = document.getElementById('view-loading');
     const viewResults = document.getElementById('view-results');
+    const viewError = document.getElementById('view-error');
     const loadingText = document.getElementById('loading-text');
+    const errorMessage = document.getElementById('error-message');
+    const btnRetry = document.getElementById('btn-retry');
 
     // Loading strings for cinematic feel
     const loadingMessages = [
@@ -28,7 +31,6 @@ document.addEventListener('DOMContentLoaded', () => {
         "Finding a cinematic soul..."
     ];
 
-
     // --- Core Functions ---
 
     function switchView(targetView) {
@@ -37,6 +39,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         targetView.classList.add('active');
         window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function showError(message) {
+        if (errorMessage) {
+            errorMessage.textContent = message;
+        }
+        switchView(viewError);
     }
 
     function startLoadingSequence(fetchPromise) {
@@ -55,14 +64,18 @@ document.addEventListener('DOMContentLoaded', () => {
         fetchPromise
             .then(data => {
                 clearInterval(messageInterval);
-                injectResults(data);
-                switchView(viewResults);
+                if (data && data.error) {
+                    // Backend retornou erro amigável
+                    showError(data.message || 'Não foi possível encontrar a vibe dessa música.');
+                } else {
+                    injectResults(data);
+                    switchView(viewResults);
+                }
             })
             .catch(error => {
                 clearInterval(messageInterval);
                 console.error('Erro na requisição:', error);
-                switchView(viewHome);
-                alert('Falha ao buscar a vibe. Tente novamente.');
+                showError('Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.');
             });
     }
 
@@ -211,7 +224,9 @@ document.addEventListener('DOMContentLoaded', () => {
         })
         .then(response => {
             if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                return response.json().then(err => {
+                    throw new Error(err.message || `HTTP ${response.status}`);
+                });
             }
             return response.json();
         });
@@ -224,6 +239,14 @@ document.addEventListener('DOMContentLoaded', () => {
         artistInput.value = '';
         switchView(viewHome);
     });
+
+    if (btnRetry) {
+        btnRetry.addEventListener('click', () => {
+            songInput.value = '';
+            artistInput.value = '';
+            switchView(viewHome);
+        });
+    }
 
     tagButtons.forEach(btn => {
         btn.addEventListener('click', (e) => {

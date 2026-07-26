@@ -1,12 +1,11 @@
 /**
- * Moovibe - Cloudflare Pages Function (com fallbacks OpenRouter)
+ * Moovibe - Cloudflare Pages Function
  */
 
 const LRCLIB_URL = 'https://lrclib.net/api/search';
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
 const WIKIPEDIA_PT_API = 'https://pt.wikipedia.org/api/rest_v1/page/summary/';
-const WIKIPEDIA_EN_API = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -40,12 +39,8 @@ function extrairDuasPrimeirasFrases(texto) {
   if (!texto) return '';
   const textoLimpo = texto.replace(/\s+/g, ' ').trim();
   const frases = textoLimpo.split(/(?<=[.!?])\s+/).filter(Boolean);
-  if (frases.length >= 2) {
-    return `${frases[0]} ${frases[1]}`;
-  }
-  if (frases.length === 1) {
-    return frases[0];
-  }
+  if (frases.length >= 2) return `${frases[0]} ${frases[1]}`;
+  if (frases.length === 1) return frases[0];
   return textoLimpo.substring(0, 500);
 }
 
@@ -127,7 +122,7 @@ async function buscarCitacoesFilme(nomeFilme) {
   } catch (err) {
     console.error('[CITACOES] Erro:', err);
   }
-  return ['Cinema is magic.', 'Every film is a journey.', 'Lights, camera, action!'];
+  return [];
 }
 
 async function buscarLetraMusica(nomeMusica, artista, env) {
@@ -332,12 +327,6 @@ function extrairJSON(texto) {
   return null;
 }
 
-const FALLBACK_MOVIE = {
-  filme: 'The Great Gatsby',
-  ano: '2013',
-  justificativa: 'A atmosfera nostálgica e elegantemente melancólica ressoa profundamente com o esplendor visual e o desejo emocional do clássico de Baz Luhrmann.',
-};
-
 async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey) {
   if (!apiKey) return null;
 
@@ -395,7 +384,7 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
 
     if (!resp.ok) {
       console.error('[OPENROUTER] HTTP', resp.status);
-      return { ...FALLBACK_MOVIE, citacoes: extrairQuotesDaLetra(letra, 3) };
+      return null;
     }
 
     const dados = await resp.json();
@@ -410,14 +399,14 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
     console.log(`[OPENROUTER] Resposta Bruta:\n${textoIA}\n`);
 
     if (!textoIA) {
-      return { ...FALLBACK_MOVIE, citacoes: extrairQuotesDaLetra(letra, 3) };
+      return null;
     }
 
     textoIA = textoIA.replace(/```json/g, '').replace(/```/g, '').trim();
 
     if (/User Safety/i.test(textoIA) || /\bsafe\b/i.test(textoIA)) {
       console.error('[OPENROUTER] Resposta de seguranca detectada.');
-      return { ...FALLBACK_MOVIE, citacoes: extrairQuotesDaLetra(letra, 3) };
+      return null;
     }
 
     const parsed = extrairJSON(textoIA);
@@ -425,16 +414,16 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
       parsed.filme = sanitizarTituloFilme(parsed.filme || parsed.filme_sugerido || '');
       if (!parsed.citacoes || !Array.isArray(parsed.citacoes) || parsed.citacoes.length < 3) {
         const quotes = extrairQuotesDaLetra(letra, 3);
-        parsed.citacoes = quotes.length >= 3 ? quotes : ['Every film is a journey.', 'Lights, camera, action!', 'Cinema is magic.'];
+        parsed.citacoes = quotes.length >= 3 ? quotes : [];
       }
       return parsed;
     }
 
     console.error('[OPENROUTER] Nenhum JSON encontrado.');
-    return { ...FALLBACK_MOVIE, citacoes: extrairQuotesDaLetra(letra, 3) };
+    return null;
   } catch (err) {
     console.error('[OPENROUTER] Erro na requisicao:', err);
-    return { ...FALLBACK_MOVIE, citacoes: extrairQuotesDaLetra(letra, 3) };
+    return null;
   }
 }
 
@@ -475,18 +464,17 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
 
     const respImagens = await fetch(`https://api.themoviedb.org/3/movie/${filmeId}/images?api_key=${apiKey}&include_image_language=en,null`);
     const cenas = [];
+    let posterUrl = null;
+    
     if (respImagens.ok) {
       const imagens = await respImagens.json();
+      
       for (const backdrop of (imagens?.backdrops || []).slice(0, 15)) {
         if (backdrop.file_path) {
           cenas.push(`https://image.tmdb.org/t/p/w780${backdrop.file_path}`);
         }
       }
-    }
 
-    let posterUrl = null;
-    if (respImagens.ok) {
-      const imagens = await respImagens.json();
       const posters = imagens?.posters || [];
       for (const poster of posters) {
         if (!poster.file_path) continue;
@@ -497,6 +485,7 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
         }
       }
     }
+    
     if (!posterUrl && filmeBasico.poster_path) {
       posterUrl = `https://image.tmdb.org/t/p/w500${filmeBasico.poster_path}`;
     }
@@ -606,15 +595,21 @@ export async function onRequest(context) {
     const { nome_musica, artista } = body;
 
     if (!nome_musica) {
-      return jsonResponse({ error: 'nome_musica is required' }, 400);
+      return jsonResponse({ error: true, message: 'Nome da música é obrigatório.' }, 400);
     }
 
+    console.log('\n=== INICIANDO PIPELINE ===');
+    
     const letra = await buscarLetraMusica(nome_musica, artista, env);
     const contextoExtra = await buscarContextoMusica(nome_musica, artista, env);
     const recomendacaoIA = await obterRecomendacaoIA(nome_musica, artista, letra, contextoExtra, env.OPENROUTER_API_KEY);
 
     if (!recomendacaoIA) {
-      return jsonResponse({ error: 'Falha ao obter recomendacao da IA' }, 500);
+      console.error('FALHA CRÍTICA: IA não retornou recomendação válida');
+      return jsonResponse({
+        error: true,
+        message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.'
+      }, 500);
     }
 
     const nomeFilme = sanitizarTituloFilme(recomendacaoIA.filme || recomendacaoIA.filme_sugerido || '');
@@ -624,7 +619,11 @@ export async function onRequest(context) {
     const tags = recomendacaoIA.tags || ['UNICO', 'ESSENCIAL'];
 
     if (!nomeFilme) {
-      return jsonResponse({ error: 'IA nao retornou um nome de filme valido' }, 500);
+      console.error('FALHA CRÍTICA: IA não retornou nome de filme válido');
+      return jsonResponse({
+        error: true,
+        message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.'
+      }, 500);
     }
 
     let dadosFilme = null;
@@ -633,6 +632,7 @@ export async function onRequest(context) {
     }
 
     if (!dadosFilme || !dadosFilme.sinopse || dadosFilme.sinopse === 'Sem sinopse disponivel.') {
+      console.log('[FALLBACK ATIVADO: TMDb falhou, usando fallback]');
       const fallback = await buscarDadosFilmeFallback(nomeFilme, anoFilme);
       if (fallback) {
         dadosFilme = {
@@ -665,7 +665,6 @@ export async function onRequest(context) {
     const QUOTES_PADRAO = ["Cada cena brilha como uma lembranca.", "A musica ecoa na alma do cinema.", "A vibe encontra seu filme."];
     const isQuotesPadrao = !Array.isArray(quotes) || quotes.length < 3 || JSON.stringify(quotes.slice(0, 3)) === JSON.stringify(QUOTES_PADRAO);
     
-    // Fallback: usar quotes da letra se as quotes da IA foren genéricas ou vazias
     if (isQuotesPadrao || quotes.length < 3) {
       const quotesDaLetra = extrairQuotesDaLetra(letra, 3);
       if (quotesDaLetra.length >= 3) {
@@ -687,6 +686,15 @@ export async function onRequest(context) {
       }
     }
 
+    // Construir URLs diretas se os IDs existirem, senão usar busca
+    const imdbUrl = dadosFilme?.imdb_id
+      ? `https://www.imdb.com/title/${dadosFilme.imdb_id}/`
+      : `https://www.imdb.com/find?q=${encodeURIComponent(nomeFilme)}`;
+    
+    const letterboxdUrl = dadosFilme?.id_tmdb
+      ? `https://letterboxd.com/tmdb/${dadosFilme.id_tmdb}`
+      : `https://letterboxd.com/search/${encodeURIComponent(nomeFilme)}/`;
+
     const resposta = {
       song: nome_musica,
       artist: artista || '',
@@ -702,19 +710,19 @@ export async function onRequest(context) {
         ai_explanation: `<p>${justificativa}</p>`,
         vibe_title: vibeTitle,
         tags: tags,
-        imdb_url: dadosFilme?.imdb_id
-          ? `https://www.imdb.com/title/${dadosFilme.imdb_id}/`
-          : `https://www.imdb.com/find?q=${encodeURIComponent(nomeFilme)}`,
-        letterboxd_url: dadosFilme?.id_tmdb
-          ? `https://letterboxd.com/tmdb/${dadosFilme.id_tmdb}`
-          : `https://letterboxd.com/search/${encodeURIComponent(nomeFilme)}/`,
+        imdb_url: imdbUrl,
+        letterboxd_url: letterboxdUrl,
         tiktok_url: `https://www.tiktok.com/search?q=${encodeURIComponent(nomeFilme + ' edit')}`,
       },
     };
 
+    console.log('\n=== PIPELINE CONCLUÍDA COM SUCESSO ===');
     return jsonResponse(resposta, 200);
   } catch (error) {
     console.error('Pages Function error:', error);
-    return jsonResponse({ error: 'Erro interno do servidor' }, 500);
+    return jsonResponse({
+      error: true,
+      message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.'
+    }, 500);
   }
 }
