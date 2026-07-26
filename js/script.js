@@ -1,7 +1,6 @@
 /**
  * Moovibe - Frontend Logic
  * Handles SPA navigation, loading states, and dynamic content injection.
- * Versão com blindagem defensiva total contra payloads parciais.
  */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -12,12 +11,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const artistInput = document.getElementById('artist-name');
     const btnSearchAgain = document.getElementById('btn-search-again');
     const tagButtons = document.querySelectorAll('.tag-btn');
+    const logoEl = document.querySelector('.nav-logo h1');
+    const navLinks = document.querySelectorAll('.nav-links a[data-view]');
     
     // Views
     const viewHome = document.getElementById('view-home');
     const viewLoading = document.getElementById('view-loading');
     const viewResults = document.getElementById('view-results');
     const viewError = document.getElementById('view-error');
+    const viewHallOfFame = document.getElementById('view-hall-of-fame');
     const loadingText = document.getElementById('loading-text');
     const errorMessage = document.getElementById('error-message');
     const btnRetry = document.getElementById('btn-retry');
@@ -34,6 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Core Functions ---
 
     function switchView(targetView) {
+        if (!targetView) return;
         document.querySelectorAll('.view-section').forEach(view => {
             view.classList.remove('active');
         });
@@ -65,7 +68,6 @@ document.addEventListener('DOMContentLoaded', () => {
             .then(data => {
                 clearInterval(messageInterval);
                 if (data && data.error && data.error.message) {
-                    // Backend retornou erro amigável
                     showError(data.error.message);
                 } else {
                     injectResults(data);
@@ -79,9 +81,100 @@ document.addEventListener('DOMContentLoaded', () => {
             });
     }
 
-    /**
-     * Abre o TikTok de forma inteligente.
-     */
+    function resetSearch() {
+        if (songInput) songInput.value = '';
+        if (artistInput) artistInput.value = '';
+    }
+
+    function goHome() {
+        resetSearch();
+        switchView(viewHome);
+    }
+
+    async function loadHallOfFame() {
+        const grid = document.getElementById('hall-grid');
+        if (!grid) return;
+
+        grid.innerHTML = '<p class="hall-subtitle">Loading matches...</p>';
+
+        try {
+            const response = await fetch('/recommend-history');
+            if (!response.ok) {
+                throw new Error('Failed to load history');
+            }
+            const data = await response.json();
+            const items = Array.isArray(data?.items) ? data.items : [];
+
+            if (items.length === 0) {
+                grid.innerHTML = '<p class="hall-subtitle">No matches yet. Be the first to discover one.</p>';
+                return;
+            }
+
+            grid.innerHTML = '';
+            items.slice(0, 25).forEach((item) => {
+                const movie = item?.movie || {};
+                const poster = movie.poster_url || '';
+                const title = movie.title || 'Unknown';
+                const year = movie.release_year || '';
+                const song = item.song || '';
+                const artist = item.artist || '';
+
+                const card = document.createElement('div');
+                card.className = 'hall-card';
+
+                const img = document.createElement('img');
+                img.src = poster;
+                img.alt = title;
+                img.loading = 'lazy';
+
+                const meta = document.createElement('div');
+                meta.className = 'hall-meta';
+                meta.innerHTML = `<strong>${escapeHtml(title)}</strong><br>${escapeHtml(year)}<br>${escapeHtml(song)} — ${escapeHtml(artist)}`;
+
+                if (poster) {
+                    card.appendChild(img);
+                }
+                card.appendChild(meta);
+                grid.appendChild(card);
+            });
+        } catch (err) {
+            console.error('Error loading Hall of Fame:', err);
+            const grid = document.getElementById('hall-grid');
+            if (grid) grid.innerHTML = '<p class="hall-subtitle">Could not load saved matches.</p>';
+        }
+    }
+
+    function escapeHtml(str) {
+        if (typeof str !== 'string') return '';
+        return str
+            .replace(/&/g, '&')
+            .replace(/</g, '<')
+            .replace(/>/g, '>')
+            .replace(/"/g, '"');
+    }
+
+    // --- SPA Navigation ---
+
+    navLinks.forEach(link => {
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            const targetId = link.getAttribute('data-view');
+            const target = document.getElementById(targetId);
+            switchView(target);
+            if (targetId === 'view-hall-of-fame') {
+                loadHallOfFame();
+            }
+        });
+    });
+
+    if (logoEl) {
+        logoEl.addEventListener('click', () => {
+            goHome();
+        });
+        logoEl.style.cursor = 'pointer';
+    }
+
+    // --- TikTok ---
     function abrirTikTok(nomeFilme) {
         if (!nomeFilme) return;
         
@@ -95,17 +188,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    /**
-     * Injeta dados no DOM com blindagem defensiva.
-     * Toda propriedade tem fallback seguro: string vazia, array vazio ou null.
-     */
+    // --- Results Injection ---
     function injectResults(data) {
-        // Garante que data.movie existe, mesmo que venha parcial
         const movie = data && data.movie ? data.movie : {};
         const safeStr = (val) => (val !== null && val !== undefined && typeof val === 'string') ? val : '';
         const safeArr = (val) => Array.isArray(val) ? val : [];
 
-        // --- Meta ---
+        // Meta
         const song = safeStr(data && data.song);
         const artist = safeStr(data && data.artist);
         const artistStr = artist ? ` - ${artist}` : '';
@@ -130,7 +219,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        // --- Vibe Report ---
+        // Vibe Report
         const elExplanation = document.getElementById('res-ai-explanation');
         if (elExplanation) elExplanation.innerHTML = safeStr(movie.ai_explanation) || '';
 
@@ -143,7 +232,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const elOrigTitle = document.getElementById('res-original-title');
         if (elOrigTitle) elOrigTitle.textContent = safeStr(movie.original_title);
         
-        // --- Poster & Text ---
+        // Poster & Text
         const elPoster = document.getElementById('res-poster');
         if (elPoster) elPoster.src = safeStr(movie.poster_url);
 
@@ -153,14 +242,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const elSynopsis = document.getElementById('res-synopsis');
         if (elSynopsis) elSynopsis.textContent = safeStr(movie.synopsis);
 
-        // --- Links ---
+        // Links
         const elImdb = document.getElementById('res-imdb');
         if (elImdb) elImdb.href = safeStr(movie.imdb_url);
 
         const elLb = document.getElementById('res-letterboxd');
         if (elLb) elLb.href = safeStr(movie.letterboxd_url);
 
-        // --- TikTok: event listener inteligente ---
+        // TikTok
         const tiktokLink = document.getElementById('res-tiktok');
         if (tiktokLink) {
             const novoTiktokLink = tiktokLink.cloneNode(true);
@@ -173,7 +262,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        // --- Stills: itera sobre as 3 polaroids, oculta se nao houver imagem ---
+        // Stills
         const stills = safeArr(movie.stills);
         const stillIds = ['res-still-1', 'res-still-2', 'res-still-3'];
         stillIds.forEach((id, index) => {
@@ -189,7 +278,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        // --- Quotes: injeta citacoes, fallback para titulo do filme se vazio ---
+        // Quotes
         const quotes = safeArr(movie.quotes);
         const quoteIds = ['res-quote-1', 'res-quote-2', 'res-quote-3'];
         const movieTitle = safeStr(movie.title);
@@ -197,9 +286,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const el = document.getElementById(id);
             if (el) {
                 const quoteText = quotes[index] ? safeStr(quotes[index]) : '';
-                // Se nao ha citacao, usa o titulo do filme como fallback
                 el.textContent = quoteText || movieTitle;
-                // Oculta o elemento se vazio, exibe se tem conteudo
                 el.style.display = (quoteText || movieTitle) ? '' : 'none';
             }
         });
@@ -234,18 +321,10 @@ document.addEventListener('DOMContentLoaded', () => {
         startLoadingSequence(fetchPromise);
     });
 
-    btnSearchAgain.addEventListener('click', () => {
-        songInput.value = '';
-        artistInput.value = '';
-        switchView(viewHome);
-    });
+    btnSearchAgain.addEventListener('click', goHome);
 
     if (btnRetry) {
-        btnRetry.addEventListener('click', () => {
-            songInput.value = '';
-            artistInput.value = '';
-            switchView(viewHome);
-        });
+        btnRetry.addEventListener('click', goHome);
     }
 
     tagButtons.forEach(btn => {

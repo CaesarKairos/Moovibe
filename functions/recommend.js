@@ -8,6 +8,7 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3/movie';
 const WIKIPEDIA_PT_API = 'https://pt.wikipedia.org/api/rest_v1/page/summary/';
+const SONGFACTS_URL = 'https://www.songfacts.com/search';
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -162,6 +163,56 @@ async function buscarCitacoesFilme(nomeFilme) {
     console.error('[CITACOES] Erro:', err);
   }
   return [];
+}
+
+async function buscarSongfacts(nomeMusica, artista) {
+  const query = `${nomeMusica} ${artista}`.trim();
+  if (!query) return null;
+
+  try {
+    const url = `${SONGFACTS_URL}?q=${encodeURIComponent(query)}`;
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+    });
+    if (!resp.ok) {
+      console.log(`[SONGFACTS] Status ${resp.status}`);
+      return null;
+    }
+
+    const html = await resp.text();
+    let texto = html.replace(/<script[^>]*>.*?<\/script>/gi, '');
+    texto = texto.replace(/<style[^>]*>.*?<\/style>/gi, '');
+    texto = texto.replace(/<[^>]+>/g, ' ');
+    texto = texto.replace(/\s+/g, ' ').trim();
+
+    if (!texto) {
+      console.log('[SONGFACTS] Pagina vazia apos limpeza.');
+      return null;
+    }
+
+    const fatos = [];
+    const linhas = texto.split('\n');
+    for (const linha of linhas) {
+      const limpa = linha.trim();
+      if (!limpa) continue;
+      if (fatos.length >= 6) break;
+      if (limpa.length < 15 || limpa.length > 240) continue;
+      fatos.push(limpa);
+    }
+
+    if (fatos.length > 0) {
+      console.log(`[SONGFACTS] OK! ${fatos.length} fatos extraidos.`);
+      return fatos.join('\n');
+    }
+
+    console.log('[SONGFACTS] Nenhum fato util encontrado.');
+    return null;
+  } catch (err) {
+    console.error('[SONGFACTS] Erro:', err);
+    return null;
+  }
 }
 
 async function buscarLetraMusica(nomeMusica, artista, env) {
@@ -329,7 +380,23 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
   return null;
 }
 
-async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey) {
+async function buscarCapaMusica(nomeMusica, artista) {
+  try {
+    const query = encodeURIComponent(`${nomeMusica} ${artista}`);
+    const url = `https://itunes.apple.com/search?term=${query}&entity=song&limit=1`;
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const dados = await resp.json();
+    const track = dados?.results?.[0];
+    if (!track?.artworkUrl100) return null;
+    return track.artworkUrl100.replace('100x100bb', '1000x1000bb');
+  } catch (err) {
+    console.error('[APPLE MUSIC] Erro:', err);
+    return null;
+  }
+}
+
+async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey, songfacts) {
   if (!apiKey) return null;
 
   const promptSistema = `Voce e um curador de cinema genial. O usuario vai te passar uma musica e voce deve sugerir EXATAMENTE UM filme que compartilhe exatamente da mesma atmosfera emocional, paleta de cores subtendida, ritmo psicologico ou alma lirica dessa musica. Nao se limite a conexoes obvias. Pense na vibe.
@@ -356,6 +423,9 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
   } else {
     conteudoUsuario += "(Nao encontramos a letra no banco de dados, baseie-se no tema geral da musica).\n";
     conteudoUsuario += "Como nao temos a letra, gere 3 citacoes genericas sobre cinema ou inspiracao que combinem com o filme.\n\n";
+  }
+  if (songfacts) {
+    conteudoUsuario += `Fatos e curiosidades reais da musica para contribuir no mapeamento da vibe:\n${songfacts}\n\n`;
   }
   if (contextoExtra) {
     conteudoUsuario += `Contexto historico, significado e fatos adicionais sobre a musica para te ajudar na escolha:\n${contextoExtra}\n`;
@@ -587,6 +657,11 @@ function limparHTML(texto) {
 export async function onRequest(context) {
   const { request, env } = context;
 
+  if (request.method === 'GET' && request.url.includes('/recommend-history')) {
+    const items = await listHistory(env);
+    return jsonResponse({ items });
+  }
+
   if (request.method !== 'POST') {
     return new Response('Method Not Allowed', { status: 405 });
   }
@@ -603,7 +678,8 @@ export async function onRequest(context) {
     
     const letra = await buscarLetraMusica(nome_musica, artista, env);
     const contextoExtra = await buscarContextoMusica(nome_musica, artista, env);
-    const recomendacaoIA = await obterRecomendacaoIA(nome_musica, artista, letra, contextoExtra, env.OPENROUTER_API_KEY);
+    const songfacts = await buscarSongfacts(nome_musica, artista);
+    const recomendacaoIA = await obterRecomendacaoIA(nome_musica, artista, letra, contextoExtra, env.OPENROUTER_API_KEY, songfacts);
 
     if (!recomendacaoIA) {
       console.error('FALHA CRÍTICA: IA não retornou recomendação válida');
@@ -686,6 +762,8 @@ export async function onRequest(context) {
       }
     }
 
+    const coverUrl = await buscarCapaMusica(nome_musica, artista);
+
     // Construir URLs diretas se os IDs existirem, senão usar busca
     const imdbUrl = dadosFilme?.imdb_id
       ? `https://www.imdb.com/title/${dadosFilme.imdb_id}/`
@@ -705,6 +783,7 @@ export async function onRequest(context) {
         director: dadosFilme?.diretor || 'Nao encontrado',
         synopsis: dadosFilme?.sinopse || 'Sinopse nao disponivel.',
         poster_url: dadosFilme?.poster || '',
+        cover_url: coverUrl || '',
         stills: dadosFilme?.cenas || [],
         quotes: quotes,
         ai_explanation: `<p>${justificativa}</p>`,
@@ -716,6 +795,8 @@ export async function onRequest(context) {
       },
     };
 
+    await storeHistory({ song: nome_musica, artist: artista, movie: resposta.movie }, env);
+
     console.log('\n=== PIPELINE CONCLUÍDA COM SUCESSO ===');
     return jsonResponse(resposta, 200);
   } catch (error) {
@@ -723,5 +804,33 @@ export async function onRequest(context) {
     return jsonResponse({
       error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.' }
     }, 500);
+  }
+}
+
+async function storeHistory(payload, env) {
+  try {
+    const kv = env.MOOVIBE_DB;
+    if (!kv) return;
+    const key = `history:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    await kv.put(key, JSON.stringify(payload), { expirationTtl: 60 * 60 * 24 * 30 });
+  } catch (err) {
+    console.error('[HISTORY] Falha ao salvar:', err);
+  }
+}
+
+async function listHistory(env) {
+  try {
+    const kv = env.MOOVIBE_DB;
+    if (!kv) return [];
+    const list = await kv.list({ prefix: 'history:', limit: 100, reverse: true });
+    const items = [];
+    for (const entry of list.keys || []) {
+      const raw = await kv.get(entry.name, 'json');
+      if (raw) items.push(raw);
+    }
+    return items.slice(0, 25);
+  } catch (err) {
+    console.error('[HISTORY] Falha ao listar:', err);
+    return [];
   }
 }
