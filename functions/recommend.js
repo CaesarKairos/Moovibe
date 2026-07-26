@@ -589,7 +589,7 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
   }
 }
 
-async function buscarDadosFilmeFallback(nomeFilme, ano) {
+async function buscarDadosFilmeFallback(nomeFilme, ano, env) {
   console.log('[FILME FALLBACK] CAMADA 1: Wikipedia PT...');
   try {
     const termos = [];
@@ -825,7 +825,7 @@ export async function onRequest(context) {
 
     if (!dadosFilme || !dadosFilme.sinopse || dadosFilme.sinopse === 'Sem sinopse disponivel.') {
       console.log('[FALLBACK ATIVADO: TMDb falhou, usando fallback]');
-      const fallback = await buscarDadosFilmeFallback(nomeFilme, anoFilme);
+      const fallback = await buscarDadosFilmeFallback(nomeFilme, anoFilme, env);
       if (fallback) {
         dadosFilme = {
           id_tmdb: null,
