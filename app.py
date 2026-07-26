@@ -21,6 +21,7 @@ URL_TMDB_BASE = "https://" + "api.themoviedb.org/3/movie"
 URL_WIKIPEDIA_PT = "https://" + "pt.wikipedia.org/api/rest_v1/page/summary/"
 URL_WIKIPEDIA_EN = "https://" + "en.wikipedia.org/api/rest_v1/page/summary/"
 
+#Fazer Deploy
 
 def limpar_termo_musica(termo):
     """Remove sufixos promocionais, ruidos e anos dos titulos."""
