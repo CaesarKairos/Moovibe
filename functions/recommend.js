@@ -84,6 +84,17 @@ function extrairDuasPrimeirasFrases(texto) {
   return textoLimpo.substring(0, 500);
 }
 
+function validarContexto(texto, letra) {
+  if (!texto || typeof texto !== 'string') return false;
+  if (!letra || typeof letra !== 'string') return true;
+  const trechoLetra = letra.replace(/\s+/g, ' ').trim().substring(0, 180);
+  const trechoContexto = texto.replace(/\s+/g, ' ').trim().substring(0, 180);
+  if (trechoContexto === trechoLetra) return false;
+  if (/\b(lyrics|letra)\b/i.test(texto)) return false;
+  if (/\[.*?\]|\(.*?\)/.test(texto)) return false;
+  return true;
+}
+
 function extrairDiretorWikipedia(extract) {
   if (!extract) return 'Disponível na Wikipédia';
 
@@ -192,23 +203,22 @@ async function buscarSongfacts(nomeMusica, artista) {
       return null;
     }
 
-    const fatos = [];
-    const linhas = texto.split('\n');
-    for (const linha of linhas) {
-      const limpa = linha.trim();
-      if (!limpa) continue;
-      if (fatos.length >= 6) break;
-      if (limpa.length < 15 || limpa.length > 240) continue;
-      fatos.push(limpa);
+    const candidatos = texto.split('\n').map((l) => l.trim()).filter(Boolean);
+    const fatos = candidatos.filter((linha) => {
+      if (linha.length < 20 || linha.length > 240) return false;
+      if (/\b(verse|chorus|bridge|outro|intro|lyrics|letra)\b/i.test(linha)) return false;
+      if (/\[.*?\]|\(.*?\)/.test(linha)) return false;
+      return true;
+    });
+
+    if (fatos.length === 0) {
+      console.log('[SONGFACTS] Resultado parece letra/HTML ruidoso. Descartando Songfacts.');
+      return null;
     }
 
-    if (fatos.length > 0) {
-      console.log(`[SONGFACTS] OK! ${fatos.length} fatos extraidos.`);
-      return fatos.join('\n');
-    }
-
-    console.log('[SONGFACTS] Nenhum fato util encontrado.');
-    return null;
+    const resultado = fatos.slice(0, 6).join('\n');
+    console.log(`[SONGFACTS] OK! ${fatos.length} fatos extraidos.`);
+    return resultado;
   } catch (err) {
     console.error('[SONGFACTS] Erro:', err);
     return null;
@@ -310,11 +320,11 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
   }
 
   console.log('[CONTEXTO] CAMADA 2: Brave Search...');
-  const ctxBrave = await buscarBrave(`significado da musica ${nomeLimpo} ${artistaLimpo}`);
-  if (ctxBrave) {
-    console.log('[CONTEXTO] Brave Search: Contexto encontrado!');
-    return ctxBrave.substring(0, 2000);
-  }
+    const ctxBrave = await buscarBrave(`significado da musica ${nomeLimpo} ${artistaLimpo}`);
+    if (ctxBrave && validarContexto(ctxBrave, letra)) {
+      console.log('[CONTEXTO] Brave Search: Contexto encontrado!');
+      return ctxBrave.substring(0, 2000);
+    }
 
   console.log('[CONTEXTO] CAMADA 3: Wikipedia PT...');
   try {
@@ -364,7 +374,7 @@ async function buscarContextoMusica(nomeMusica, artista, env) {
           }
         }
         console.log(`[CONTEXTO] Resposta Bruta: ${texto.substring(0, 300)}...`);
-        if (texto) {
+        if (texto && validarContexto(texto, letra)) {
           console.log('[CONTEXTO] OpenRouter: Contexto gerado via IA!');
           return texto.substring(0, 2000);
         }
@@ -396,10 +406,12 @@ async function buscarCapaMusica(nomeMusica, artista) {
   }
 }
 
-async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey, songfacts) {
+async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey, songfacts, filmesExcluidos = '') {
   if (!apiKey) return null;
 
-  const promptSistema = `Voce e um curador de cinema genial. O usuario vai te passar uma musica e voce deve sugerir EXATAMENTE UM filme que compartilhe exatamente da mesma atmosfera emocional, paleta de cores subtendida, ritmo psicologico ou alma lirica dessa musica. Nao se limite a conexoes obvias. Pense na vibe.
+  const exclusao = filmesExcluidos ? `\nREGRA OBRIGATÓRIA DE DIVERSIFICAÇÃO: NÃO recomende nenhum dos seguintes filmes sob nenhuma hipótese: ${filmesExcluidos}. Escolha um filme totalmente diferente que combine com a vibe da música.` : '';
+
+  const promptSistema = `Voce e um curador de cinema genial. O usuario vai te passar uma musica e voce deve sugerir EXATAMENTE UM filme que compartilhe exatamente da mesma atmosfera emocional, paleta de cores subtendida, ritmo psicologico ou alma lirica dessa musica. Nao se limite a conexoes obvias. Pense na vibe.${exclusao}
 
 CRITICO: Voce DEVE sugerir um filme REAL existente no banco de dados do TMDb. PROIBIDO inventar titulos de filmes. Use APENAS o titulo original ou oficial em ingles/portugues. NAO use caracteres asiaticos (como chines, japones, coreano) a menos que seja um filme autenticamente asiatico com titulo original nesses caracteres. Se nao tiver certeza, escolha um filme classico e bem conhecido.
 
@@ -710,10 +722,30 @@ export async function onRequest(context) {
 
     console.log('\n=== INICIANDO PIPELINE ===');
     
-    const letra = await buscarLetraMusica(nome_musica, artista, env);
-    const contextoExtra = await buscarContextoMusica(nome_musica, artista, env);
-    const songfacts = await buscarSongfacts(nome_musica, artista);
-    const recomendacaoIA = await obterRecomendacaoIA(nome_musica, artista, letra, contextoExtra, env.OPENROUTER_API_KEY, songfacts);
+    const letra = await buscarLetraMusica(nomeMusica, artista, env);
+    let contextoExtra = await buscarContextoMusica(nomeMusica, artista, env);
+    const songfacts = await buscarSongfacts(nomeMusica, artista);
+
+    if (!validarContexto(contextoExtra, letra)) {
+      contextoExtra = null;
+    }
+
+    const historico = await listHistory(env);
+    const recentMovies = (Array.isArray(historico) ? historico : [])
+      .map((item) => item?.movie?.title)
+      .filter((title) => typeof title === 'string' && title.trim().length > 0)
+      .slice(0, 5);
+    const filmesExcluidos = recentMovies.join(', ');
+
+    const recomendacaoIA = await obterRecomendacaoIA(
+      nomeMusica,
+      artista,
+      letra,
+      contextoExtra,
+      env.OPENROUTER_API_KEY,
+      songfacts,
+      filmesExcluidos
+    );
 
     if (!recomendacaoIA) {
       console.error('FALHA CRÍTICA: IA não retornou recomendação válida');
