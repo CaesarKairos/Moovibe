@@ -248,7 +248,7 @@ def buscar_letra_musica(nome_musica, artista):
                 f"do artista '{artista_limpo}'. Não adicione nenhum outro texto."
             )
             payload = {
-                "model": "google/gemini-2.0-flash-lite-preview-02-05:free",
+                "model": "openrouter/auto",
                 "temperature": 0.3,
                 "max_tokens": 2000,
                 "tools": [{"type": "openrouter:web_search"}],
@@ -342,7 +342,7 @@ def buscar_contexto_musica(nome_musica, artista):
                 f"do artista '{artista_limpo}'. Explique brevemente em um parágrafo curto em português."
             )
             payload = {
-                "model": "google/gemini-2.0-flash-lite-preview-02-05:free",
+                "model": "openrouter/auto",
                 "temperature": 0.3,
                 "max_tokens": 300,
                 "tools": [{
@@ -432,7 +432,7 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
         conteudo_usuario += f"Contexto historico, significado e fatos adicionais sobre a musica para te ajudar na escolha:\n{contexto_extra}\n"
 
     payload = {
-        "model": "google/gemini-2.0-flash-lite-preview-02-05:free",
+        "model": "openrouter/auto",
         "temperature": 0.3,
         "tools": [{"type": "openrouter:web_search"}],
         "messages": [
@@ -729,7 +729,7 @@ def buscar_dados_filme_fallback(nome_filme, ano):
                 f"'diretor' (nome do diretor), e 'poster' (URL de uma imagem, se possível, caso contrário null)."
             )
             payload = {
-                "model": "google/gemini-2.0-flash-lite-preview-02-05:free",
+                "model": "openrouter/auto",
                 "temperature": 0.3,
                 "max_tokens": 500,
                 "tools": [{"type": "openrouter:web_search"}],
