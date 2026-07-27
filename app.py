@@ -248,12 +248,13 @@ def buscar_letra_musica(nome_musica, artista):
                 f"do artista '{artista_limpo}'. Não adicione nenhum outro texto."
             )
             payload = {
-                "model": "openrouter/auto",
+                "model": "google/gemini-2.0-flash-lite-preview-02-05:free",
                 "temperature": 0.3,
                 "max_tokens": 2000,
                 "tools": [{"type": "openrouter:web_search"}],
                 "messages": [{"role": "user", "content": prompt}]
             }
+            print(f"\n[DEBUG] Enviando Payload para OpenRouter (LETRA):\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
             print(f"[LETRA] OpenRouter prompt: {prompt[:100]}...")
             tempo_inicio = time.time()
             resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=20)
@@ -341,7 +342,7 @@ def buscar_contexto_musica(nome_musica, artista):
                 f"do artista '{artista_limpo}'. Explique brevemente em um parágrafo curto em português."
             )
             payload = {
-                "model": "openrouter/auto",
+                "model": "google/gemini-2.0-flash-lite-preview-02-05:free",
                 "temperature": 0.3,
                 "max_tokens": 300,
                 "tools": [{
@@ -355,6 +356,7 @@ def buscar_contexto_musica(nome_musica, artista):
 
             # === LOGS OPENROUTER CONTEXTO ===
             print("\n=== [DEBUG] ENVIO OPENROUTER (CONTEXTO) ===")
+            print(f"[DEBUG] Payload enviado:\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
             print(f"Prompt: {prompt}")
             tempo_inicio = time.time()
             resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=15)
@@ -430,7 +432,7 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
         conteudo_usuario += f"Contexto historico, significado e fatos adicionais sobre a musica para te ajudar na escolha:\n{contexto_extra}\n"
 
     payload = {
-        "model": "openrouter/auto",
+        "model": "google/gemini-2.0-flash-lite-preview-02-05:free",
         "temperature": 0.3,
         "tools": [{"type": "openrouter:web_search"}],
         "messages": [
@@ -442,6 +444,7 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
     try:
         # === LOGS OPENROUTER ===
         print("\n=== [DEBUG] ENVIO PARA OPENROUTER ===")
+        print(f"[DEBUG] Payload enviado:\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
         print(f"Modelo: {payload['model']}")
         print("Prompt Sistema:")
         print(prompt_sistema)
@@ -726,7 +729,7 @@ def buscar_dados_filme_fallback(nome_filme, ano):
                 f"'diretor' (nome do diretor), e 'poster' (URL de uma imagem, se possível, caso contrário null)."
             )
             payload = {
-                "model": "openrouter/auto",
+                "model": "google/gemini-2.0-flash-lite-preview-02-05:free",
                 "temperature": 0.3,
                 "max_tokens": 500,
                 "tools": [{"type": "openrouter:web_search"}],
@@ -736,6 +739,7 @@ def buscar_dados_filme_fallback(nome_filme, ano):
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "Content-Type": "application/json"
             }
+            print(f"\n[DEBUG] Enviando Payload para OpenRouter (FILME FALLBACK):\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
             tempo_inicio = time.time()
             resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=20)
             tempo_resposta = round(time.time() - tempo_inicio, 2)

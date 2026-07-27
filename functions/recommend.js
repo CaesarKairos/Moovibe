@@ -235,12 +235,13 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
     try {
       const prompt = `Encontre e retorne APENAS a letra completa da música '${nomeLimpo}' do artista '${artistaLimpo}'. Não adicione nenhum outro texto.`;
       const payload = {
-        model: 'openrouter/auto',
+        model: 'google/gemini-2.0-flash-lite-preview-02-05:free',
         temperature: 0.3,
         max_tokens: 2000,
         tools: [{ type: 'openrouter:web_search' }],
         messages: [{ role: 'user', content: prompt }],
       };
+      console.log('\n[DEBUG] Enviando Payload para OpenRouter (LETRA):', JSON.stringify(payload, null, 2));
       console.log(`[LETRA] OpenRouter prompt: ${prompt.substring(0, 100)}...`);
       const tempoInicio = Date.now();
       const resp = await fetch(OPENROUTER_URL, {
@@ -340,7 +341,7 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra) {
     try {
       const prompt = `Pesquise na web a história real, inspiração e o significado da música '${nomeLimpo}' de '${artistaLimpo}'. Retorne apenas um parágrafo curto em português explicando o contexto.`;
       const payload = {
-        model: 'openrouter/auto',
+        model: 'google/gemini-2.0-flash-lite-preview-02-05:free',
         temperature: 0.3,
         max_tokens: 300,
         tools: [{
@@ -352,6 +353,7 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra) {
         messages: [{ role: 'user', content: prompt }],
       };
 
+      console.log('\n[DEBUG] Enviando Payload para OpenRouter (CONTEXTO):', JSON.stringify(payload, null, 2));
       console.log('[CONTEXTO] Tentando OpenRouter auto...');
       const resp = await fetch(OPENROUTER_URL, {
         method: 'POST',
@@ -440,7 +442,7 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
 
   try {
     const body = {
-      model: 'openrouter/auto',
+      model: 'google/gemini-2.0-flash-lite-preview-02-05:free',
       temperature: 0.3,
       tools: [{ type: 'openrouter:web_search' }],
       messages: [
@@ -449,7 +451,8 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
       ],
     };
 
-    console.log('[OPENROUTER] Tentando modelo: openrouter/auto');
+    console.log('\n[DEBUG] Enviando Payload para OpenRouter (RECOMENDACAO):', JSON.stringify(body, null, 2));
+    console.log('[OPENROUTER] Tentando modelo: google/gemini-2.0-flash-lite-preview-02-05:free');
     const resp = await fetch(OPENROUTER_URL, {
       method: 'POST',
       headers: {
@@ -644,12 +647,13 @@ async function buscarDadosFilmeFallback(nomeFilme, ano, env) {
     try {
       const prompt = `Pesquise na web informações sobre o filme '${nomeFilme}' lançado no ano de '${ano}' (se houver). Retorne estritamente um JSON com: 'sinopse' (um breve resumo em português), 'diretor' (nome do diretor), e 'poster' (URL de uma imagem, se possível, caso contrário null).`;
       const payload = {
-        model: 'openrouter/auto',
+        model: 'google/gemini-2.0-flash-lite-preview-02-05:free',
         temperature: 0.3,
         max_tokens: 500,
         tools: [{ type: 'openrouter:web_search' }],
         messages: [{ role: 'user', content: prompt }],
       };
+      console.log('\n[DEBUG] Enviando Payload para OpenRouter (FILME FALLBACK):', JSON.stringify(payload, null, 2));
       const resp = await fetch(OPENROUTER_URL, {
         method: 'POST',
         headers: {
