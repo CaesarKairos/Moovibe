@@ -8,11 +8,31 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3/movie';
 const WIKIPEDIA_PT_API = 'https://pt.wikipedia.org/api/rest_v1/page/summary/';
+
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function slugify(texto) {
+  if (!texto) return '';
+  let slug = texto.toLowerCase();
+  slug = slug.replace(/ & /g, ' e ');
+  slug = slug.replace(/ \/ /g, ' ');
+  slug = slug.replace(/[áàâãäå]/g, 'a');
+  slug = slug.replace(/[éèêë]/g, 'e');
+  slug = slug.replace(/[íìîï]/g, 'i');
+  slug = slug.replace(/[óòôõö]/g, 'o');
+  slug = slug.replace(/[úùûü]/g, 'u');
+  slug = slug.replace(/[ç]/g, 'c');
+  slug = slug.replace(/[ñ]/g, 'n');
+  slug = slug.replace(/[^a-z0-9\s-]/g, '');
+  slug = slug.replace(/[\s]+/g, '-');
+  slug = slug.replace(/-+/g, '-');
+  slug = slug.replace(/^-+|-+$/g, '');
+  return slug;
 }
 
 function limparTermoMusica(termo) {
@@ -406,13 +426,23 @@ async function buscarCapaMusica(nomeMusica, artista) {
   }
 }
 
-async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey, filmesExcluidos = '') {
+async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey, filmesExcluidosGlobais = [], filmesExcluidosMusica = []) {
   if (!apiKey) return null;
 
-  const exclusao = typeof filmesExcluidos === 'string' && filmesExcluidos.trim().length > 0 ? `\nREGRA OBRIGATÓRIA DE DIVERSIFICAÇÃO: NÃO recomende nenhum dos seguintes filmes sob nenhuma hipótese: ${filmesExcluidos}. Escolha um filme totalmente diferente que combine com a vibe da música.` : '';
+  // Monta regras de exclusão
+  let regraGlobal = '';
+  if (Array.isArray(filmesExcluidosGlobais) && filmesExcluidosGlobais.length > 0) {
+    regraGlobal = `REGRA DE DIVERSIFICAÇÃO GLOBAL: NÃO recomende nenhum destes filmes sob nenhuma hipótese: ${filmesExcluidosGlobais.join(', ')}.\n\n`;
+  }
 
-  const promptSistema = `Voce e um curador de cinema genial. O usuario vai te passar uma musica e voce deve sugerir EXATAMENTE UM filme que compartilhe exatamente da mesma atmosfera emocional, paleta de cores subtendida, ritmo psicologico ou alma lirica dessa musica. Nao se limite a conexoes obvias. Pense na vibe.${exclusao}
+  let regraEspecifica = '';
+  if (Array.isArray(filmesExcluidosMusica) && filmesExcluidosMusica.length > 0) {
+    regraEspecifica = `REGRA ESPECÍFICA DA MÚSICA: Para esta música específica, os seguintes filmes já foram recomendados recentemente e estão PROIBIDOS de serem repetidos: ${filmesExcluidosMusica.join(', ')}. Escolha algo novo.\n\n`;
+  }
 
+  const promptSistema = `Voce e um curador de cinema genial. O usuario vai te passar uma musica e voce deve sugerir EXATAMENTE UM filme que compartilhe exatamente da mesma atmosfera emocional, paleta de cores subtendida, ritmo psicologico ou alma lirica dessa musica. Nao se limite a conexoes obvias. Pense na vibe.
+
+${regraGlobal}${regraEspecifica}
 CRITICO: Voce DEVE sugerir um filme REAL existente no banco de dados do TMDb. PROIBIDO inventar titulos de filmes. Use APENAS o titulo original ou oficial em ingles/portugues. NAO use caracteres asiaticos (como chines, japones, coreano) a menos que seja um filme autenticamente asiatico com titulo original nesses caracteres. Se nao tiver certeza, escolha um filme classico e bem conhecido.
 
 REGRA ABSOLUTA: No campo 'filme', retorne APENAS o nome comercial puro do filme (em ingles ou portugues). E terminantemente PROIBIDO embutir o ano ao lado do nome do filme nesse campo. Por exemplo, retorne 'The Great Gatsby' e NUNCA 'The Great Gatsby 2013'. O ano de lancamento deve habitar estritamente e apenas o campo 'ano' do JSON.
@@ -725,20 +755,43 @@ function limparHTML(texto) {
 
 export async function onRequest(context) {
   const { request, env } = context;
+  const url = new URL(request.url);
 
-  if (request.method === 'GET' && request.url.includes('/recommend-history')) {
+  // ==========================================
+  // ROTA: GET /recommend-history (Hall of Fame)
+  // ==========================================
+  if (request.method === 'GET' && url.pathname.includes('/recommend-history')) {
     const items = await listHistory(env);
     return jsonResponse({ items });
   }
 
-  if (request.method === 'GET' && request.url.includes('/recommend')) {
-    try {
-      const kv = env.MOOVIBE_DB;
-      if (!kv) {
-        return jsonResponse([]);
-      }
+  // ==========================================
+  // ROTA: GET /recommend (slug ou listagem)
+  // ==========================================
+  if (request.method === 'GET' && url.pathname.includes('/recommend')) {
+    const kv = env.MOOVIBE_DB;
+    if (!kv) {
+      return jsonResponse([]);
+    }
 
-      const listResult = await kv.list({ limit: 20 });
+    // Se tiver ?slug=, busca o share específico
+    const slugParam = url.searchParams.get('slug');
+    if (slugParam) {
+      try {
+        const shareData = await kv.get('share:' + slugParam, 'json');
+        if (shareData) {
+          return jsonResponse(shareData);
+        }
+        return jsonResponse({ error: { message: 'Link não encontrado ou expirado.' } }, 404);
+      } catch (err) {
+        console.error('[KV] Falha ao buscar slug:', err);
+        return jsonResponse({ error: { message: 'Erro ao buscar link compartilhado.' } }, 500);
+      }
+    }
+
+    // Sem slug: retorna listagem do histórico (Hall of Fame)
+    try {
+      const listResult = await kv.list({ prefix: 'history:', limit: 20 });
       const keys = listResult.keys || [];
 
       if (keys.length === 0) {
@@ -765,6 +818,9 @@ export async function onRequest(context) {
     }
   }
 
+  // ==========================================
+  // ROTA: POST /recommend (pipeline principal)
+  // ==========================================
   if (request.method !== 'POST') {
     return new Response('Method Not Allowed', { status: 405 });
   }
@@ -786,12 +842,40 @@ export async function onRequest(context) {
       contextoExtra = null;
     }
 
+    // ==========================================
+    // LÓGICA ANTI-REPETIÇÃO: separa histórico em dois filtros
+    // ==========================================
     const historico = await listHistory(env);
-    const recentMovies = (Array.isArray(historico) ? historico : [])
-      .map((item) => item?.movie?.title)
-      .filter((title) => typeof title === 'string' && title.trim().length > 0)
-      .slice(0, 5);
-    const filmesExcluidos = recentMovies.join(', ');
+    const filmesExcluidosGlobais = [];
+    const filmesExcluidosMusica = [];
+
+    if (Array.isArray(historico)) {
+      for (const item of historico) {
+        const movieTitle = item?.movie?.title;
+        if (!movieTitle || typeof movieTitle !== 'string') continue;
+
+        // Filtro Global: até 20 filmes (independente da música)
+        if (!filmesExcluidosGlobais.includes(movieTitle) && filmesExcluidosGlobais.length < 20) {
+          filmesExcluidosGlobais.push(movieTitle);
+        }
+
+        // Filtro Específico: mesma música, até 5 filmes
+        const mesmaMusica = (
+          item?.song?.toLowerCase() === nome_musica.toLowerCase() &&
+          (!artista || item?.artist?.toLowerCase() === artista.toLowerCase())
+        );
+        if (mesmaMusica && !filmesExcluidosMusica.includes(movieTitle) && filmesExcluidosMusica.length < 5) {
+          filmesExcluidosMusica.push(movieTitle);
+        }
+      }
+    }
+
+    if (filmesExcluidosGlobais.length > 0) {
+      console.log(`[ANTI-REPETICAO] Globais excluidos: ${filmesExcluidosGlobais.join(', ')}`);
+    }
+    if (filmesExcluidosMusica.length > 0) {
+      console.log(`[ANTI-REPETICAO] Especificos da musica excluidos: ${filmesExcluidosMusica.join(', ')}`);
+    }
 
     const recomendacaoIA = await obterRecomendacaoIA(
       nome_musica,
@@ -799,7 +883,8 @@ export async function onRequest(context) {
       letra,
       contextoExtra,
       env.OPENROUTER_API_KEY,
-      filmesExcluidos
+      filmesExcluidosGlobais,
+      filmesExcluidosMusica
     );
 
     if (!recomendacaoIA) {
@@ -894,9 +979,15 @@ export async function onRequest(context) {
       ? `https://letterboxd.com/tmdb/${dadosFilme.id_tmdb}`
       : `https://letterboxd.com/search/${encodeURIComponent(nomeFilme)}/`;
 
+    // ==========================================
+    // GERAÇÃO DE SLUG PARA COMPARTILHAMENTO
+    // ==========================================
+    const slug = slugify(nomeFilme + '-' + nome_musica);
+
     const resposta = {
       song: nome_musica,
       artist: artista || '',
+      share_slug: slug,
       movie: {
         title: dadosFilme?.titulo_pt || nomeFilme,
         original_title: dadosFilme?.titulo_original || nomeFilme,
@@ -916,9 +1007,12 @@ export async function onRequest(context) {
       },
     };
 
+    // Salva no histórico (history:*) e no share (share:*)
     await storeHistory({ song: nome_musica, artist: artista, movie: resposta.movie }, env);
+    await storeShare(slug, resposta, env);
 
     console.log('\n=== PIPELINE CONCLUÍDA COM SUCESSO ===');
+    console.log(`[SHARE] Slug gerado: ${slug}`);
     return jsonResponse(resposta, 200);
   } catch (error) {
     console.error('Pages Function error:', error);
@@ -936,6 +1030,18 @@ async function storeHistory(payload, env) {
     await kv.put(key, JSON.stringify(payload), { expirationTtl: 60 * 60 * 24 * 30 });
   } catch (err) {
     console.error('[HISTORY] Falha ao salvar:', err);
+  }
+}
+
+async function storeShare(slug, payload, env) {
+  try {
+    const kv = env.MOOVIBE_DB;
+    if (!kv) return;
+    // Salva o share com expiração de 30 dias
+    await kv.put('share:' + slug, JSON.stringify(payload), { expirationTtl: 60 * 60 * 24 * 30 });
+    console.log(`[SHARE] Salvo no KV: share:${slug}`);
+  } catch (err) {
+    console.error('[SHARE] Falha ao salvar:', err);
   }
 }
 

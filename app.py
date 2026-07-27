@@ -21,6 +21,71 @@ URL_TMDB_BASE = "https://" + "api.themoviedb.org/3/movie"
 URL_WIKIPEDIA_PT = "https://" + "pt.wikipedia.org/api/rest_v1/page/summary/"
 URL_SONGFACTS = "https://www.songfacts.com/search"
 
+# ==========================================
+# HISTÓRICO EM MEMÓRIA (versão Python)
+# ==========================================
+# Simula um KV simples para manter o histórico durante a sessão.
+# Em produção (Cloudflare) isso é substituído pelo KV real.
+_historico_geral = []  # Lista de dicts: {song, artist, movie_title}
+
+
+def slugify(texto):
+    """Converte texto em slug amigável para URL (lowercase, hífens, sem acentos)."""
+    if not texto:
+        return ""
+    slug = texto.lower()
+    slug = slug.replace(" & ", " e ")
+    slug = slug.replace(" / ", " ")
+    slug = re.sub(r'[áàâãäå]', 'a', slug)
+    slug = re.sub(r'[éèêë]', 'e', slug)
+    slug = re.sub(r'[íìîï]', 'i', slug)
+    slug = re.sub(r'[óòôõö]', 'o', slug)
+    slug = re.sub(r'[úùûü]', 'u', slug)
+    slug = re.sub(r'[ç]', 'c', slug)
+    slug = re.sub(r'[ñ]', 'n', slug)
+    slug = re.sub(r'[^a-z0-9\s-]', '', slug)
+    slug = re.sub(r'[\s]+', '-', slug)
+    slug = re.sub(r'-+', '-', slug)
+    slug = slug.strip('-')
+    return slug
+
+
+def adicionar_ao_historico(nome_musica, artista, titulo_filme):
+    """Adiciona uma entrada ao histórico em memória."""
+    entrada = {
+        "song": nome_musica,
+        "artist": artista,
+        "movie_title": titulo_filme
+    }
+    _historico_geral.append(entrada)
+    # Mantém apenas os últimos 50
+    if len(_historico_geral) > 50:
+        _historico_geral.pop(0)
+
+
+def obter_filmes_excluidos(nome_musica, artista):
+    """
+    Separa o histórico em dois arrays de exclusão:
+    - Globais: últimos 20 filmes recomendados (independente da música)
+    - Específicos: últimos 5 filmes para EXATAMENTE esta música
+    """
+    globais = []
+    especificos = []
+
+    for entrada in reversed(_historico_geral):
+        titulo = entrada.get("movie_title", "")
+        if titulo and titulo not in globais and len(globais) < 20:
+            globais.append(titulo)
+        # Verifica se é da mesma música
+        mesma_musica = (
+            entrada.get("song", "").lower() == nome_musica.lower() and
+            (not artista or entrada.get("artist", "").lower() == artista.lower())
+        )
+        if mesma_musica and titulo and titulo not in especificos and len(especificos) < 5:
+            especificos.append(titulo)
+
+    return globais, especificos
+
 
 def limpar_termo_musica(termo):
     """Remove sufixos promocionais, ruidos e anos dos titulos."""
@@ -390,17 +455,29 @@ def buscar_contexto_musica(nome_musica, artista):
 # ==========================================
 # 3. INTELIGENCIA ARTIFICIAL - RECOMENDACAO PRINCIPAL
 # ==========================================
-def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None):
+def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, filmes_excluidos_globais=None, filmes_excluidos_musica=None):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
+
+    # Monta regras de exclusão
+    regra_global = ""
+    if filmes_excluidos_globais and len(filmes_excluidos_globais) > 0:
+        regra_global = f"REGRA DE DIVERSIFICAÇÃO GLOBAL: NÃO recomende nenhum destes filmes sob nenhuma hipótese: {', '.join(filmes_excluidos_globais)}.\n\n"
+    
+    regra_especifica = ""
+    if filmes_excluidos_musica and len(filmes_excluidos_musica) > 0:
+        regra_especifica = f"REGRA ESPECÍFICA DA MÚSICA: Para esta música específica, os seguintes filmes já foram recomendados recentemente e estão PROIBIDOS de serem repetidos: {', '.join(filmes_excluidos_musica)}. Escolha algo novo.\n\n"
 
     prompt_sistema = (
         "Voce e um curador de cinema genial. O usuario vai te passar uma musica e voce deve sugerir "
         "EXATAMENTE UM filme que compartilhe exatamente da mesma atmosfera emocional, paleta de cores "
         "subtendida, ritmo psicologico ou alma lirica dessa musica. "
         "Nao se limite a conexoes obvias. Pense na vibe.\n\n"
+
+        f"{regra_global}"
+        f"{regra_especifica}"
 
         "CRITICO: Voce DEVE sugerir um filme REAL existente no banco de dados do TMDb. "
         "PROIBIDO inventar titulos de filmes. Use APENAS o titulo original ou oficial em ingles/portugues. "
@@ -839,7 +916,18 @@ def main():
 
         print()
         print("=== ANALISANDO VIBE (IA) ===")
-        recomendacao_ia = obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra)
+        # Obtém filmes excluídos do histórico
+        filmes_excluidos_globais, filmes_excluidos_musica = obter_filmes_excluidos(nome_musica, artista)
+        if filmes_excluidos_globais:
+            print(f"[ANTI-REPETICAO] Globais excluidos: {', '.join(filmes_excluidos_globais)}")
+        if filmes_excluidos_musica:
+            print(f"[ANTI-REPETICAO] Especificos da musica excluidos: {', '.join(filmes_excluidos_musica)}")
+
+        recomendacao_ia = obter_recomendacao_ia(
+            nome_musica, artista, letra, contexto_extra,
+            filmes_excluidos_globais=filmes_excluidos_globais,
+            filmes_excluidos_musica=filmes_excluidos_musica
+        )
 
         if not recomendacao_ia:
             print("Falha ao obter recomendacao da IA. Tente novamente.")
@@ -857,6 +945,9 @@ def main():
         if not nome_filme_ia:
             print("IA nao retornou um nome de filme valido. Tente novamente.")
             continue
+
+        # Adiciona ao histórico em memória
+        adicionar_ao_historico(nome_musica, artista, nome_filme_ia)
 
         print()
         print("=== BUSCANDO DADOS DO FILME ===")

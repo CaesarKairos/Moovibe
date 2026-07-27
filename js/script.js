@@ -35,6 +35,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Core Functions ---
 
+    function getUrlParam(name) {
+        const params = new URLSearchParams(window.location.search);
+        return params.get(name) || null;
+    }
+
     function switchView(targetView) {
         if (!targetView) return;
         document.querySelectorAll('.view-section').forEach(view => {
@@ -72,6 +77,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                     injectResults(data);
                     switchView(viewResults);
+                    // Atualiza a URL com o slug para compartilhamento
+                    if (data && data.share_slug) {
+                        window.history.pushState(null, '', '/?r=' + data.share_slug);
+                    }
                 }
             })
             .catch(error => {
@@ -289,6 +298,35 @@ document.addEventListener('DOMContentLoaded', () => {
                 el.style.display = (quoteText || movieTitle) ? '' : 'none';
             }
         });
+    }
+
+    // --- Shared Link Detection (?r=) ---
+    // Se a URL contiver ?r=slug, carrega diretamente o resultado compartilhado
+    const sharedSlug = getUrlParam('r');
+    if (sharedSlug) {
+        // Pula a tela inicial e faz fetch GET para buscar o share
+        switchView(viewLoading);
+        loadingText.textContent = "Loading shared vibe...";
+
+        fetch('/recommend?slug=' + encodeURIComponent(sharedSlug))
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Link não encontrado ou expirado.');
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data && data.error && data.error.message) {
+                    showError(data.error.message);
+                } else {
+                    injectResults(data);
+                    switchView(viewResults);
+                }
+            })
+            .catch(error => {
+                console.error('Erro ao carregar link compartilhado:', error);
+                showError('Este link não está mais disponível. Tente fazer uma nova busca.');
+            });
     }
 
     // --- Event Listeners ---
