@@ -3,11 +3,32 @@
  * Lógica espelhada de app.py (Python → JavaScript)
  */
 
-const LRCLIB_URL = 'https://lrclib.net/api/search';
+const LRCLIB_URL = 'https://lrclib.net/api';
+const LRCLIB_GET_URL = `${LRCLIB_URL}/get`;
+const LRCLIB_SEARCH_URL = `${LRCLIB_URL}/search`;
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3/movie';
 const WIKIPEDIA_PT_API = 'https://pt.wikipedia.org/api/rest_v1/page/summary/';
+const WIKIPEDIA_EN_API = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
+const LRCLIB_THROTTLE_MS = 250;
+const MOOVIBE_VERSION = '1.0';
+
+let lrclibLastRequest = 0;
+function lrclibThrottle() {
+  const now = Date.now();
+  const wait = Math.max(0, LRCLIB_THROTTLE_MS - (now - lrclibLastRequest));
+  lrclibLastRequest = now + wait;
+  return wait > 0 ? new Promise(resolve => setTimeout(resolve, wait)) : Promise.resolve();
+}
+
+function lrclibHeaders() {
+  const headers = {};
+  headers['User-Agent'] = `Moovibe/${MOOVIBE_VERSION} (https://github.com/CaesarKairos/Moovibe)`;
+  headers['X-User-Agent'] = headers['User-Agent'];
+  return headers;
+}
+const WIKIPEDIA_EN_API = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -198,19 +219,64 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
   const nomeLimpo = limparTermoMusica(nomeMusica);
   const artistaLimpo = limparTermoMusica(artista) || artista;
 
-  console.log('[LETRA] CAMADA 1: LRCLIB...');
+  // CAMADA 1: LRCLIB /api/get (letra completa)
+  console.log('[LETRA] CAMADA 1: LRCLIB /api/get...');
   try {
+    await lrclibThrottle();
     const params = new URLSearchParams({ track_name: nomeLimpo, artist_name: artistaLimpo });
-    const resp = await fetch(`${LRCLIB_URL}?${params}`);
-    if (resp.ok) {
-      const dados = await resp.json();
-      if (Array.isArray(dados) && dados.length > 0 && dados[0].plainLyrics) {
-        console.log('[LETRA] LRCLIB: Letra encontrada!');
-        return dados[0].plainLyrics;
+    const resp = await fetch(`${LRCLIB_GET_URL}?${params}`, { headers: lrclibHeaders() });
+    
+    if (resp.status === 429) {
+      const retryAfter = parseInt(resp.headers.get('Retry-After') || '2', 10);
+      console.log(`[LETRA] LRCLIB rate limited. Aguardando ${retryAfter}s...`);
+      await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      const retryResp = await fetch(`${LRCLIB_GET_URL}?${params}`, { headers: lrclibHeaders() });
+      if (retryResp.ok) {
+        const data = await retryResp.json();
+        if (data?.plainLyrics) {
+          console.log('[LETRA] LRCLIB /api/get: Letra encontrada (apos retry)!');
+          return data.plainLyrics.substring(0, 5000);
+        }
+      }
+    } else if (resp.ok) {
+      const data = await resp.json();
+      if (data?.plainLyrics) {
+        console.log('[LETRA] LRCLIB /api/get: Letra encontrada!');
+        return data.plainLyrics.substring(0, 5000);
       }
     }
   } catch (err) {
-    console.error('[LETRA] LRCLIB erro:', err);
+    console.error('[LETRA] LRCLIB /api/get erro:', err);
+  }
+
+  // CAMADA 1b: LRCLIB /api/search (fallback)
+  console.log('[LETRA] CAMADA 1b: LRCLIB /api/search (fallback)...');
+  try {
+    await lrclibThrottle();
+    const paramsSearch = new URLSearchParams({ track_name: nomeLimpo, artist_name: artistaLimpo });
+    const respSearch = await fetch(`${LRCLIB_SEARCH_URL}?${paramsSearch}`, { headers: lrclibHeaders() });
+    
+    if (respSearch.status === 429) {
+      const retryAfter = parseInt(respSearch.headers.get('Retry-After') || '2', 10);
+      console.log(`[LETRA] LRCLIB search rate limited. Aguardando ${retryAfter}s...`);
+      await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      const retryResp = await fetch(`${LRCLIB_SEARCH_URL}?${paramsSearch}`, { headers: lrclibHeaders() });
+      if (retryResp.ok) {
+        const dados = await retryResp.json();
+        if (Array.isArray(dados) && dados.length > 0 && dados[0].plainLyrics) {
+          console.log('[LETRA] LRCLIB /api/search: Letra encontrada (apos retry)!');
+          return dados[0].plainLyrics.substring(0, 5000);
+        }
+      }
+    } else if (respSearch.ok) {
+      const dados = await respSearch.json();
+      if (Array.isArray(dados) && dados.length > 0 && dados[0].plainLyrics) {
+        console.log('[LETRA] LRCLIB /api/search: Letra encontrada!');
+        return dados[0].plainLyrics.substring(0, 5000);
+      }
+    }
+  } catch (err) {
+    console.error('[LETRA] LRCLIB /api/search erro:', err);
   }
 
   console.log('[LETRA] CAMADA 2: Genius...');
@@ -250,55 +316,11 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
     return letraBrave.substring(0, 5000);
   }
 
-  console.log('[LETRA] CAMADA 4 (FALLBACK FINAL): OpenRouter web search...');
-  if (env.OPENROUTER_API_KEY) {
-    try {
-      const prompt = `Encontre e retorne APENAS a letra completa da música '${nomeLimpo}' do artista '${artistaLimpo}'. Não adicione nenhum outro texto.`;
-      const payload = {
-        model: 'openrouter/auto',
-        temperature: 0.3,
-        max_tokens: 2000,
-        tools: [{ type: 'openrouter:web_search' }],
-        messages: [{ role: 'user', content: prompt }],
-      };
-      console.log('\n[DEBUG] Enviando Payload para OpenRouter (LETRA):', JSON.stringify(payload, null, 2));
-      console.log(`[LETRA] OpenRouter prompt: ${prompt.substring(0, 100)}...`);
-      const tempoInicio = Date.now();
-      const resp = await fetch(OPENROUTER_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-      const tempoResposta = ((Date.now() - tempoInicio) / 1000).toFixed(2);
-      console.log(`[LETRA] OpenRouter status: ${resp.status} | Tempo: ${tempoResposta}s`);
-
-      if (resp.ok) {
-        const dados = await resp.json();
-        let texto = '';
-        if (dados && typeof dados === 'object') {
-          const choices = dados.choices;
-          if (choices && Array.isArray(choices) && choices.length > 0 && choices[0]) {
-            texto = choices[0].message?.content?.trim() || '';
-          }
-        }
-        if (texto) {
-          console.log('[LETRA] OpenRouter: Letra encontrada!');
-          return texto.substring(0, 5000);
-        }
-      }
-    } catch (err) {
-      console.error('[LETRA] OpenRouter erro:', err);
-    }
-  }
-
   console.log('[LETRA] Todas as camadas falharam.');
   return null;
 }
 
-async function buscarContextoMusica(nomeMusica, artista, env, letra) {
+async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en') {
   const nomeLimpo = limparTermoMusica(nomeMusica);
   const artistaLimpo = limparTermoMusica(artista) || artista;
   const termoBusca = `${nomeLimpo} ${artistaLimpo}`;
@@ -339,9 +361,10 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra) {
       return ctxBrave.substring(0, 2000);
     }
 
-  console.log('[CONTEXTO] CAMADA 3: Wikipedia PT...');
+  console.log('[CONTEXTO] CAMADA 3: Wikipedia...');
+  const wikiApiCtx = lang === 'pt' ? WIKIPEDIA_PT_API : WIKIPEDIA_EN_API;
   try {
-    const url = `${WIKIPEDIA_PT_API}${encodeURIComponent(termoBusca)}`;
+    const url = `${wikiApiCtx}${encodeURIComponent(termoBusca)}`;
     const resp = await fetch(url, {
       headers: { 'User-Agent': 'Moovibe/1.0 (movie recommendation app)' },
     });
@@ -359,22 +382,17 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra) {
   console.log('[CONTEXTO] CAMADA 4: OpenRouter (mini-IA)...');
   if (env.OPENROUTER_API_KEY) {
     try {
-      const prompt = `Pesquise na web a história real, inspiração e o significado da música '${nomeLimpo}' de '${artistaLimpo}'. Retorne apenas um parágrafo curto em português explicando o contexto.`;
+      const idiomaPrompt = lang === 'pt' ? 'em português' : 'in English';
+      const prompt = `Pesquise na web a história real, inspiração e o significado da música '${nomeLimpo}' de '${artistaLimpo}'. Retorne apenas um parágrafo curto ${idiomaPrompt} explicando o contexto.`;
       const payload = {
-        model: 'openrouter/auto',
+        model: 'openrouter/free',
         temperature: 0.3,
         max_tokens: 300,
-        tools: [{
-          type: 'openrouter:web_search',
-          parameters: {
-            excluded_domains: ['letras.mus.br', 'vagalume.com.br', 'letras.com.br', 'azlyrics.com', 'cifraclub.com.br', 'genius.com']
-          }
-        }],
         messages: [{ role: 'user', content: prompt }],
       };
 
       console.log('\n[DEBUG] Enviando Payload para OpenRouter (CONTEXTO):', JSON.stringify(payload, null, 2));
-      console.log('[CONTEXTO] Tentando OpenRouter auto...');
+      console.log('[CONTEXTO] Tentando OpenRouter free...');
       const resp = await fetch(OPENROUTER_URL, {
         method: 'POST',
         headers: {
@@ -426,7 +444,7 @@ async function buscarCapaMusica(nomeMusica, artista) {
   }
 }
 
-async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey, filmesExcluidosGlobais = [], filmesExcluidosMusica = []) {
+async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey, filmesExcluidosGlobais = [], filmesExcluidosMusica = [], lang = 'en') {
   if (!apiKey) return null;
 
   // Monta regras de exclusão
@@ -440,6 +458,7 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
     regraEspecifica = `REGRA ESPECÍFICA DA MÚSICA: Para esta música específica, os seguintes filmes já foram recomendados recentemente e estão PROIBIDOS de serem repetidos: ${filmesExcluidosMusica.join(', ')}. Escolha algo novo.\n\n`;
   }
 
+  const idiomaJustificativa = lang === 'pt' ? 'em português, até 4 frases' : 'in English, up to 4 sentences';
   const promptSistema = `Voce e um curador de cinema genial. O usuario vai te passar uma musica e voce deve sugerir EXATAMENTE UM filme que compartilhe exatamente da mesma atmosfera emocional, paleta de cores subtendida, ritmo psicologico ou alma lirica dessa musica. Nao se limite a conexoes obvias. Pense na vibe.
 
 ${regraGlobal}${regraEspecifica}
@@ -453,7 +472,7 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
 {
   "filme": "Nome exato do filme (de preferencia o titulo original em ingles ou o mais conhecido, SEM o ano)",
   "ano": "Ano de lancamento do filme sugerido (Apenas os 4 digitos numericos, ex: 2002)",
-  "justificativa": "Uma explicacao poetica, profunda e envolvente (em portugues, ate 4 frases) conectando sentimentos da musica/letra com o filme.",
+  "justificativa": "Uma explicacao poetica, profunda e envolvente (${idiomaJustificativa}) conectando sentimentos da musica/letra com o filme.",
   "citacoes": ["Trecho 1 da letra que conecta com o filme", "Trecho 2 da letra que conecta com o filme", "Trecho 3 da letra que conecta com o filme"],
   "vibe_title": "Um titulo CURTO e impactante em MAIUSCULAS (2-3 palavras) que capture a vibe, ex: 'OPERATIC CHAOS' ou 'MELANCHOLIC DREAM'",
   "tags": ["Array de 4 tags em MAIUSCULAS descrevendo a vibe, ex: GRANDIOSE, TRAGICOMIC, CATHARTIC, MOSAIC"]
@@ -471,18 +490,17 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
   }
 
   try {
-    const body = {
-      model: 'openrouter/auto',
-      temperature: 0.3,
-      tools: [{ type: 'openrouter:web_search' }],
-      messages: [
-        { role: 'system', content: promptSistema },
-        { role: 'user', content: conteudoUsuario },
-      ],
-    };
+      const body = {
+        model: 'openrouter/free',
+        temperature: 0.3,
+        messages: [
+          { role: 'system', content: promptSistema },
+          { role: 'user', content: conteudoUsuario },
+        ],
+      };
 
     console.log('\n[DEBUG] Enviando Payload para OpenRouter (RECOMENDACAO):', JSON.stringify(body, null, 2));
-    console.log('[OPENROUTER] Tentando modelo: openrouter/auto');
+    console.log('[OPENROUTER] Tentando modelo: openrouter/free');
     const resp = await fetch(OPENROUTER_URL, {
       method: 'POST',
       headers: {
@@ -539,12 +557,13 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
   }
 }
 
-async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
+async function obterDetalhesTMDB(nomeFilme, apiKey, ano, lang = 'en') {
   if (!apiKey) return null;
 
   try {
     let nomeLimpo = nomeFilme;
-    const paramsBusca = new URLSearchParams({ api_key: apiKey, query: nomeLimpo, language: 'pt-BR' });
+    const tmdbLang = lang === 'pt' ? 'pt-BR' : 'en-US';
+    const paramsBusca = new URLSearchParams({ api_key: apiKey, query: nomeLimpo, language: tmdbLang });
     if (ano) {
       paramsBusca.set('primary_release_year', ano);
     }
@@ -558,12 +577,12 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
     const filmeBasico = filmes[0];
     const filmeId = filmeBasico.id;
 
-    const paramsDetalhes = new URLSearchParams({ api_key: apiKey, language: 'pt-BR' });
+    const paramsDetalhes = new URLSearchParams({ api_key: apiKey, language: tmdbLang });
     const respDetalhes = await fetch(`${TMDB_BASE_URL}/${filmeId}?${paramsDetalhes}`);
     const detalhes = respDetalhes.ok ? await respDetalhes.json() : {};
 
     let diretor = 'Nao encontrado';
-    const respCreditos = await fetch(`${TMDB_BASE_URL}/${filmeId}/credits?api_key=${apiKey}&language=pt-BR`);
+    const respCreditos = await fetch(`${TMDB_BASE_URL}/${filmeId}/credits?api_key=${apiKey}&language=${tmdbLang}`);
     if (respCreditos.ok) {
       const creditos = await respCreditos.json();
       for (const pessoa of (creditos?.crew || [])) {
@@ -622,8 +641,10 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano) {
   }
 }
 
-async function buscarDadosFilmeFallback(nomeFilme, ano, env) {
-  console.log('[FILME FALLBACK] CAMADA 1: Wikipedia PT...');
+async function buscarDadosFilmeFallback(nomeFilme, ano, env, lang = 'en') {
+  const wikiApi = lang === 'pt' ? WIKIPEDIA_PT_API : WIKIPEDIA_EN_API;
+  const wikiLabel = lang === 'pt' ? 'Wikipedia PT' : 'Wikipedia EN';
+  console.log(`[FILME FALLBACK] CAMADA 1: ${wikiLabel}...`);
   try {
     const termos = [];
     if (ano) {
@@ -634,7 +655,7 @@ async function buscarDadosFilmeFallback(nomeFilme, ano, env) {
     termos.push(nomeFilme);
 
     for (const termo of termos) {
-      const url = `${WIKIPEDIA_PT_API}${encodeURIComponent(termo)}`;
+      const url = `${wikiApi}${encodeURIComponent(termo)}`;
       const resp = await fetch(url, {
         headers: { 'User-Agent': 'Moovibe/1.0 (movie recommendation app)' },
       });
@@ -661,8 +682,8 @@ async function buscarDadosFilmeFallback(nomeFilme, ano, env) {
 
   console.log('[FILME FALLBACK] CAMADA 2: Brave Search...');
   try {
-    let query = `${nomeFilme} movie plot synopsis`;
-    if (ano) query = `${nomeFilme} ${ano} movie plot synopsis`;
+    let query = lang === 'pt' ? `${nomeFilme} filme enredo sinopse` : `${nomeFilme} movie plot synopsis`;
+    if (ano) query = `${nomeFilme} ${ano} ${lang === 'pt' ? 'filme enredo' : 'movie plot synopsis'}`;
     const resultado = await buscarBrave(query);
     if (resultado) {
       console.log('[FILME FALLBACK] Brave Search: Dados encontrados!');
@@ -672,15 +693,15 @@ async function buscarDadosFilmeFallback(nomeFilme, ano, env) {
     console.error('[FILME FALLBACK] Brave Search erro:', err);
   }
 
-  console.log('[FILME FALLBACK] CAMADA 3 (FALLBACK FINAL): OpenRouter :online...');
+  console.log('[FILME FALLBACK] CAMADA 3: OpenRouter (fallback final)...');
   if (env.OPENROUTER_API_KEY) {
     try {
-      const prompt = `Pesquise na web informações sobre o filme '${nomeFilme}' lançado no ano de '${ano}' (se houver). Retorne estritamente um JSON com: 'sinopse' (um breve resumo em português), 'diretor' (nome do diretor), e 'poster' (URL de uma imagem, se possível, caso contrário null).`;
+      const idiomaPrompt = lang === 'pt' ? 'em português' : 'in English';
+      const prompt = `Generate a brief movie synopsis based on the search context. Return strictly JSON with: 'sinopse' (${idiomaPrompt}), 'diretor', 'poster' (URL or null).`;
       const payload = {
-        model: 'openrouter/auto',
+        model: 'openrouter/free',
         temperature: 0.3,
         max_tokens: 500,
-        tools: [{ type: 'openrouter:web_search' }],
         messages: [{ role: 'user', content: prompt }],
       };
       console.log('\n[DEBUG] Enviando Payload para OpenRouter (FILME FALLBACK):', JSON.stringify(payload, null, 2));
@@ -828,6 +849,7 @@ export async function onRequest(context) {
   try {
     const body = await request.json();
     const { nome_musica, artista } = body;
+    const lang = body.lang === 'pt' ? 'pt' : 'en';
 
     if (!nome_musica) {
       return jsonResponse({ error: { message: 'Nome da música é obrigatório.' } }, 400);
@@ -836,7 +858,7 @@ export async function onRequest(context) {
     console.log('\n=== INICIANDO PIPELINE ===');
     
     const letra = await buscarLetraMusica(nome_musica, artista, env);
-    let contextoExtra = await buscarContextoMusica(nome_musica, artista, env, letra);
+    let contextoExtra = await buscarContextoMusica(nome_musica, artista, env, letra, lang);
 
     if (!validarContexto(contextoExtra, letra)) {
       contextoExtra = null;
@@ -884,7 +906,8 @@ export async function onRequest(context) {
       contextoExtra,
       env.OPENROUTER_API_KEY,
       filmesExcluidosGlobais,
-      filmesExcluidosMusica
+      filmesExcluidosMusica,
+      lang
     );
 
     if (!recomendacaoIA) {
@@ -909,12 +932,12 @@ export async function onRequest(context) {
 
     let dadosFilme = null;
     if (env.TMDB_API_KEY) {
-      dadosFilme = await obterDetalhesTMDB(nomeFilme, env.TMDB_API_KEY, anoFilme);
+      dadosFilme = await obterDetalhesTMDB(nomeFilme, env.TMDB_API_KEY, anoFilme, lang);
     }
 
     if (!dadosFilme || !dadosFilme.sinopse || dadosFilme.sinopse === 'Sem sinopse disponivel.') {
       console.log('[FALLBACK ATIVADO: TMDb falhou, usando fallback]');
-      const fallback = await buscarDadosFilmeFallback(nomeFilme, anoFilme, env);
+      const fallback = await buscarDadosFilmeFallback(nomeFilme, anoFilme, env, lang);
       if (fallback) {
         dadosFilme = {
           id_tmdb: null,

@@ -14,18 +14,42 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 GENIUS_API_KEY = os.getenv("GENIUS_API_KEY")
 
-URL_LRCLIB = "https://" + "lrclib.net/api/search"
+URL_LRCLIB_BASE = "https://" + "lrclib.net/api"
+URL_LRCLIB_GET = URL_LRCLIB_BASE + "/get"
+URL_LRCLIB_SEARCH = URL_LRCLIB_BASE + "/search"
 URL_OPENROUTER = "https://" + "openrouter.ai/api/v1/chat/completions"
 URL_TMDB_BUSCA = "https://" + "api.themoviedb.org/3/search/movie"
 URL_TMDB_BASE = "https://" + "api.themoviedb.org/3/movie"
 URL_WIKIPEDIA_PT = "https://" + "pt.wikipedia.org/api/rest_v1/page/summary/"
+URL_WIKIPEDIA_EN = "https://" + "en.wikipedia.org/api/rest_v1/page/summary/"
 URL_SONGFACTS = "https://www.songfacts.com/search"
+
+MOOVIBE_VERSION = "1.0"
+LRCLIB_THROTTLE_SECONDS = 0.25
+_lrclib_last_request = 0.0
+
+
+def lrclib_throttle():
+    global _lrclib_last_request
+    now = time.time()
+    wait = max(0.0, LRCLIB_THROTTLE_SECONDS - (now - _lrclib_last_request))
+    _lrclib_last_request = now + wait
+    if wait > 0:
+        time.sleep(wait)
+
+
+def lrclib_headers():
+    return {
+        "User-Agent": f"Moovibe/{MOOVIBE_VERSION} (https://github.com/CaesarKairos/Moovibe)",
+        "X-User-Agent": f"Moovibe/{MOOVIBE_VERSION} (https://github.com/CaesarKairos/Moovibe)",
+    }
+
 
 # ==========================================
 # HISTÓRICO EM MEMÓRIA (versão Python)
 # ==========================================
 # Simula um KV simples para manter o histórico durante a sessão.
-# Em produção (Cloudflare) isso é substituído pelo KV real.
+# Em produção (Cloudflare) isso é substituída pelo KV real.
 _historico_geral = []  # Lista de dicts: {song, artist, movie_title}
 
 
@@ -206,7 +230,7 @@ def buscar_citacoes_filme(nome_filme):
             frases = []
             for linha in resultado.split("\n"):
                 linha = linha.strip()
-                # Tenta extrair trechos entre aspas (normais e tipograficas: ", ", ”, “)
+                # Tenta extrair trechos entre aspas (normais e tipograficas: ", ", "", “)
                 citacoes = re.findall(r'["""\u201C\u201D]([^""\u201C\u201D]{10,80})["""\u201C\u201D]', linha)
                 for c in citacoes:
                     c = c.strip()
@@ -256,26 +280,51 @@ def extrair_quotes_da_letra(letra, max_quotes=3):
 # ==========================================
 def buscar_letra_musica(nome_musica, artista):
     """
-    CAMADA 1: LRCLIB API
+    CAMADA 1: LRCLIB /api/get (letra completa)
+    CAMADA 1b: LRCLIB /api/search (fallback)
     CAMADA 2: Genius API (letra)
     CAMADA 3: Brave Search
     """
     nome_limpo = limpar_termo_musica(nome_musica)
     artista_limpo = limpar_termo_musica(artista) if artista else artista
 
-    print("[LETRA] CAMADA 1: LRCLIB...")
+    # CAMADA 1: LRCLIB /api/get (letra completa)
+    print("[LETRA] CAMADA 1: LRCLIB /api/get...")
     try:
+        lrclib_throttle()
         params = {"track_name": nome_limpo, "artist_name": artista_limpo}
-        resp = requests.get(URL_LRCLIB, params=params, timeout=10)
+        resp = requests.get(URL_LRCLIB_GET, params=params, headers=lrclib_headers(), timeout=10)
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", "2"))
+            print(f"[LETRA] LRCLIB rate limited. Aguardando {retry_after}s...")
+            time.sleep(retry_after)
+            resp = requests.get(URL_LRCLIB_GET, params=params, headers=lrclib_headers(), timeout=10)
         if resp.status_code == 200:
-            dados = resp.json()
-            if isinstance(dados, list) and dados:
-                letra = dados[0].get("plainLyrics", "")
-                if letra:
-                    print("[LETRA] LRCLIB: Letra encontrada!")
-                    return letra[:5000]
+            data = resp.json()
+            if data and data.get("plainLyrics"):
+                print("[LETRA] LRCLIB /api/get: Letra encontrada!")
+                return data["plainLyrics"][:5000]
     except Exception as e:
-        print(f"[LETRA] LRCLIB erro: {e}")
+        print(f"[LETRA] LRCLIB /api/get erro: {e}")
+
+    # CAMADA 1b: LRCLIB /api/search (fallback)
+    print("[LETRA] CAMADA 1b: LRCLIB /api/search (fallback)...")
+    try:
+        lrclib_throttle()
+        params_search = {"track_name": nome_limpo, "artist_name": artista_limpo}
+        resp_search = requests.get(URL_LRCLIB_SEARCH, params=params_search, headers=lrclib_headers(), timeout=10)
+        if resp_search.status_code == 429:
+            retry_after = int(resp_search.headers.get("Retry-After", "2"))
+            print(f"[LETRA] LRCLIB search rate limited. Aguardando {retry_after}s...")
+            time.sleep(retry_after)
+            resp_search = requests.get(URL_LRCLIB_SEARCH, params=params_search, headers=lrclib_headers(), timeout=10)
+        if resp_search.status_code == 200:
+            dados = resp_search.json()
+            if isinstance(dados, list) and dados and dados[0].get("plainLyrics"):
+                print("[LETRA] LRCLIB /api/search: Letra encontrada!")
+                return dados[0]["plainLyrics"][:5000]
+    except Exception as e:
+        print(f"[LETRA] LRCLIB /api/search erro: {e}")
 
     print("[LETRA] CAMADA 2: Genius...")
     if GENIUS_API_KEY:
@@ -301,45 +350,6 @@ def buscar_letra_musica(nome_musica, artista):
         print("[LETRA] Brave Search: Letra encontrada!")
         return letra_brave[:5000]
 
-    print("[LETRA] CAMADA 4 (FALLBACK FINAL): OpenRouter web search...")
-    if OPENROUTER_API_KEY:
-        try:
-            headers = {
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            prompt = (
-                f"Encontre e retorne APENAS a letra completa da música '{nome_limpo}' "
-                f"do artista '{artista_limpo}'. Não adicione nenhum outro texto."
-            )
-            payload = {
-                "model": "openrouter/auto",
-                "temperature": 0.3,
-                "max_tokens": 2000,
-                "tools": [{"type": "openrouter:web_search"}],
-                "messages": [{"role": "user", "content": prompt}]
-            }
-            print(f"\n[DEBUG] Enviando Payload para OpenRouter (LETRA):\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
-            print(f"[LETRA] OpenRouter prompt: {prompt[:100]}...")
-            tempo_inicio = time.time()
-            resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=20)
-            tempo_resposta = round(time.time() - tempo_inicio, 2)
-            print(f"[LETRA] OpenRouter status: {resp.status_code} | Tempo: {tempo_resposta}s")
-            resp.raise_for_status()
-            dados_resp = resp.json()
-            texto = ""
-            if isinstance(dados_resp, dict):
-                choices = dados_resp.get("choices")
-                if choices and isinstance(choices, list) and len(choices) > 0 and choices[0]:
-                    texto = choices[0].get("message", {}).get("content", "")
-            if texto and isinstance(texto, str):
-                texto = texto.strip()
-                if texto:
-                    print("[LETRA] OpenRouter: Letra encontrada!")
-                    return texto[:5000]
-        except Exception as e:
-            print(f"[LETRA] OpenRouter erro: {e}")
-
     print("[LETRA] Todas as camadas falharam.")
     return ""
 
@@ -347,11 +357,11 @@ def buscar_letra_musica(nome_musica, artista):
 # ==========================================
 # 2. FLUXO DO SIGNIFICADO/CONTEXTO DA MUSICA
 # ==========================================
-def buscar_contexto_musica(nome_musica, artista):
+def buscar_contexto_musica(nome_musica, artista, lang='en'):
     """
     CAMADA 1: Genius API (descricao)
     CAMADA 2: Brave Search
-    CAMADA 3: Wikipedia PT
+    CAMADA 3: Wikipedia (PT ou EN)
     CAMADA 4: OpenRouter (mini-IA) - com fallback string seguro
     """
     nome_limpo = limpar_termo_musica(nome_musica)
@@ -382,9 +392,12 @@ def buscar_contexto_musica(nome_musica, artista):
         print("[CONTEXTO] Brave Search: Contexto encontrado!")
         return ctx_brave[:2000]
 
-    print("[CONTEXTO] CAMADA 3: Wikipedia PT...")
+    print("[CONTEXTO] CAMADA 3: Wikipedia...")
+    wiki_url = URL_WIKIPEDIA_PT if lang == 'pt' else URL_WIKIPEDIA_EN
+    wiki_label = "Wikipedia PT" if lang == 'pt' else "Wikipedia EN"
+    print(f"[CONTEXTO] Usando {wiki_label}...")
     try:
-        url = f"{URL_WIKIPEDIA_PT}{urllib.parse.quote(termo_busca)}"
+        url = f"{wiki_url}{urllib.parse.quote(termo_busca)}"
         headers = {"User-Agent": "Moovibe/1.0 (movie recommendation app)"}
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -398,24 +411,19 @@ def buscar_contexto_musica(nome_musica, artista):
     print("[CONTEXTO] CAMADA 4: OpenRouter (mini-IA)...")
     if OPENROUTER_API_KEY:
         try:
+            idioma_prompt = "em português" if lang == 'pt' else "in English"
             headers = {
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "Content-Type": "application/json"
             }
             prompt = (
                 f"Pesquise na web o contexto oficial e o significado da música '{nome_limpo}' "
-                f"do artista '{artista_limpo}'. Explique brevemente em um parágrafo curto em português."
+                f"do artista '{artista_limpo}'. Explique brevemente em um parágrafo curto {idioma_prompt}."
             )
             payload = {
-                "model": "openrouter/auto",
+                "model": "openrouter/free",
                 "temperature": 0.3,
                 "max_tokens": 300,
-                "tools": [{
-                    "type": "openrouter:web_search",
-                    "parameters": {
-                        "excluded_domains": ["letras.mus.br", "vagalume.com.br", "letras.com.br", "azlyrics.com", "cifraclub.com.br", "genius.com"]
-                    }
-                }],
                 "messages": [{"role": "user", "content": prompt}]
             }
 
@@ -455,7 +463,7 @@ def buscar_contexto_musica(nome_musica, artista):
 # ==========================================
 # 3. INTELIGENCIA ARTIFICIAL - RECOMENDACAO PRINCIPAL
 # ==========================================
-def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, filmes_excluidos_globais=None, filmes_excluidos_musica=None):
+def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, filmes_excluidos_globais=None, filmes_excluidos_musica=None, lang='en'):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
@@ -470,6 +478,7 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
     if filmes_excluidos_musica and len(filmes_excluidos_musica) > 0:
         regra_especifica = f"REGRA ESPECÍFICA DA MÚSICA: Para esta música específica, os seguintes filmes já foram recomendados recentemente e estão PROIBIDOS de serem repetidos: {', '.join(filmes_excluidos_musica)}. Escolha algo novo.\n\n"
 
+    idioma_justificativa = "em português, até 4 frases" if lang == 'pt' else "in English, up to 4 sentences"
     prompt_sistema = (
         "Voce e um curador de cinema genial. O usuario vai te passar uma musica e voce deve sugerir "
         "EXATAMENTE UM filme que compartilhe exatamente da mesma atmosfera emocional, paleta de cores "
@@ -495,7 +504,7 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
         "{\n"
         '  "filme": "Nome exato do filme (de preferencia o titulo original em ingles ou o mais conhecido, SEM o ano)",\n'
         '  "ano": "Ano de lancamento do filme sugerido (Apenas os 4 digitos numericos, ex: 2002)",\n'
-        '  "justificativa": "Uma explicacao poetica, profunda e envolvente (em portugues, ate 4 frases) conectando sentimentos da musica/letra com o filme."\n'
+        f'  "justificativa": "Uma explicacao poetica, profunda e envolvente ({idioma_justificativa}) conectando sentimentos da musica/letra com o filme."\n'
         "}"
     )
 
@@ -509,9 +518,8 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
         conteudo_usuario += f"Contexto historico, significado e fatos adicionais sobre a musica para te ajudar na escolha:\n{contexto_extra}\n"
 
     payload = {
-        "model": "openrouter/auto",
+        "model": "openrouter/free",
         "temperature": 0.3,
-        "tools": [{"type": "openrouter:web_search"}],
         "messages": [
             {"role": "system", "content": prompt_sistema},
             {"role": "user", "content": conteudo_usuario}
@@ -577,19 +585,19 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
 # ==========================================
 # 4. DADOS DO FILME (TMDb + Fallbacks)
 # ==========================================
-def obter_detalhes_filme_tmdb(nome_filme, ano=None):
+def obter_detalhes_filme_tmdb(nome_filme, ano=None, lang='en'):
     """
-    Busca dados do filme no TMDb sem filtro de idioma forçado.
-    Prioriza poster original em inglês/internacional, evitando pôsteres com títulos adaptados.
-    O parametro 'ano' e opcional e passado separadamente como 'primary_release_year'.
+    Busca dados do filme no TMDb.
+    O parametro 'lang' pode ser 'pt' ou 'en'.
     """
     if not TMDB_API_KEY:
         return None
 
     # Usa APENAS o nome limpo do filme na query; ano e passado separadamente
     nome_limpo = nome_filme
+    idioma_tmdb = "pt-BR" if lang == 'pt' else "en-US"
 
-    params_busca = {"api_key": TMDB_API_KEY, "query": nome_limpo, "language": "pt-BR"}
+    params_busca = {"api_key": TMDB_API_KEY, "query": nome_limpo, "language": idioma_tmdb}
     if ano:
         params_busca["primary_release_year"] = ano
     try:
@@ -609,11 +617,11 @@ def obter_detalhes_filme_tmdb(nome_filme, ano=None):
         print(f"    Data: {filme_basico.get('release_date')}")
 
         url_detalhes = f"{URL_TMDB_BASE}/{filme_id}"
-        resp_detalhes = requests.get(url_detalhes, params={"api_key": TMDB_API_KEY, "language": "pt-BR"}, timeout=10)
+        resp_detalhes = requests.get(url_detalhes, params={"api_key": TMDB_API_KEY, "language": idioma_tmdb}, timeout=10)
         detalhes = resp_detalhes.json() if resp_detalhes.status_code == 200 else {}
 
         url_creditos = f"{URL_TMDB_BASE}/{filme_id}/credits"
-        resp_creditos = requests.get(url_creditos, params={"api_key": TMDB_API_KEY, "language": "pt-BR"}, timeout=10)
+        resp_creditos = requests.get(url_creditos, params={"api_key": TMDB_API_KEY, "language": idioma_tmdb}, timeout=10)
         creditos = resp_creditos.json() if resp_creditos.status_code == 200 else {}
         diretor = "Nao encontrado"
         for pessoa in creditos.get("crew", []):
@@ -634,33 +642,12 @@ def obter_detalhes_filme_tmdb(nome_filme, ano=None):
         poster_url = None
         for poster in dados_imagens.get("posters", []):
             if poster.get("file_path"):
-                lang = (poster.get("iso_639_1") or "").lower()
-                if lang in ("en", "") or lang is None:
+                lang_poster = (poster.get("iso_639_1") or "").lower()
+                if lang_poster in ("en", "") or lang_poster is None:
                     poster_url = f"https://image.tmdb.org/t/p/w500{poster['file_path']}"
                     break
         if not poster_url and filme_basico.get("poster_path"):
             poster_url = f"https://image.tmdb.org/t/p/w500{filme_basico['poster_path']}"
-
-        # === LOGS TMDb ===
-        print(f"\n>>> [TMDB] DETALHES DO FILME:")
-        print(f"    ID: {filme_id}")
-        print(f"    Posters encontrados: {len(dados_imagens.get('posters', []))}")
-        print(f"    Backdrops encontrados: {len(dados_imagens.get('backdrops', []))}")
-        print(f"    Membros da equipe: {len(creditos.get('crew', []))}")
-        print(f"    Diretor extraido: {diretor}")
-        if cenas:
-            print(f"\n    URLs das 3 primeiras cenas:")
-            for i, cena in enumerate(cenas[:3], 1):
-                print(f"      Cena {i}: {cena}")
-        if poster_url:
-            print(f"\n    Poster URL: {poster_url}")
-        else:
-            print(f"\n    [ALERTA] Nenhum poster encontrado!")
-        sinopse_tmdb = filme_basico.get("overview", "")
-        if not sinopse_tmdb or sinopse_tmdb == "Sem sinopse disponivel.":
-            print(f"    [ALERTA] Sinopse vazia ou indisponivel!")
-        else:
-            print(f"    Sinopse: {sinopse_tmdb[:100]}...")
 
         # Busca tagline do TMDb para usar como fallback de citacoes
         tagline = detalhes.get("tagline") if isinstance(detalhes, dict) else None
@@ -730,13 +717,15 @@ def extrair_diretor_wikipedia(extract):
     return "Disponível na Wikipédia"
 
 
-def buscar_dados_filme_fallback(nome_filme, ano):
+def buscar_dados_filme_fallback(nome_filme, ano, lang='en'):
     """
     Fallback para dados do filme quando TMDb falha.
     CAMADA 1: Wikipedia (forcando 'filme' no termo)
     CAMADA 2: Brave Search (movie plot synopsis)
     """
-    print("[FILME FALLBACK] CAMADA 1: Wikipedia PT...")
+    wiki_url = URL_WIKIPEDIA_PT if lang == 'pt' else URL_WIKIPEDIA_EN
+    wiki_label = "Wikipedia PT" if lang == 'pt' else "Wikipedia EN"
+    print(f"[FILME FALLBACK] CAMADA 1: {wiki_label}...")
     try:
         termos = []
         if ano:
@@ -747,7 +736,7 @@ def buscar_dados_filme_fallback(nome_filme, ano):
 
         for termo in termos:
             print(f"[FALLBACK] Query Wikipedia: {termo}")
-            url = f"{URL_WIKIPEDIA_PT}{urllib.parse.quote(termo)}"
+            url = f"{wiki_url}{urllib.parse.quote(termo)}"
             headers = {"User-Agent": "Moovibe/1.0 (movie recommendation app)"}
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200:
@@ -764,7 +753,7 @@ def buscar_dados_filme_fallback(nome_filme, ano):
                     if isinstance(originalimage, dict):
                         poster_url = originalimage.get("source")
 
-                    print(f"[FALLBACK ATIVADO: Wikipedia PT]")
+                    print(f"[FALLBACK ATIVADO: {wiki_label}]")
                     print(f"  Termo: {termo}")
                     print(f"  Sinopse extraida: {sinopse[:150]}...")
                     print(f"  Diretor: {diretor}")
@@ -796,20 +785,18 @@ def buscar_dados_filme_fallback(nome_filme, ano):
     except Exception as e:
         print(f"[FILME FALLBACK] Brave Search erro: {e}")
 
-    print("[FILME FALLBACK] CAMADA 3 (FALLBACK FINAL): OpenRouter :online...")
+    print("[FILME FALLBACK] CAMADA 3: OpenRouter (fallback final)...")
     if OPENROUTER_API_KEY:
         try:
+            idioma_prompt = "em português" if lang == 'pt' else "in English"
             prompt = (
-                f"Pesquise na web informações sobre o filme '{nome_filme}' "
-                f"lançado no ano de '{ano}' (se houver). "
-                f"Retorne estritamente um JSON com: 'sinopse' (um breve resumo em português), "
-                f"'diretor' (nome do diretor), e 'poster' (URL de uma imagem, se possível, caso contrário null)."
+                f"Generate a brief movie synopsis based on the search context. "
+                f"Return strictly JSON with: 'sinopse' ({idioma_prompt}), 'diretor', 'poster' (URL or null)."
             )
             payload = {
-                "model": "openrouter/auto",
+                "model": "openrouter/free",
                 "temperature": 0.3,
                 "max_tokens": 500,
-                "tools": [{"type": "openrouter:web_search"}],
                 "messages": [{"role": "user", "content": prompt}]
             }
             headers = {
@@ -863,6 +850,10 @@ def main():
     print("Moovibe")
     print("==================================================")
 
+    # Selecao de idioma
+    idioma = input("Select language / Selecione o idioma [1] English [2] Português (Default: 1): ").strip()
+    LANG = 'pt' if idioma == '2' else 'en'
+
     if not OPENROUTER_API_KEY:
         print("[ERRO] OPENROUTER_API_KEY nao encontrada no seu arquivo .env!")
         return
@@ -884,38 +875,71 @@ def main():
 
     while True:
         print()
-        nome_musica = input("Digite o nome da musica (or 'sair'): ").strip()
-        if nome_musica.lower() == 'sair':
+        if LANG == 'pt':
+            nome_musica = input("Digite o nome da musica (ou 'sair'): ").strip()
+        else:
+            nome_musica = input("Enter song name (or 'exit'): ").strip()
+        if nome_musica.lower() in ['sair', 'exit']:
             print()
-            print("Até a próxima! Bom filme!")
+            if LANG == 'pt':
+                print("Até a próxima! Bom filme!")
+            else:
+                print("See you next time! Enjoy the movie!")
             break
 
         if not nome_musica:
             continue
 
-        artista = input("Digite o nome do artista/banda: ").strip()
-        if not artista:
-            print("Por favor, digite o artista tambem para termos precisao.")
-            continue
+        if LANG == 'pt':
+            artista = input("Digite o nome do artista/banda: ").strip()
+            if not artista:
+                print("Por favor, digite o artista tambem para termos precisao.")
+                continue
+        else:
+            artista = input("Enter artist/band name: ").strip()
+            if not artista:
+                print("Please enter the artist as well for accuracy.")
+                continue
 
         print()
-        print("=== BUSCANDO LETRA DA MUSICA ===")
+        if LANG == 'pt':
+            print("=== BUSCANDO LETRA DA MUSICA ===")
+        else:
+            print("=== SEARCHING SONG LYRICS ===")
         letra = buscar_letra_musica(nome_musica, artista)
         if letra:
-            print("✓ Letra obtida com sucesso.")
+            if LANG == 'pt':
+                print("✓ Letra obtida com sucesso.")
+            else:
+                print("✓ Lyrics obtained successfully.")
         else:
-            print("✗ Letra nao encontrada. Seguindo sem letra.")
+            if LANG == 'pt':
+                print("✗ Letra nao encontrada. Seguindo sem letra.")
+            else:
+                print("✗ Lyrics not found. Proceeding without lyrics.")
 
         print()
-        print("=== BUSCANDO CONTEXTO/SIGNIFICADO ===")
-        contexto_extra = buscar_contexto_musica(nome_musica, artista)
+        if LANG == 'pt':
+            print("=== BUSCANDO CONTEXTO/SIGNIFICADO ===")
+        else:
+            print("=== SEARCHING CONTEXT/MEANING ===")
+        contexto_extra = buscar_contexto_musica(nome_musica, artista, LANG)
         if contexto_extra:
-            print("✓ Contexto obtido com sucesso.")
+            if LANG == 'pt':
+                print("✓ Contexto obtido com sucesso.")
+            else:
+                print("✓ Context obtained successfully.")
         else:
-            print("✗ Contexto nao encontrado.")
+            if LANG == 'pt':
+                print("✗ Contexto nao encontrado.")
+            else:
+                print("✗ Context not found.")
 
         print()
-        print("=== ANALISANDO VIBE (IA) ===")
+        if LANG == 'pt':
+            print("=== ANALISANDO VIBE (IA) ===")
+        else:
+            print("=== ANALYZING VIBE (AI) ===")
         # Obtém filmes excluídos do histórico
         filmes_excluidos_globais, filmes_excluidos_musica = obter_filmes_excluidos(nome_musica, artista)
         if filmes_excluidos_globais:
@@ -926,11 +950,15 @@ def main():
         recomendacao_ia = obter_recomendacao_ia(
             nome_musica, artista, letra, contexto_extra,
             filmes_excluidos_globais=filmes_excluidos_globais,
-            filmes_excluidos_musica=filmes_excluidos_musica
+            filmes_excluidos_musica=filmes_excluidos_musica,
+            lang=LANG
         )
 
         if not recomendacao_ia:
-            print("Falha ao obter recomendacao da IA. Tente novamente.")
+            if LANG == 'pt':
+                print("Falha ao obter recomendacao da IA. Tente novamente.")
+            else:
+                print("Failed to get AI recommendation. Try again.")
             continue
 
         # Sanitizacao do titulo do filme (remove ano colado)
@@ -943,21 +971,27 @@ def main():
         tags = recomendacao_ia.get("tags") or []
 
         if not nome_filme_ia:
-            print("IA nao retornou um nome de filme valido. Tente novamente.")
+            if LANG == 'pt':
+                print("IA nao retornou um nome de filme valido. Tente novamente.")
+            else:
+                print("AI did not return a valid movie name. Try again.")
             continue
 
         # Adiciona ao histórico em memória
         adicionar_ao_historico(nome_musica, artista, nome_filme_ia)
 
         print()
-        print("=== BUSCANDO DADOS DO FILME ===")
+        if LANG == 'pt':
+            print("=== BUSCANDO DADOS DO FILME ===")
+        else:
+            print("=== SEARCHING MOVIE DATA ===")
         # Passa APENAS o nome limpo do filme, sem ano concatenado
         print(f"TMDb: '{nome_filme_ia}' (ano separado: '{ano_filme_ia}')...")
-        dados_filme = obter_detalhes_filme_tmdb(nome_filme_ia, ano_filme_ia)
+        dados_filme = obter_detalhes_filme_tmdb(nome_filme_ia, ano_filme_ia, LANG)
 
         if not dados_filme or not dados_filme.get("sinopse") or dados_filme["sinopse"] in ("Sem sinopse disponivel.", ""):
             print("[FALLBACK ATIVADO: TMDb falhou, usando fallback]")
-            fallback = buscar_dados_filme_fallback(nome_filme_ia, ano_filme_ia)
+            fallback = buscar_dados_filme_fallback(nome_filme_ia, ano_filme_ia, LANG)
             if fallback:
                 dados_filme = {
                     "id_tmdb": None,
@@ -985,7 +1019,10 @@ def main():
 
         # --- BUSCA CITACOES DO FILME ---
         print()
-        print("=== BUSCANDO CITACOES DO FILME ===")
+        if LANG == 'pt':
+            print("=== BUSCANDO CITACOES DO FILME ===")
+        else:
+            print("=== SEARCHING MOVIE QUOTES ===")
         citacoes = buscar_citacoes_filme(nome_filme_ia)
         # Detecta se o fallback generico foi usado (frases padrao)
         CITACOES_PADRAO = ["Cinema is magic.", "Every film is a journey.", "Lights, camera, action!"]
@@ -1015,7 +1052,10 @@ def main():
 
         print()
         print("==================================================")
-        print("FILME RECOMENDADO:")
+        if LANG == 'pt':
+            print("FILME RECOMENDADO:")
+        else:
+            print("RECOMMENDED MOVIE:")
         print("==================================================")
 
         if dados_filme:
@@ -1036,12 +1076,18 @@ def main():
 
         print()
         print("--------------------------------------------------")
-        print("POR QUE COMBINA? (VIBE COMPARISON):")
+        if LANG == 'pt':
+            print("POR QUE COMBINA? (COMPARACAO DE VIBE):")
+        else:
+            print("WHY IT MATCHES? (VIBE COMPARISON):")
         print("--------------------------------------------------")
         print(justificativa)
         print("--------------------------------------------------")
 
-        print("LINKS IMPORTANTES:")
+        if LANG == 'pt':
+            print("LINKS IMPORTANTES:")
+        else:
+            print("IMPORTANT LINKS:")
         print("--------------------------------------------------")
 
         if dados_filme and dados_filme.get("imdb_id"):
@@ -1055,8 +1101,12 @@ def main():
             print(f"Letterboxd (Busca): https://letterboxd.com/search/{urllib.parse.quote(nome_filme_ia)}/")
 
         tiktok_query = urllib.parse.quote(f"{nome_filme_ia} edit")
-        print(f"TikTok (Navegador): https://www.tiktok.com/search?q={tiktok_query}")
-        print(f"TikTok (Abrir direto no App): tiktok://search?keyword={tiktok_query}")
+        if LANG == 'pt':
+            print(f"TikTok (Navegador): https://www.tiktok.com/search?q={tiktok_query}")
+            print(f"TikTok (Abrir direto no App): tiktok://search?keyword={tiktok_query}")
+        else:
+            print(f"TikTok (Browser): https://www.tiktok.com/search?q={tiktok_query}")
+            print(f"TikTok (Open directly in App): tiktok://search?keyword={tiktok_query}")
 
         # === PAYLOAD FINAL CONSOLIDADO ===
         payload_final = {

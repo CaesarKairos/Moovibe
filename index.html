@@ -31,9 +31,9 @@
             <span class="nav-meta">VOL. I -<br>2026</span>
         </div>
         <nav class="nav-links">
-            <a href="#" data-view="view-hall-of-fame">HALL OF FAME</a>
-            <a href="#" data-view="view-how-it-works">HOW IT WORKS</a>
-            <a href="#" data-view="view-about">ABOUT</a>
+            <a href="#" data-view="view-hall-of-fame" data-i18n="hall_of_fame">HALL OF FAME</a>
+            <a href="#" data-view="view-how-it-works" data-i18n="how_it_works">HOW IT WORKS</a>
+            <a href="#" data-view="view-about" data-i18n="about">ABOUT</a>
         </nav>
     </header>
 
@@ -42,9 +42,9 @@
         <section id="view-home" class="view-section active">
             <div class="hero-container">
                 <div class="hero-text">
-                    <p class="hero-eyebrow"><span class="red-line"></span> THE CINEMA WAS ALWAYS INSIDE THE MUSIC</p>
+                    <p class="hero-eyebrow" data-i18n="hero_eyebrow"><span class="red-line"></span> THE CINEMA WAS ALWAYS INSIDE THE MUSIC</p>
                     <h2 class="hero-title">MOOVIBE</h2>
-                    <p class="hero-subtitle"><em>Every song already has a film.</em> <strong>We find it.</strong></p>
+                    <p class="hero-subtitle" data-i18n="hero_subtitle"><em>Every song already has a film.</em> <strong>We find it.</strong></p>
                 </div>
 
                 <div class="search-widget brutalist-card">
@@ -52,22 +52,22 @@
                     
                     <form id="search-form">
                         <div class="input-group">
-                            <label for="song-title">SONG TITLE (WRITE CORRECTLY)</label>
+                            <label for="song-title" data-i18n="label_song">SONG TITLE (WRITE CORRECTLY)</label>
                             <input type="text" id="song-title" placeholder='"Bohemian Rhapsody"' required>
                         </div>
 
                         <div class="input-group">
-                            <label for="artist-name">ARTIST — OPTIONAL (BUT HELPS A LOT)</label>
+                            <label for="artist-name" data-i18n="label_artist">ARTIST — OPTIONAL (BUT HELPS A LOT)</label>
                             <input type="text" id="artist-name" placeholder="Queen">
                         </div>
 
-                        <button type="submit" class="btn-primary">
+                        <button type="submit" class="btn-primary" data-i18n="btn_find">
                             FIND MY MOVIE &rarr;
                         </button>
                     </form>
 
                     <div class="try-suggestions">
-                        <span class="try-label">TRY:</span>
+                        <span class="try-label" data-i18n="try_label">TRY:</span>
                         <button class="tag-btn">Hurt</button>
                         <button class="tag-btn">Clair de Lune</button>
                         <button class="tag-btn">Dancing Queen</button>
@@ -102,7 +102,7 @@
         <section id="view-loading" class="view-section">
             <div class="loading-container">
                 <div class="film-reel-loader"></div>
-                <h3 id="loading-text" class="loading-text">Listening to the atmosphere...</h3>
+                <h3 id="loading-text" class="loading-text" data-i18n="loading_initial">Listening to the atmosphere...</h3>
                 <div class="loading-progress">
                     <div class="progress-bar"></div>
                 </div>
@@ -111,7 +111,7 @@
 
         <section id="view-results" class="view-section">
             <div class="results-header">
-                <p class="search-meta" id="res-search-meta">'Style' — Taylor Swift → detected vibe:</p>
+                <p class="search-meta" id="res-search-meta" data-i18n="search_meta">'Style' — Taylor Swift → detected vibe:</p>
                 <h2 class="results-title" id="res-vibe-title">CINEMATIC INTROSPECTION</h2>
                 <div class="vibe-tags" id="res-vibe-tags">
                     <span class="tag t-red">CONTEMPLATIVE</span>
@@ -124,19 +124,19 @@
             <div class="results-layout">
                 <article class="editorial-block brutalist-card">
                     <div class="tape red-tape top-center"></div>
-                    <h3>VIBE REPORT</h3>
-                    <p class="article-meta">CURATOR: MOOVIBE SYSTEM <span id="res-year">2026</span></p>
+                    <h3 data-i18n="vibe_report">VIBE REPORT</h3>
+                    <p class="article-meta" data-i18n="article_meta">CURATOR: MOOVIBE SYSTEM <span id="res-year">2026</span></p>
                     <div id="res-ai-explanation" class="article-body">
                         </div>
                     <div class="movie-meta-details">
-                        <p><strong>DIR:</strong> <span id="res-director"></span></p>
-                        <p><strong>RELEASE:</strong> <span id="res-release"></span></p>
-                        <p><strong>ORIGINAL TITLE:</strong> <span id="res-original-title"></span></p>
+                        <p><strong data-i18n="dir_label">DIR:</strong> <span id="res-director"></span></p>
+                        <p><strong data-i18n="release_label">RELEASE:</strong> <span id="res-release"></span></p>
+                        <p><strong data-i18n="original_title_label">ORIGINAL TITLE:</strong> <span id="res-original-title"></span></p>
                     </div>
                     <div class="action-links">
-                        <a href="#" id="res-imdb" target="_blank" class="text-link">IMDb</a>
-                        <a href="#" id="res-letterboxd" target="_blank" class="text-link">Letterboxd</a>
-                        <a href="#" id="res-tiktok" target="_blank" class="text-link">TikTok</a>
+                        <a href="#" id="res-imdb" target="_blank" class="text-link" data-i18n="link_imdb">IMDb</a>
+                        <a href="#" id="res-letterboxd" target="_blank" class="text-link" data-i18n="link_letterboxd">Letterboxd</a>
+                        <a href="#" id="res-tiktok" target="_blank" class="text-link" data-i18n="link_tiktok">TikTok</a>
                     </div>
                 </article>
 
@@ -170,16 +170,16 @@
             </div>
             
             <div class="action-footer">
-                 <button class="btn-secondary" id="btn-search-again">&larr; NEW SEARCH</button>
+                 <button class="btn-secondary" id="btn-search-again" data-i18n="btn_new_search">&larr; NEW SEARCH</button>
             </div>
         </section>
 
         <section id="view-error" class="view-section">
             <div class="error-container">
                 <div class="tape red-tape top-center"></div>
-                <h2 class="error-title">SOMETHING WENT WRONG</h2>
-                <p id="error-message" class="error-text">Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.</p>
-                <button id="btn-retry" class="btn-primary">
+                <h2 class="error-title" data-i18n="error_title">SOMETHING WENT WRONG</h2>
+                <p id="error-message" class="error-text" data-i18n="error_message">Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.</p>
+                <button id="btn-retry" class="btn-primary" data-i18n="btn_try_again">
                     &larr; TRY AGAIN
                 </button>
             </div>
@@ -187,35 +187,35 @@
 
         <section id="view-hall-of-fame" class="view-section">
             <div class="hall-container">
-                <h2 class="hall-title">HALL OF FAME</h2>
-                <p class="hall-subtitle">The greatest music-to-film matches ever discovered.</p>
+                <h2 class="hall-title" data-i18n="hall_of_fame_title">HALL OF FAME</h2>
+                <p class="hall-subtitle" data-i18n="hall_subtitle">The greatest music-to-film matches ever discovered.</p>
                 <div id="hall-grid" class="hall-grid"></div>
             </div>
         </section>
 
         <section id="view-how-it-works" class="view-section">
             <div class="hiw-container">
-                <h2 class="hiw-title">HOW IT WORKS</h2>
+                <h2 class="hiw-title" data-i18n="how_it_works_title">HOW IT WORKS</h2>
                 <div class="hiw-steps">
                     <div class="hiw-step">
                         <div class="step-number">01</div>
-                        <h3>INGEST: lyrics + context</h3>
-                        <p>We take your song and pull together lyrics and meaning from multiple sources—LRCLIB, Genius, Brave Search, and Wikipedia PT—so the recommendation has real musical context, not just a title match.</p>
+                        <h3 data-i18n="step1_title">INGEST: lyrics + context</h3>
+                        <p data-i18n="step1_text">We take your song and pull together lyrics and meaning from multiple sources—LRCLIB, Genius, Brave Search, and Wikipedia PT—so the recommendation has real musical context, not just a title match.</p>
                     </div>
                     <div class="hiw-step">
                         <div class="step-number">02</div>
-                        <h3>ENRICH: songfacts + cover art</h3>
-                        <p>We then add real artist-curated facts from Songfacts and fetch the album cover from Apple Music. These extras help the model understand the song’s actual vibe, backstory, and visual identity.</p>
+                        <h3 data-i18n="step2_title">ENRICH: songfacts + cover art</h3>
+                        <p data-i18n="step2_text">We then add real artist-curated facts from Songfacts and fetch the album cover from Apple Music. These extras help the model understand the song’s actual vibe, backstory, and visual identity.</p>
                     </div>
                     <div class="hiw-step">
                         <div class="step-number">03</div>
-                        <h3>MATCH: AI + TMDb</h3>
-                        <p>A strict JSON prompt asks the model to choose one real TMDb film—complete with a poetic justification, vibe title, tags, and lyric-based quotes. If TMDb is missing data, Wikipedia or Brave Search backfills the gaps.</p>
+                        <h3 data-i18n="step3_title">MATCH: AI + TMDb</h3>
+                        <p data-i18n="step3_text">A strict JSON prompt asks the model to choose one real TMDb film—complete with a poetic justification, vibe title, tags, and lyric-based quotes. If TMDb is missing data, Wikipedia or Brave Search backfills the gaps.</p>
                     </div>
                     <div class="hiw-step">
                         <div class="step-number">04</div>
-                        <h3>PERSIST + render</h3>
-                        <p>The final match is stored in Cloudflare KV history and rendered as poster, stills, quotes, and links. The same logic also runs in the local Python terminal version.</p>
+                        <h3 data-i18n="step4_title">PERSIST + render</h3>
+                        <p data-i18n="step4_text">The final match is stored in Cloudflare KV history and rendered as poster, stills, quotes, and links. The same logic also runs in the local Python terminal version.</p>
                     </div>
                 </div>
             </div>
@@ -223,15 +223,15 @@
 
         <section id="view-about" class="view-section">
             <div class="about-container">
-                <h2 class="about-title">ABOUT</h2>
+                <h2 class="about-title" data-i18n="about_title">ABOUT</h2>
                 <div class="about-text">
-                    <p>Este projeto foi criado por um amante de filmes — sem a pretensão de ser crítico ou 'cinéfilo' — que também é obcecado por música e trilhas sonoras. E ele foi feito para pessoas que sentem o mesmo.</p>
+                    <p data-i18n="about_p1">Este projeto foi criado por um amante de filmes — sem a pretensão de ser crítico ou 'cinéfilo' — que também é obcecado por música e trilhas sonoras. E ele foi feito para pessoas que sentem o mesmo.</p>
 
-                    <p>Sabe quando uma música te faz sentir tanta coisa — como a grandiosidade melancólica de Sign of the Times do Harry Styles — que você queria que ela durasse muito mais? Três minutos raramente são suficientes para processar tudo o que uma faixa pode transmitir. Eu sempre quis estender essa sensação. Já que uma música não pode te abraçar por duas horas seguidas, um filme pode.</p>
+                    <p data-i18n="about_p2">Sabe quando uma música te faz sentir tanta coisa — como a grandiosidade melancólica de Sign of the Times do Harry Styles — que você queria que ela durasse muito mais? Três minutos raramente são suficientes para processar tudo o que uma faixa pode transmitir. Eu sempre quis estender essa sensação. Já que uma música não pode te abraçar por duas horas seguidas, um filme pode.</p>
 
-                    <p>O Moovibe nasceu dessa minha vontade: criar uma ponte que encontre automaticamente o filme perfeito que carrega exatamente a mesma aura, a mesma cor e a mesma vibe da sua música favorita.</p>
+                    <p data-i18n="about_p3">O Moovibe nasceu dessa minha vontade: criar uma ponte que encontre automaticamente o filme perfeito que carrega exatamente a mesma aura, a mesma cor e a mesma vibe da sua música favorita.</p>
 
-                    <p>Se essa experiência fez você sentir algo legal, encontrou um filme incrível para a sua noite ou simplesmente curtiu a ideia, considere me seguir nas redes sociais ou apoiar o projeto de alguma forma. E se você for desenvolvedor, o código-fonte está aberto no meu GitHub te esperando.</p>
+                    <p data-i18n="about_p4">Se essa experiência fez você sentir algo legal, encontrou um filme incrível para a sua noite ou simplesmente curtiu a ideia, considere me seguir nas redes sociais ou apoiar o projeto de alguma forma. E se você for desenvolvedor, o código-fonte está aberto no meu GitHub te esperando.</p>
                 </div>
                 <div class="about-links">
                     <a href="https://github.com/CaesarKairos/Moovibe" target="_blank" class="social-btn" aria-label="GitHub">
