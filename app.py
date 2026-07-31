@@ -424,7 +424,7 @@ def buscar_contexto_musica(nome_musica, artista, lang='en'):
                 f"do artista '{artista_limpo}'. Explique brevemente em um parágrafo curto {idioma_prompt}."
             )
             payload = {
-                "model": "openrouter/free",
+                "model": "google/gemini-2.5-flash:free",
                 "temperature": 0.3,
                 "max_tokens": 300,
                 "messages": [{"role": "user", "content": prompt}]
@@ -523,7 +523,7 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
         conteudo_usuario += f"Contexto historico, significado e fatos adicionais sobre a musica para te ajudar na escolha:\n{contexto_extra}\n"
 
     payload = {
-        "model": "openrouter/free",
+        "model": "google/gemini-2.5-flash:free",
         "temperature": 0.3,
         "messages": [
             {"role": "system", "content": prompt_sistema},
@@ -799,7 +799,7 @@ def buscar_dados_filme_fallback(nome_filme, ano, lang='en'):
                 f"Return strictly JSON with: 'sinopse' ({idioma_prompt}), 'diretor', 'poster' (URL or null)."
             )
             payload = {
-                "model": "openrouter/free",
+                "model": "google/gemini-2.5-flash:free",
                 "temperature": 0.3,
                 "max_tokens": 500,
                 "messages": [{"role": "user", "content": prompt}]
