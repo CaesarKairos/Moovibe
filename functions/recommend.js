@@ -459,4 +459,24 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
   return null;
 }
 
-async function buscarCapaMusica(nomeMusica, artista
+async function buscarCapaMusica(nomeMusica, artista) {
+  try {
+    const query = encodeURIComponent(`${nomeMusica} ${artista}`);
+    const url = `https://itunes.apple.com/search?term=${query}&entity=song&limit=1`;
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': MOOVIBE_USER_AGENT },
+    });
+    if (!resp.ok) {
+      const errorText = await resp.text().catch(() => 'Unknown error');
+      console.error(`[APPLE MUSIC] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
+      return null;
+    }
+    const dados = await resp.json();
+    const track = dados?.results?.[0];
+    if (!track?.artworkUrl100) return null;
+    return track.artworkUrl100.replace('100x100bb', '1000x1000bb');
+  } catch (err) {
+    console.error('[APPLE MUSIC] Erro:', err);
+    return null;
+  }
+}
