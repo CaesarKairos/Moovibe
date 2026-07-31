@@ -15,6 +15,16 @@ const LRCLIB_THROTTLE_MS = 250;
 const MOOVIBE_VERSION = '1.0';
 const MOOVIBE_USER_AGENT = `Moovibe/${MOOVIBE_VERSION} (mailto:cesarbatistasantos08@gmail.com)`;
 
+// Modelo OpenRouter free (atualizado periodicamente)
+// Verifique filtro :free em https://openrouter.ai/models
+// IMPORTANTE: "openrouter/free" é o auto-router oficial do OpenRouter e sempre seleciona
+// automaticamente um modelo gratuito disponível no momento da chamada, evitando quebras
+// quando IDs :free são descontinuados. Isso garante custo zero sempre (nunca cai para um
+// modelo pago). Se no futuro quiser fixar um modelo específico por controle de qualidade,
+// confira antes a lista atual em openrouter.ai/models com o filtro Price = Free, pois IDs
+// hardcoded podem ser descontinuados sem aviso.
+const OPENROUTER_MODEL = 'openrouter/free';
+
 const BROWSER_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 let lrclibLastRequest = 0;
@@ -382,13 +392,13 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
       const idiomaPrompt = lang === 'pt' ? 'em português' : 'in English';
       const prompt = `Pesquise na web a história real, inspiração e o significado da música '${nomeLimpo}' de '${artistaLimpo}'. Retorne apenas um parágrafo curto ${idiomaPrompt} explicando o contexto.`;
       const payload = {
-        model: 'google/gemini-2.5-flash:free',
+        model: OPENROUTER_MODEL,
         temperature: 0.3,
         max_tokens: 300,
         messages: [{ role: 'user', content: prompt }],
       };
       console.log('\n[DEBUG] Enviando Payload para OpenRouter (CONTEXTO):', JSON.stringify(payload, null, 2));
-      console.log('[CONTEXTO] Tentando google/gemini-2.5-flash:free...');
+      console.log(`[CONTEXTO] Tentando modelo: ${OPENROUTER_MODEL}...`);
       const resp = await fetch(OPENROUTER_URL, {
         method: 'POST',
         headers: {
@@ -474,7 +484,7 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
 
   try {
     const body = {
-      model: 'google/gemini-2.5-flash:free',
+      model: OPENROUTER_MODEL,
       temperature: 0.3,
       messages: [
         { role: 'system', content: promptSistema },
@@ -482,7 +492,7 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
       ],
     };
     console.log('\n[DEBUG] Enviando Payload para OpenRouter (RECOMENDACAO):', JSON.stringify(body, null, 2));
-    console.log('[OPENROUTER] Tentando modelo: google/gemini-2.5-flash:free');
+    console.log(`[OPENROUTER] Tentando modelo: ${OPENROUTER_MODEL}`);
     const resp = await fetch(OPENROUTER_URL, {
       method: 'POST',
       headers: {
@@ -648,7 +658,7 @@ async function buscarDadosFilmeFallback(nomeFilme, ano, env, lang = 'en') {
       const idiomaPrompt = lang === 'pt' ? 'em português' : 'in English';
       const prompt = `Generate a brief movie synopsis based on the search context. Return strictly JSON with: 'sinopse' (${idiomaPrompt}), 'diretor', 'poster' (URL or null).`;
       const payload = {
-        model: 'google/gemini-2.5-flash:free',
+        model: OPENROUTER_MODEL,
         temperature: 0.3,
         max_tokens: 500,
         messages: [{ role: 'user', content: prompt }],
@@ -845,12 +855,12 @@ export async function onRequest(context) {
       if (poster) dadosFilme.cenas = [poster, poster, poster];
     }
 
-    const coverUrl = await buscarCapaMusica(nomeMusica, artista);
+    const coverUrl = await buscarCapaMusica(nome_musica, artista);
     const imdbUrl = dadosFilme?.imdb_id ? `https://www.imdb.com/title/${dadosFilme.imdb_id}/` : `https://www.imdb.com/find?q=${encodeURIComponent(nomeFilme)}`;
     const letterboxdUrl = dadosFilme?.id_tmdb ? `https://letterboxd.com/tmdb/${dadosFilme.id_tmdb}` : `https://letterboxd.com/search/${encodeURIComponent(nomeFilme)}/`;
-    const slug = slugify(nomeFilme + '-' + nomeMusica);
+    const slug = slugify(nomeFilme + '-' + nome_musica);
     const resposta = {
-      song: nomeMusica,
+      song: nome_musica,
       artist: artista || '',
       share_slug: slug,
       movie: {

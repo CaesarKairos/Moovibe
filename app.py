@@ -18,6 +18,16 @@ URL_LRCLIB_BASE = "https://" + "lrclib.net/api"
 URL_LRCLIB_GET = URL_LRCLIB_BASE + "/get"
 URL_LRCLIB_SEARCH = URL_LRCLIB_BASE + "/search"
 URL_OPENROUTER = "https://" + "openrouter.ai/api/v1/chat/completions"
+
+# Modelo OpenRouter free (atualizado periodicamente)
+# Verifique filtro :free em https://openrouter.ai/models
+# IMPORTANTE: "openrouter/free" é o auto-router oficial do OpenRouter e sempre seleciona
+# automaticamente um modelo gratuito disponível no momento da chamada, evitando quebras
+# quando IDs :free são descontinuados. Isso garante custo zero sempre (nunca cai para um
+# modelo pago). Se no futuro quiser fixar um modelo específico por controle de qualidade,
+# confira antes a lista atual em openrouter.ai/models com o filtro Price = Free, pois IDs
+# hardcoded podem ser descontinuados sem aviso.
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
 URL_TMDB_BUSCA = "https://" + "api.themoviedb.org/3/search/movie"
 URL_TMDB_BASE = "https://" + "api.themoviedb.org/3/movie"
 URL_WIKIPEDIA_PT = "https://" + "pt.wikipedia.org/api/rest_v1/page/summary/"
@@ -424,7 +434,7 @@ def buscar_contexto_musica(nome_musica, artista, lang='en'):
                 f"do artista '{artista_limpo}'. Explique brevemente em um parágrafo curto {idioma_prompt}."
             )
             payload = {
-                "model": "google/gemini-2.5-flash:free",
+                "model": OPENROUTER_MODEL,
                 "temperature": 0.3,
                 "max_tokens": 300,
                 "messages": [{"role": "user", "content": prompt}]
@@ -523,7 +533,7 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
         conteudo_usuario += f"Contexto historico, significado e fatos adicionais sobre a musica para te ajudar na escolha:\n{contexto_extra}\n"
 
     payload = {
-        "model": "google/gemini-2.5-flash:free",
+        "model": OPENROUTER_MODEL,
         "temperature": 0.3,
         "messages": [
             {"role": "system", "content": prompt_sistema},
@@ -799,7 +809,7 @@ def buscar_dados_filme_fallback(nome_filme, ano, lang='en'):
                 f"Return strictly JSON with: 'sinopse' ({idioma_prompt}), 'diretor', 'poster' (URL or null)."
             )
             payload = {
-                "model": "google/gemini-2.5-flash:free",
+                "model": OPENROUTER_MODEL,
                 "temperature": 0.3,
                 "max_tokens": 500,
                 "messages": [{"role": "user", "content": prompt}]
