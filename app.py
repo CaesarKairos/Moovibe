@@ -25,6 +25,9 @@ URL_WIKIPEDIA_EN = "https://" + "en.wikipedia.org/api/rest_v1/page/summary/"
 URL_SONGFACTS = "https://www.songfacts.com/search"
 
 MOOVIBE_VERSION = "1.0"
+MOOVIBE_USER_AGENT = f"Moovibe/{MOOVIBE_VERSION} (mailto:cesarbatistasantos08@gmail.com)"
+BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 LRCLIB_THROTTLE_SECONDS = 0.25
 _lrclib_last_request = 0.0
 
@@ -40,8 +43,8 @@ def lrclib_throttle():
 
 def lrclib_headers():
     return {
-        "User-Agent": f"Moovibe/{MOOVIBE_VERSION} (https://github.com/CaesarKairos/Moovibe)",
-        "X-User-Agent": f"Moovibe/{MOOVIBE_VERSION} (https://github.com/CaesarKairos/Moovibe)",
+        "User-Agent": MOOVIBE_USER_AGENT,
+        "X-User-Agent": MOOVIBE_USER_AGENT,
     }
 
 
@@ -188,7 +191,7 @@ def buscar_brave(query):
     try:
         url = f"https://search.brave.com/search?q={urllib.parse.quote(query)}"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": BROWSER_USER_AGENT,
         }
         resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code != 200:
@@ -398,7 +401,7 @@ def buscar_contexto_musica(nome_musica, artista, lang='en'):
     print(f"[CONTEXTO] Usando {wiki_label}...")
     try:
         url = f"{wiki_url}{urllib.parse.quote(termo_busca)}"
-        headers = {"User-Agent": "Moovibe/1.0 (movie recommendation app)"}
+        headers = {"User-Agent": MOOVIBE_USER_AGENT}
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
             dados = resp.json()
@@ -466,7 +469,9 @@ def buscar_contexto_musica(nome_musica, artista, lang='en'):
 def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, filmes_excluidos_globais=None, filmes_excluidos_musica=None, lang='en'):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://moovibe.pages.dev",
+        "X-Title": "Moovibe",
     }
 
     # Monta regras de exclusão
@@ -601,7 +606,7 @@ def obter_detalhes_filme_tmdb(nome_filme, ano=None, lang='en'):
     if ano:
         params_busca["primary_release_year"] = ano
     try:
-        resp_busca = requests.get(URL_TMDB_BUSCA, params=params_busca, timeout=10)
+        resp_busca = requests.get(URL_TMDB_BUSCA, params=params_busca, headers={"User-Agent": MOOVIBE_USER_AGENT}, timeout=10)
         if resp_busca.status_code != 200:
             return None
         dados_busca = resp_busca.json()
@@ -617,11 +622,11 @@ def obter_detalhes_filme_tmdb(nome_filme, ano=None, lang='en'):
         print(f"    Data: {filme_basico.get('release_date')}")
 
         url_detalhes = f"{URL_TMDB_BASE}/{filme_id}"
-        resp_detalhes = requests.get(url_detalhes, params={"api_key": TMDB_API_KEY, "language": idioma_tmdb}, timeout=10)
+        resp_detalhes = requests.get(url_detalhes, params={"api_key": TMDB_API_KEY, "language": idioma_tmdb}, headers={"User-Agent": MOOVIBE_USER_AGENT}, timeout=10)
         detalhes = resp_detalhes.json() if resp_detalhes.status_code == 200 else {}
 
         url_creditos = f"{URL_TMDB_BASE}/{filme_id}/credits"
-        resp_creditos = requests.get(url_creditos, params={"api_key": TMDB_API_KEY, "language": idioma_tmdb}, timeout=10)
+        resp_creditos = requests.get(url_creditos, params={"api_key": TMDB_API_KEY, "language": idioma_tmdb}, headers={"User-Agent": MOOVIBE_USER_AGENT}, timeout=10)
         creditos = resp_creditos.json() if resp_creditos.status_code == 200 else {}
         diretor = "Nao encontrado"
         for pessoa in creditos.get("crew", []):
@@ -631,7 +636,7 @@ def obter_detalhes_filme_tmdb(nome_filme, ano=None, lang='en'):
 
         url_imagens = f"{URL_TMDB_BASE}/{filme_id}/images"
         params_imagens = {"api_key": TMDB_API_KEY, "include_image_language": "en,null"}
-        resp_imagens = requests.get(url_imagens, params=params_imagens, timeout=10)
+        resp_imagens = requests.get(url_imagens, params=params_imagens, headers={"User-Agent": MOOVIBE_USER_AGENT}, timeout=10)
         dados_imagens = resp_imagens.json() if resp_imagens.status_code == 200 else {}
 
         cenas = []
@@ -737,7 +742,7 @@ def buscar_dados_filme_fallback(nome_filme, ano, lang='en'):
         for termo in termos:
             print(f"[FALLBACK] Query Wikipedia: {termo}")
             url = f"{wiki_url}{urllib.parse.quote(termo)}"
-            headers = {"User-Agent": "Moovibe/1.0 (movie recommendation app)"}
+            headers = {"User-Agent": MOOVIBE_USER_AGENT}
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200:
                 dados = resp.json()
@@ -801,7 +806,9 @@ def buscar_dados_filme_fallback(nome_filme, ano, lang='en'):
             }
             headers = {
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://moovibe.pages.dev",
+                "X-Title": "Moovibe",
             }
             print(f"\n[DEBUG] Enviando Payload para OpenRouter (FILME FALLBACK):\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
             tempo_inicio = time.time()

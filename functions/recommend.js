@@ -13,6 +13,9 @@ const WIKIPEDIA_PT_API = 'https://pt.wikipedia.org/api/rest_v1/page/summary/';
 const WIKIPEDIA_EN_API = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
 const LRCLIB_THROTTLE_MS = 250;
 const MOOVIBE_VERSION = '1.0';
+const MOOVIBE_USER_AGENT = `Moovibe/${MOOVIBE_VERSION} (mailto:cesarbatistasantos08@gmail.com)`;
+
+const BROWSER_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 let lrclibLastRequest = 0;
 function lrclibThrottle() {
@@ -23,12 +26,11 @@ function lrclibThrottle() {
 }
 
 function lrclibHeaders() {
-  const headers = {};
-  headers['User-Agent'] = `Moovibe/${MOOVIBE_VERSION} (https://github.com/CaesarKairos/Moovibe)`;
-  headers['X-User-Agent'] = headers['User-Agent'];
-  return headers;
+  return {
+    'User-Agent': MOOVIBE_USER_AGENT,
+    'X-User-Agent': MOOVIBE_USER_AGENT,
+  };
 }
-const WIKIPEDIA_EN_API = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -163,11 +165,12 @@ async function buscarBrave(query) {
     const url = `https://search.brave.com/search?q=${encodeURIComponent(query)}`;
     const resp = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': BROWSER_USER_AGENT,
       },
     });
     if (!resp.ok) {
-      console.log(`[BRAVE] Status ${resp.status}`);
+      const errorText = await resp.text().catch(() => 'Unknown error');
+      console.error(`[BRAVE] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
       return null;
     }
 
@@ -285,23 +288,32 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
     try {
       const query = encodeURIComponent(`${nomeLimpo} ${artistaLimpo}`);
       const resp = await fetch(`https://api.genius.com/search?q=${query}`, {
-        headers: { Authorization: `Bearer ${geniusKey}` },
+        headers: {
+          Authorization: `Bearer ${geniusKey}`,
+          'User-Agent': MOOVIBE_USER_AGENT,
+        },
       });
-      if (resp.ok) {
-        const dados = await resp.json();
-        const hit = dados?.response?.hits?.[0]?.result;
-        if (hit?.url) {
-          const pageResp = await fetch(hit.url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Moovibe/1.0)' },
-          });
-          if (pageResp.ok) {
-            const html = await pageResp.text();
-            const lyricsMatch = html.match(/<div[^>]*class="lyrics"[^>]*>([\s\S]*?)<\/div>/i);
-            if (lyricsMatch) {
-              console.log('[LETRA] Genius: Letra encontrada!');
-              return limparHTML(lyricsMatch[1]).substring(0, 5000);
-            }
-          }
+      if (!resp.ok) {
+        const errorText = await resp.text().catch(() => 'Unknown error');
+        console.error(`[GENIUS] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
+        return null;
+      }
+      const dados = await resp.json();
+      const hit = dados?.response?.hits?.[0]?.result;
+      if (hit?.url) {
+        const pageResp = await fetch(hit.url, {
+          headers: { 'User-Agent': MOOVIBE_USER_AGENT },
+        });
+        if (!pageResp.ok) {
+          const errorText = await pageResp.text().catch(() => 'Unknown error');
+          console.error(`[GENIUS] Página falhou com status ${pageResp.status}:`, errorText.substring(0, 300));
+          return null;
+        }
+        const html = await pageResp.text();
+        const lyricsMatch = html.match(/<div[^>]*class="lyrics"[^>]*>([\s\S]*?)<\/div>/i);
+        if (lyricsMatch) {
+          console.log('[LETRA] Genius: Letra encontrada!');
+          return limparHTML(lyricsMatch[1]).substring(0, 5000);
         }
       }
     } catch (err) {
@@ -330,23 +342,32 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
     try {
       const query = encodeURIComponent(`${nomeLimpo} ${artistaLimpo}`);
       const resp = await fetch(`https://api.genius.com/search?q=${query}`, {
-        headers: { Authorization: `Bearer ${env.GENIUS_API_KEY}` },
+        headers: {
+          Authorization: `Bearer ${env.GENIUS_API_KEY}`,
+          'User-Agent': MOOVIBE_USER_AGENT,
+        },
       });
-      if (resp.ok) {
-        const dados = await resp.json();
-        const hit = dados?.response?.hits?.[0]?.result;
-        if (hit?.url) {
-          const pageResp = await fetch(hit.url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Moovibe/1.0)' },
-          });
-          if (pageResp.ok) {
-            const html = await pageResp.text();
-            const metaMatch = html.match(/<meta\s+[^>]*name="description"[^>]*content="([^"]+)"/i);
-            if (metaMatch && metaMatch[1]) {
-              console.log('[CONTEXTO] Genius: Descricao encontrada!');
-              return metaMatch[1].substring(0, 2000);
-            }
-          }
+      if (!resp.ok) {
+        const errorText = await resp.text().catch(() => 'Unknown error');
+        console.error(`[GENIUS] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
+        return null;
+      }
+      const dados = await resp.json();
+      const hit = dados?.response?.hits?.[0]?.result;
+      if (hit?.url) {
+        const pageResp = await fetch(hit.url, {
+          headers: { 'User-Agent': MOOVIBE_USER_AGENT },
+        });
+        if (!pageResp.ok) {
+          const errorText = await pageResp.text().catch(() => 'Unknown error');
+          console.error(`[GENIUS] Página falhou com status ${pageResp.status}:`, errorText.substring(0, 300));
+          return null;
+        }
+        const html = await pageResp.text();
+        const metaMatch = html.match(/<meta\s+[^>]*name="description"[^>]*content="([^"]+)"/i);
+        if (metaMatch && metaMatch[1]) {
+          console.log('[CONTEXTO] Genius: Descricao encontrada!');
+          return metaMatch[1].substring(0, 2000);
         }
       }
     } catch (err) {
@@ -366,14 +387,17 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
   try {
     const url = `${wikiApiCtx}${encodeURIComponent(termoBusca)}`;
     const resp = await fetch(url, {
-      headers: { 'User-Agent': 'Moovibe/1.0 (movie recommendation app)' },
+      headers: { 'User-Agent': MOOVIBE_USER_AGENT },
     });
-    if (resp.status === 200) {
-      const dados = await resp.json();
-      if (dados.type !== 'disambiguation' && dados.extract) {
-        console.log('[CONTEXTO] Wikipedia: Contexto encontrado!');
-        return dados.extract.substring(0, 2000);
-      }
+    if (!resp.ok) {
+      const errorText = await resp.text().catch(() => 'Unknown error');
+      console.error(`[WIKIPEDIA] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
+      return null;
+    }
+    const dados = await resp.json();
+    if (dados.type !== 'disambiguation' && dados.extract) {
+      console.log('[CONTEXTO] Wikipedia: Contexto encontrado!');
+      return dados.extract.substring(0, 2000);
     }
   } catch (err) {
     console.error('[CONTEXTO] Wikipedia erro:', err);
@@ -398,26 +422,30 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
         headers: {
           Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
           'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://moovibe.pages.dev',
+          'X-Title': 'Moovibe',
         },
         body: JSON.stringify(payload),
       });
 
-      if (resp.ok) {
-        const dados = await resp.json();
-        let texto = '';
-        if (dados && typeof dados === 'object') {
-          const choices = dados.choices;
-          if (choices && Array.isArray(choices) && choices.length > 0 && choices[0]) {
-            texto = choices[0].message?.content?.trim() || '';
-          }
+      if (!resp.ok) {
+        const errorText = await resp.text().catch(() => 'Unknown error');
+        console.error(`[OPENROUTER CONTEXTO] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
+        return null;
+      }
+
+      const dados = await resp.json();
+      let texto = '';
+      if (dados && typeof dados === 'object') {
+        const choices = dados.choices;
+        if (choices && Array.isArray(choices) && choices.length > 0 && choices[0]) {
+          texto = choices[0].message?.content?.trim() || '';
         }
-        console.log(`[CONTEXTO] Resposta Bruta: ${texto.substring(0, 300)}...`);
-        if (texto && validarContexto(texto, letra)) {
-          console.log('[CONTEXTO] OpenRouter: Contexto gerado via IA!');
-          return texto.substring(0, 2000);
-        }
-      } else {
-        console.log(`[CONTEXTO] OpenRouter falhou: ${resp.status}`);
+      }
+      console.log(`[CONTEXTO] Resposta Bruta: ${texto.substring(0, 300)}...`);
+      if (texto && validarContexto(texto, letra)) {
+        console.log('[CONTEXTO] OpenRouter: Contexto gerado via IA!');
+        return texto.substring(0, 2000);
       }
     } catch (err) {
       console.error('[CONTEXTO] OpenRouter erro:', err);
@@ -432,8 +460,14 @@ async function buscarCapaMusica(nomeMusica, artista) {
   try {
     const query = encodeURIComponent(`${nomeMusica} ${artista}`);
     const url = `https://itunes.apple.com/search?term=${query}&entity=song&limit=1`;
-    const resp = await fetch(url);
-    if (!resp.ok) return null;
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': MOOVIBE_USER_AGENT },
+    });
+    if (!resp.ok) {
+      const errorText = await resp.text().catch(() => 'Unknown error');
+      console.error(`[APPLE MUSIC] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
+      return null;
+    }
     const dados = await resp.json();
     const track = dados?.results?.[0];
     if (!track?.artworkUrl100) return null;
@@ -506,14 +540,15 @@ Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de 
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://moovibe.pages.dev',
+        'X-Title': 'Moovibe',
       },
       body: JSON.stringify(body),
     });
 
-    console.log(`[OPENROUTER] Status: ${resp.status}`);
-
     if (!resp.ok) {
-      console.error('[OPENROUTER] HTTP', resp.status);
+      const errorText = await resp.text().catch(() => 'Unknown error');
+      console.error(`[OPENROUTER RECOMENDACAO] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
       return null;
     }
 
@@ -567,8 +602,14 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano, lang = 'en') {
     if (ano) {
       paramsBusca.set('primary_release_year', ano);
     }
-    const respBusca = await fetch(`${TMDB_BUSCA_URL}?${paramsBusca}`);
-    if (!respBusca.ok) return null;
+    const respBusca = await fetch(`${TMDB_BUSCA_URL}?${paramsBusca}`, {
+      headers: { 'User-Agent': MOOVIBE_USER_AGENT },
+    });
+    if (!respBusca.ok) {
+      const errorText = await respBusca.text().catch(() => 'Unknown error');
+      console.error(`[TMDB] Busca falhou com status ${respBusca.status}:`, errorText.substring(0, 300));
+      return null;
+    }
 
     const dadosBusca = await respBusca.json();
     const filmes = dadosBusca?.results;
@@ -578,11 +619,15 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano, lang = 'en') {
     const filmeId = filmeBasico.id;
 
     const paramsDetalhes = new URLSearchParams({ api_key: apiKey, language: tmdbLang });
-    const respDetalhes = await fetch(`${TMDB_BASE_URL}/${filmeId}?${paramsDetalhes}`);
+    const respDetalhes = await fetch(`${TMDB_BASE_URL}/${filmeId}?${paramsDetalhes}`, {
+      headers: { 'User-Agent': MOOVIBE_USER_AGENT },
+    });
     const detalhes = respDetalhes.ok ? await respDetalhes.json() : {};
 
     let diretor = 'Nao encontrado';
-    const respCreditos = await fetch(`${TMDB_BASE_URL}/${filmeId}/credits?api_key=${apiKey}&language=${tmdbLang}`);
+    const respCreditos = await fetch(`${TMDB_BASE_URL}/${filmeId}/credits?api_key=${apiKey}&language=${tmdbLang}`, {
+      headers: { 'User-Agent': MOOVIBE_USER_AGENT },
+    });
     if (respCreditos.ok) {
       const creditos = await respCreditos.json();
       for (const pessoa of (creditos?.crew || [])) {
@@ -593,7 +638,9 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano, lang = 'en') {
       }
     }
 
-    const respImagens = await fetch(`${TMDB_BASE_URL}/${filmeId}/images?api_key=${apiKey}&include_image_language=en,null`);
+    const respImagens = await fetch(`${TMDB_BASE_URL}/${filmeId}/images?api_key=${apiKey}&include_image_language=en,null`, {
+      headers: { 'User-Agent': MOOVIBE_USER_AGENT },
+    });
     const cenas = [];
     let posterUrl = null;
     
@@ -657,23 +704,26 @@ async function buscarDadosFilmeFallback(nomeFilme, ano, env, lang = 'en') {
     for (const termo of termos) {
       const url = `${wikiApi}${encodeURIComponent(termo)}`;
       const resp = await fetch(url, {
-        headers: { 'User-Agent': 'Moovibe/1.0 (movie recommendation app)' },
+        headers: { 'User-Agent': MOOVIBE_USER_AGENT },
       });
-      if (resp.status === 200) {
-        const dados = await resp.json();
-        if (dados.type === 'disambiguation') continue;
-        if (dados.extract) {
-          const sinopse = extrairDuasPrimeirasFrases(dados.extract);
-          const diretor = extrairDiretorWikipedia(dados.extract);
+      if (!resp.ok) {
+        const errorText = await resp.text().catch(() => 'Unknown error');
+        console.error(`[WIKIPEDIA] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
+        continue;
+      }
+      const dados = await resp.json();
+      if (dados.type === 'disambiguation') continue;
+      if (dados.extract) {
+        const sinopse = extrairDuasPrimeirasFrases(dados.extract);
+        const diretor = extrairDiretorWikipedia(dados.extract);
 
-          let posterUrl = null;
-          if (dados.originalimage && dados.originalimage.source) {
-            posterUrl = dados.originalimage.source;
-          }
-
-          console.log('[FILME FALLBACK] Wikipedia: Dados encontrados!');
-          return { sinopse: sinopse.substring(0, 2000), diretor, poster: posterUrl };
+        let posterUrl = null;
+        if (dados.originalimage && dados.originalimage.source) {
+          posterUrl = dados.originalimage.source;
         }
+
+        console.log('[FILME FALLBACK] Wikipedia: Dados encontrados!');
+        return { sinopse: sinopse.substring(0, 2000), diretor, poster: posterUrl };
       }
     }
   } catch (err) {
@@ -710,40 +760,46 @@ async function buscarDadosFilmeFallback(nomeFilme, ano, env, lang = 'en') {
         headers: {
           Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
           'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://moovibe.pages.dev',
+          'X-Title': 'Moovibe',
         },
         body: JSON.stringify(payload),
       });
 
-      if (resp.ok) {
-        const dados = await resp.json();
-        let texto = '';
-        if (dados && typeof dados === 'object') {
-          const choices = dados.choices;
-          if (choices && Array.isArray(choices) && choices.length > 0 && choices[0]) {
-            texto = choices[0].message?.content?.trim() || '';
-          }
+      if (!resp.ok) {
+        const errorText = await resp.text().catch(() => 'Unknown error');
+        console.error(`[OPENROUTER FILME FALLBACK] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
+        return null;
+      }
+
+      const dados = await resp.json();
+      let texto = '';
+      if (dados && typeof dados === 'object') {
+        const choices = dados.choices;
+        if (choices && Array.isArray(choices) && choices.length > 0 && choices[0]) {
+          texto = choices[0].message?.content?.trim() || '';
         }
-        if (texto) {
-          console.log(`[FILME FALLBACK] OpenRouter resposta bruta: ${texto.substring(0, 300)}...`);
-          const parsed = extrairJSON(texto);
-          if (parsed && typeof parsed === 'object') {
-            let poster = parsed.poster;
-            if (poster && !String(poster).startsWith('http')) {
-              poster = null;
-            }
-            return {
-              sinopse: parsed.sinopse || 'Sinopse indisponível.',
-              diretor: parsed.diretor || 'Não encontrado',
-              poster: poster,
-            };
-          } else {
-            console.log('[FILME FALLBACK] OpenRouter JSON não encontrado, usando texto como sinopse.');
-            return {
-              sinopse: texto.substring(0, 2000),
-              diretor: 'Encontrado via IA',
-              poster: null,
-            };
+      }
+      if (texto) {
+        console.log(`[FILME FALLBACK] OpenRouter resposta bruta: ${texto.substring(0, 300)}...`);
+        const parsed = extrairJSON(texto);
+        if (parsed && typeof parsed === 'object') {
+          let poster = parsed.poster;
+          if (poster && !String(poster).startsWith('http')) {
+            poster = null;
           }
+          return {
+            sinopse: parsed.sinopse || 'Sinopse indisponível.',
+            diretor: parsed.diretor || 'Não encontrado',
+            poster: poster,
+          };
+        } else {
+          console.log('[FILME FALLBACK] OpenRouter JSON não encontrado, usando texto como sinopse.');
+          return {
+            sinopse: texto.substring(0, 2000),
+            diretor: 'Encontrado via IA',
+            poster: null,
+          };
         }
       }
     } catch (err) {
