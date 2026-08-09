@@ -455,9 +455,12 @@ def buscar_contexto_musica(nome_musica, artista, lang='en'):
                         if desc_dom:
                             texto_desc = extrair_texto_genius_dom(desc_dom)
                             texto_desc = re.sub(r'\s+', ' ', texto_desc).strip()
-                            if texto_desc:
+                            if texto_desc and len(texto_desc) >= 30 and texto_desc.strip() != "?":
+                                print("[CONTEXTO] FONTE=GENIUS")
                                 print("[CONTEXTO] Genius: Descricao oficial encontrada!")
                                 return texto_desc[:2000]
+                            else:
+                                print("[CONTEXTO] Genius: descricao vazia/placeholder, seguindo para próxima camada.")
                         else:
                             print("[CONTEXTO] Genius: description.dom vazio/ausente, seguindo para próxima camada.")
         except Exception as e:
@@ -466,6 +469,7 @@ def buscar_contexto_musica(nome_musica, artista, lang='en'):
     print("[CONTEXTO] CAMADA 2: DuckDuckGo Instant Answer...")
     ctx_ddg = buscar_duckduckgo(f"{nome_limpo} {artista_limpo} song meaning")
     if ctx_ddg:
+        print("[CONTEXTO] FONTE=DUCKDUCKGO")
         print("[CONTEXTO] DuckDuckGo: Contexto encontrado!")
         return ctx_ddg[:2000]
 
@@ -480,6 +484,7 @@ def buscar_contexto_musica(nome_musica, artista, lang='en'):
         if resp.status_code == 200:
             dados = resp.json()
             if dados.get("type") != "disambiguation" and dados.get("extract"):
+                print("[CONTEXTO] FONTE=WIKIPEDIA")
                 print("[CONTEXTO] Wikipedia: Contexto encontrado!")
                 return dados["extract"][:2000]
     except Exception as e:
@@ -489,6 +494,7 @@ def buscar_contexto_musica(nome_musica, artista, lang='en'):
     query_brave = f"significado da musica {nome_limpo} {artista_limpo}"
     ctx_brave = buscar_brave(query_brave)
     if ctx_brave:
+        print("[CONTEXTO] FONTE=BRAVE")
         print("[CONTEXTO] Brave Search: Contexto encontrado!")
         return ctx_brave[:2000]
 
@@ -535,6 +541,7 @@ def buscar_contexto_musica(nome_musica, artista, lang='en'):
             if texto and isinstance(texto, str):
                 texto = texto.strip()
                 if texto:
+                    print("[CONTEXTO] FONTE=IA")
                     print("[CONTEXTO] OpenRouter: Contexto gerado via IA!")
                     return texto[:2000]
         except Exception as e:

@@ -390,9 +390,12 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
             const descDom = songData?.response?.song?.description?.dom;
             if (descDom) {
               const textoDesc = extrairTextoGeniusDOM(descDom).replace(/\s+/g, ' ').trim();
-              if (textoDesc) {
+              if (textoDesc && textoDesc.length >= 30 && textoDesc.trim() !== '?') {
+                console.log('[CONTEXTO] FONTE=GENIUS');
                 console.log('[CONTEXTO] Genius: Descricao oficial encontrada!');
                 return textoDesc.substring(0, 2000);
+              } else {
+                console.log('[CONTEXTO] Genius: descricao vazia/placeholder, seguindo para próxima camada.');
               }
             } else {
               console.log('[CONTEXTO] Genius: description.dom vazio/ausente, seguindo para próxima camada.');
@@ -408,6 +411,7 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
   console.log('[CONTEXTO] CAMADA 2: DuckDuckGo Instant Answer...');
   const ctxDdg = await buscarDuckDuckGo(`${nomeLimpo} ${artistaLimpo} song meaning`);
   if (ctxDdg) {
+    console.log('[CONTEXTO] FONTE=DUCKDUCKGO');
     console.log('[CONTEXTO] DuckDuckGo: Contexto encontrado!');
     return ctxDdg.substring(0, 2000);
   }
@@ -423,6 +427,7 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
     } else {
       const dados = await resp.json();
       if (dados.type !== 'disambiguation' && dados.extract) {
+        console.log('[CONTEXTO] FONTE=WIKIPEDIA');
         console.log('[CONTEXTO] Wikipedia: Contexto encontrado!');
         return dados.extract.substring(0, 2000);
       }
@@ -434,6 +439,7 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
   console.log('[CONTEXTO] CAMADA 4: Brave Search...');
   const ctxBrave = await buscarBrave(`significado da musica ${nomeLimpo} ${artistaLimpo}`);
   if (ctxBrave && validarContexto(ctxBrave, letra)) {
+    console.log('[CONTEXTO] FONTE=BRAVE');
     console.log('[CONTEXTO] Brave Search: Contexto encontrado!');
     return ctxBrave.substring(0, 2000);
   }
@@ -473,6 +479,7 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
           const texto = aiContent.trim();
           console.log(`[CONTEXTO] Resposta Bruta: ${texto.substring(0, 300)}...`);
           if (texto && validarContexto(texto, letra)) {
+            console.log('[CONTEXTO] FONTE=IA');
             console.log('[CONTEXTO] OpenRouter: Contexto gerado via IA!');
             return texto.substring(0, 2000);
           }

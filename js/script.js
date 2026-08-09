@@ -131,6 +131,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const loadingText = document.getElementById('loading-text');
     const errorMessage = document.getElementById('error-message');
     const btnRetry = document.getElementById('btn-retry');
+    const audioPreview = document.getElementById('res-audio-preview');
+    const audioBtn = document.getElementById('res-audio-btn');
 
     // Loading strings for cinematic feel
     const loadingMessages = lang === 'pt'
@@ -146,37 +148,6 @@ document.addEventListener('DOMContentLoaded', () => {
             "Asking the AI...",
             "Choosing the movie..."
           ];
-
-    // --- Theme (sessão noturna) ---
-    const themeToggle = document.getElementById('theme-toggle');
-    const STORAGE_KEY = 'moovibe-theme';
-
-    function getInitialTheme() {
-        const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved === 'dark') return 'dark';
-        if (saved === 'light') return 'light';
-        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';
-        return 'light';
-    }
-
-    function applyTheme(theme) {
-        if (!themeToggle) return;
-        const isDark = theme === 'dark';
-        document.body.classList.toggle('theme-dark', isDark);
-        themeToggle.textContent = isDark
-            ? (lang === 'pt' ? 'SESSÃO DIURNA' : 'DAY SESSION')
-            : (lang === 'pt' ? 'SESSÃO NOTURNA' : 'NIGHT SESSION');
-    }
-
-    applyTheme(getInitialTheme());
-    if (themeToggle) {
-        themeToggle.addEventListener('click', () => {
-            const current = document.body.classList.contains('theme-dark') ? 'dark' : 'light';
-            const next = current === 'dark' ? 'light' : 'dark';
-            localStorage.setItem(STORAGE_KEY, next);
-            applyTheme(next);
-        });
-    }
 
     // --- Randomização leve de rotação (fitas e polaroids) ---
     function aplicarRotacaoAleatoria(container) {
@@ -199,8 +170,17 @@ document.addEventListener('DOMContentLoaded', () => {
         return params.get(name) || null;
     }
 
+    function pararAudio() {
+        if (audioPreview && !audioPreview.paused) {
+            audioPreview.pause();
+            audioPreview.currentTime = 0;
+        }
+        if (audioBtn) audioBtn.classList.remove('playing');
+    }
+
     function switchView(targetView) {
         if (!targetView) return;
+        pararAudio();
         document.querySelectorAll('.view-section').forEach(view => {
             view.classList.remove('active');
         });
@@ -407,6 +387,20 @@ document.addEventListener('DOMContentLoaded', () => {
         const elOrigTitle = document.getElementById('res-original-title');
         if (elOrigTitle) elOrigTitle.textContent = safeStr(movie.original_title);
         
+        // Audio Preview
+        if (audioPreview && audioBtn) {
+            const audioUrl = movie.audio_preview_url;
+            if (audioUrl) {
+                audioPreview.src = audioUrl;
+                audioBtn.style.display = 'inline-flex';
+                audioBtn.classList.remove('playing');
+            } else {
+                pararAudio();
+                audioPreview.removeAttribute('src');
+                audioBtn.style.display = 'none';
+            }
+        }
+
         // Poster & Text
         const elPoster = document.getElementById('res-poster');
         if (elPoster) elPoster.src = safeStr(movie.poster_url);
@@ -515,6 +509,25 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- Event Listeners ---
+
+    if (audioBtn) {
+        audioBtn.addEventListener('click', () => {
+            if (!audioPreview) return;
+            if (audioPreview.paused) {
+                audioPreview.play().then(() => {
+                    audioBtn.classList.add('playing');
+                }).catch(err => {
+                    console.error('Falha ao reproduzir prévia:', err);
+                });
+            } else {
+                audioPreview.pause();
+                audioBtn.classList.remove('playing');
+            }
+        });
+        audioPreview.addEventListener('ended', () => {
+            audioBtn.classList.remove('playing');
+        });
+    }
 
     searchForm.addEventListener('submit', (e) => {
         e.preventDefault();
