@@ -135,19 +135,62 @@ document.addEventListener('DOMContentLoaded', () => {
     // Loading strings for cinematic feel
     const loadingMessages = lang === 'pt'
         ? [
-            "Escutando a atmosfera...",
             "Lendo a letra...",
-            "Procurando além dos gêneros...",
-            "Curadorando emoções...",
-            "Encontrando uma alma cinematográfica..."
+            "Garimpando o contexto...",
+            "Perguntando pra IA...",
+            "Escolhendo o filme..."
           ]
         : [
-            "Listening to the atmosphere...",
             "Reading the lyrics...",
-            "Searching beyond genres...",
-            "Curating emotions...",
-            "Finding a cinematic soul..."
+            "Digging the context...",
+            "Asking the AI...",
+            "Choosing the movie..."
           ];
+
+    // --- Theme (sessão noturna) ---
+    const themeToggle = document.getElementById('theme-toggle');
+    const STORAGE_KEY = 'moovibe-theme';
+
+    function getInitialTheme() {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved === 'dark') return 'dark';
+        if (saved === 'light') return 'light';
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';
+        return 'light';
+    }
+
+    function applyTheme(theme) {
+        if (!themeToggle) return;
+        const isDark = theme === 'dark';
+        document.body.classList.toggle('theme-dark', isDark);
+        themeToggle.textContent = isDark
+            ? (lang === 'pt' ? 'SESSÃO DIURNA' : 'DAY SESSION')
+            : (lang === 'pt' ? 'SESSÃO NOTURNA' : 'NIGHT SESSION');
+    }
+
+    applyTheme(getInitialTheme());
+    if (themeToggle) {
+        themeToggle.addEventListener('click', () => {
+            const current = document.body.classList.contains('theme-dark') ? 'dark' : 'light';
+            const next = current === 'dark' ? 'light' : 'dark';
+            localStorage.setItem(STORAGE_KEY, next);
+            applyTheme(next);
+        });
+    }
+
+    // --- Randomização leve de rotação (fitas e polaroids) ---
+    function aplicarRotacaoAleatoria(container) {
+        if (!container) return;
+        if (window.matchMedia && window.matchMedia('(max-width: 1100px)').matches) return;
+        container.querySelectorAll('.rotate-left, .rotate-right').forEach(el => {
+            const current = getComputedStyle(el).transform;
+            if (current && current !== 'none') {
+                const random = (Math.random() * 4 - 2); // ±2 graus
+                const deg = parseFloat(current.match(/rotate\(([-\d.]+)deg\)/)?.[1] || '0');
+                el.style.transform = `rotate(${(deg + random).toFixed(2)}deg)`;
+            }
+        });
+    }
 
     // --- Core Functions ---
 
@@ -183,7 +226,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (messageIndex < loadingMessages.length) {
                 loadingText.textContent = loadingMessages[messageIndex];
             }
-        }, 800);
+        }, 1500);
 
         fetchPromise
             .then(data => {
@@ -260,6 +303,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     card.appendChild(img);
                 }
                 card.appendChild(meta);
+                aplicarOverlayHall(card, movie);
                 grid.appendChild(card);
             });
         } catch (err) {
@@ -409,6 +453,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
+        // Aplica rotação aleatória nas polaroids da view de resultados
+        const resultsView = document.getElementById('view-results');
+        if (resultsView) aplicarRotacaoAleatoria(resultsView);
+
         // Quotes
         const quotes = safeArr(movie.quotes);
         const quoteIds = ['res-quote-1', 'res-quote-2', 'res-quote-3'];
@@ -421,6 +469,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 el.style.display = (quoteText || movieTitle) ? '' : 'none';
             }
         });
+    }
+
+    function aplicarOverlayHall(card, movie) {
+        const overlay = document.createElement('div');
+        overlay.className = 'hall-overlay';
+        const vibe = movie.vibe_title || '';
+        const tags = Array.isArray(movie.tags) ? movie.tags : [];
+        let html = '';
+        if (vibe) html += '<span class="ho-vibe">' + escapeHtml(vibe) + '</span>';
+        if (tags.length > 0) {
+            html += '<div class="ho-tags">' + tags.map(function(t) { return '<span class="ho-tag">' + escapeHtml(t) + '</span>'; }).join('') + '</div>';
+        }
+        overlay.innerHTML = html;
+        card.appendChild(overlay);
     }
 
     // --- Shared Link Detection (?r=) ---

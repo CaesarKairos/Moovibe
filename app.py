@@ -18,6 +18,10 @@ URL_LRCLIB_BASE = "https://" + "lrclib.net/api"
 URL_LRCLIB_GET = URL_LRCLIB_BASE + "/get"
 URL_LRCLIB_SEARCH = URL_LRCLIB_BASE + "/search"
 URL_OPENROUTER = "https://" + "openrouter.ai/api/v1/chat/completions"
+URL_GENIUS_BASE = "https://" + "api.genius.com"
+URL_GENIUS_SEARCH = URL_GENIUS_BASE + "/search"
+URL_GENIUS_SONGS = URL_GENIUS_BASE + "/songs"
+URL_DUCKDUCKGO = "https://" + "api.duckduckgo.com/"
 
 # Modelo OpenRouter free (atualizado periodicamente)
 # Verifique filtro :free em https://openrouter.ai/models
@@ -370,40 +374,100 @@ def buscar_letra_musica(nome_musica, artista):
 # ==========================================
 # 2. FLUXO DO SIGNIFICADO/CONTEXTO DA MUSICA
 # ==========================================
+def extrair_texto_genius_dom(no):
+    """
+    Percorre recursivamente a árvore DOM do Genius (response.song.description.dom)
+    e concatena todo o texto puro dos nós, ignorando tags/formatação.
+    """
+    if no is None:
+        return ""
+    if isinstance(no, str):
+        return no
+    if isinstance(no, dict):
+        # Se tem 'children', percorre recursivamente
+        children = no.get("children")
+        if children:
+            return "".join(extrair_texto_genius_dom(child) for child in children)
+        # Se tem 'text', retorna o texto
+        if "text" in no:
+            return str(no.get("text", ""))
+        return ""
+    if isinstance(no, list):
+        return "".join(extrair_texto_genius_dom(item) for item in no)
+    return ""
+
+
+def buscar_duckduckgo(query):
+    """
+    Busca na DuckDuckGo Instant Answer API.
+    Extrai AbstractText; se vazio, tenta Answer.
+    Retorna texto truncado em 2000 chars ou None.
+    """
+    try:
+        url = f"{URL_DUCKDUCKGO}?q={urllib.parse.quote(query)}&format=json&no_html=1&skip_disambig=1"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            print(f"[DUCKDUCKGO] Status {resp.status_code}")
+            return None
+        dados = resp.json()
+        texto = dados.get("AbstractText") or ""
+        if not texto:
+            texto = dados.get("Answer") or ""
+        if not texto:
+            print("[DUCKDUCKGO] Sem resultado (AbstractText e Answer vazios).")
+            return None
+        texto = re.sub(r'\s+', ' ', texto).strip()
+        print(f"[DUCKDUCKGO] OK! {len(texto)} chars obtidos.")
+        return texto[:2000]
+    except Exception as e:
+        print(f"[DUCKDUCKGO] Erro: {e}")
+        return None
+
+
 def buscar_contexto_musica(nome_musica, artista, lang='en'):
     """
-    CAMADA 1: Genius API (descricao)
-    CAMADA 2: Brave Search
+    CAMADA 1: Genius API (descricao via /songs/{id})
+    CAMADA 2: DuckDuckGo Instant Answer
     CAMADA 3: Wikipedia (PT ou EN)
-    CAMADA 4: OpenRouter (mini-IA) - com fallback string seguro
+    CAMADA 4: Brave Search
+    CAMADA 5: OpenRouter (mini-IA) - com fallback string seguro
     """
     nome_limpo = limpar_termo_musica(nome_musica)
     artista_limpo = limpar_termo_musica(artista) if artista else artista
     termo_busca = f"{nome_limpo} {artista_limpo}"
 
-    print("[CONTEXTO] CAMADA 1: Genius...")
+    print("[CONTEXTO] CAMADA 1: Genius (descricao via /songs/{id})...")
     if GENIUS_API_KEY:
         try:
-            genius = lyricsgenius.Genius(GENIUS_API_KEY, timeout=10, retries=2)
-            genius.verbose = False
-            musica = genius.search_song(nome_limpo, artista_limpo)
-            if musica and hasattr(musica, 'description'):
-                desc = musica.description
-                if desc:
-                    desc_limpa = re.sub(r'<[^>]+>', '', desc)
-                    desc_limpa = re.sub(r'\s+', ' ', desc_limpa).strip()
-                    if desc_limpa:
-                        print("[CONTEXTO] Genius: Descricao encontrada!")
-                        return desc_limpa[:2000]
+            headers = {"Authorization": f"Bearer {GENIUS_API_KEY}", "User-Agent": MOOVIBE_USER_AGENT}
+            query = urllib.parse.quote(f"{nome_limpo} {artista_limpo}")
+            resp_busca = requests.get(f"{URL_GENIUS_SEARCH}?q={query}", headers=headers, timeout=10)
+            if resp_busca.status_code == 200:
+                dados_busca = resp_busca.json()
+                hits = dados_busca.get("response", {}).get("hits", [])
+                if hits and hits[0].get("result", {}).get("id"):
+                    song_id = hits[0]["result"]["id"]
+                    print(f"[CONTEXTO] Genius: song id = {song_id}")
+                    resp_song = requests.get(f"{URL_GENIUS_SONGS}/{song_id}", headers=headers, timeout=10)
+                    if resp_song.status_code == 200:
+                        dados_song = resp_song.json()
+                        desc_dom = dados_song.get("response", {}).get("song", {}).get("description", {}).get("dom")
+                        if desc_dom:
+                            texto_desc = extrair_texto_genius_dom(desc_dom)
+                            texto_desc = re.sub(r'\s+', ' ', texto_desc).strip()
+                            if texto_desc:
+                                print("[CONTEXTO] Genius: Descricao oficial encontrada!")
+                                return texto_desc[:2000]
+                        else:
+                            print("[CONTEXTO] Genius: description.dom vazio/ausente, seguindo para próxima camada.")
         except Exception as e:
             print(f"[CONTEXTO] Genius erro: {e}")
 
-    print("[CONTEXTO] CAMADA 2: Brave Search...")
-    query_brave = f"significado da musica {nome_limpo} {artista_limpo}"
-    ctx_brave = buscar_brave(query_brave)
-    if ctx_brave:
-        print("[CONTEXTO] Brave Search: Contexto encontrado!")
-        return ctx_brave[:2000]
+    print("[CONTEXTO] CAMADA 2: DuckDuckGo Instant Answer...")
+    ctx_ddg = buscar_duckduckgo(f"{nome_limpo} {artista_limpo} song meaning")
+    if ctx_ddg:
+        print("[CONTEXTO] DuckDuckGo: Contexto encontrado!")
+        return ctx_ddg[:2000]
 
     print("[CONTEXTO] CAMADA 3: Wikipedia...")
     wiki_url = URL_WIKIPEDIA_PT if lang == 'pt' else URL_WIKIPEDIA_EN
@@ -421,7 +485,14 @@ def buscar_contexto_musica(nome_musica, artista, lang='en'):
     except Exception as e:
         print(f"[CONTEXTO] Wikipedia erro: {e}")
 
-    print("[CONTEXTO] CAMADA 4: OpenRouter (mini-IA)...")
+    print("[CONTEXTO] CAMADA 4: Brave Search...")
+    query_brave = f"significado da musica {nome_limpo} {artista_limpo}"
+    ctx_brave = buscar_brave(query_brave)
+    if ctx_brave:
+        print("[CONTEXTO] Brave Search: Contexto encontrado!")
+        return ctx_brave[:2000]
+
+    print("[CONTEXTO] CAMADA 5: OpenRouter (mini-IA)...")
     if OPENROUTER_API_KEY:
         try:
             idioma_prompt = "em português" if lang == 'pt' else "in English"

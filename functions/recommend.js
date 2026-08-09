@@ -11,6 +11,10 @@ const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3/movie';
 const WIKIPEDIA_PT_API = 'https://pt.wikipedia.org/api/rest_v1/page/summary/';
 const WIKIPEDIA_EN_API = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
+const GENIUS_BASE_URL = 'https://api.genius.com';
+const GENIUS_SEARCH_URL = `${GENIUS_BASE_URL}/search`;
+const GENIUS_SONGS_URL = `${GENIUS_BASE_URL}/songs`;
+const DUCKDUCKGO_URL = 'https://api.duckduckgo.com/';
 const LRCLIB_THROTTLE_MS = 250;
 const MOOVIBE_VERSION = '1.0';
 const MOOVIBE_USER_AGENT = `Moovibe/${MOOVIBE_VERSION} (mailto:cesarbatistasantos08@gmail.com)`;
@@ -318,37 +322,82 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
   return "";
 }
 
+function extrairTextoGeniusDOM(no) {
+  if (no === null || no === undefined) return '';
+  if (typeof no === 'string') return no;
+  if (Array.isArray(no)) return no.map(extrairTextoGeniusDOM).join('');
+  if (typeof no === 'object') {
+    if (no.children) return no.children.map(extrairTextoGeniusDOM).join('');
+    if (no.text) return String(no.text);
+    return '';
+  }
+  return '';
+}
+
+async function buscarDuckDuckGo(query) {
+  try {
+    const url = `${DUCKDUCKGO_URL}?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+    const resp = await fetch(url, { headers: { 'User-Agent': MOOVIBE_USER_AGENT } });
+    if (!resp.ok) {
+      const errorText = await resp.text().catch(() => 'Unknown error');
+      console.error(`[DUCKDUCKGO] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
+      return null;
+    }
+    const dados = await resp.json();
+    let texto = dados?.AbstractText || '';
+    if (!texto) texto = dados?.Answer || '';
+    if (!texto) {
+      console.log('[DUCKDUCKGO] Sem resultado (AbstractText e Answer vazios).');
+      return null;
+    }
+    texto = texto.replace(/\s+/g, ' ').trim();
+    console.log(`[DUCKDUCKGO] OK! ${texto.length} chars obtidos.`);
+    return texto.substring(0, 2000);
+  } catch (err) {
+    console.error('[DUCKDUCKGO] Erro:', err);
+    return null;
+  }
+}
+
 async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en') {
   const nomeLimpo = limparTermoMusica(nomeMusica);
   const artistaLimpo = limparTermoMusica(artista) || artista;
   const termoBusca = `${nomeLimpo} ${artistaLimpo}`;
 
-  console.log('[CONTEXTO] CAMADA 1: Genius...');
+  console.log('[CONTEXTO] CAMADA 1: Genius (descricao via /songs/{id})...');
   if (env.GENIUS_API_KEY) {
     try {
       const query = encodeURIComponent(`${nomeLimpo} ${artistaLimpo}`);
-      const resp = await fetch(`https://api.genius.com/search?q=${query}`, {
+      const resp = await fetch(`${GENIUS_SEARCH_URL}?q=${query}`, {
         headers: { Authorization: `Bearer ${env.GENIUS_API_KEY}`, 'User-Agent': MOOVIBE_USER_AGENT },
       });
       if (!resp.ok) {
         const errorText = await resp.text().catch(() => 'Unknown error');
         console.error(`[GENIUS] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
-        return null;
-      }
-      const dados = await resp.json();
-      const hit = dados?.response?.hits?.[0]?.result;
-      if (hit?.url) {
-        const pageResp = await fetch(hit.url, { headers: { 'User-Agent': MOOVIBE_USER_AGENT } });
-        if (!pageResp.ok) {
-          const errorText = await pageResp.text().catch(() => 'Unknown error');
-          console.error(`[GENIUS] Página falhou com status ${pageResp.status}:`, errorText.substring(0, 300));
-          return null;
-        }
-        const html = await pageResp.text();
-        const metaMatch = html.match(/<meta\s+[^>]*name="description"[^>]*content="([^"]+)"/i);
-        if (metaMatch && metaMatch[1]) {
-          console.log('[CONTEXTO] Genius: Descricao encontrada!');
-          return metaMatch[1].substring(0, 2000);
+      } else {
+        const dados = await resp.json();
+        const hit = dados?.response?.hits?.[0]?.result;
+        if (hit?.id) {
+          console.log(`[CONTEXTO] Genius: song id = ${hit.id}`);
+          const songResp = await fetch(`${GENIUS_SONGS_URL}/${hit.id}`, {
+            headers: { Authorization: `Bearer ${env.GENIUS_API_KEY}`, 'User-Agent': MOOVIBE_USER_AGENT },
+          });
+          if (!songResp.ok) {
+            const errorText = await songResp.text().catch(() => 'Unknown error');
+            console.error(`[GENIUS] /songs falhou com status ${songResp.status}:`, errorText.substring(0, 300));
+          } else {
+            const songData = await songResp.json();
+            const descDom = songData?.response?.song?.description?.dom;
+            if (descDom) {
+              const textoDesc = extrairTextoGeniusDOM(descDom).replace(/\s+/g, ' ').trim();
+              if (textoDesc) {
+                console.log('[CONTEXTO] Genius: Descricao oficial encontrada!');
+                return textoDesc.substring(0, 2000);
+              }
+            } else {
+              console.log('[CONTEXTO] Genius: description.dom vazio/ausente, seguindo para próxima camada.');
+            }
+          }
         }
       }
     } catch (err) {
@@ -356,15 +405,11 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
     }
   }
 
-  console.log('[CONTEXTO] CAMADA 2: Brave Search...');
-  try {
-    const ctxBrave = await buscarBrave(`significado da musica ${nomeLimpo} ${artistaLimpo}`);
-    if (ctxBrave && validarContexto(ctxBrave, letra)) {
-      console.log('[CONTEXTO] Brave Search: Contexto encontrado!');
-      return ctxBrave.substring(0, 2000);
-    }
-  } catch (err) {
-    console.error('[CONTEXTO] Brave Search erro:', err);
+  console.log('[CONTEXTO] CAMADA 2: DuckDuckGo Instant Answer...');
+  const ctxDdg = await buscarDuckDuckGo(`${nomeLimpo} ${artistaLimpo} song meaning`);
+  if (ctxDdg) {
+    console.log('[CONTEXTO] DuckDuckGo: Contexto encontrado!');
+    return ctxDdg.substring(0, 2000);
   }
 
   console.log('[CONTEXTO] CAMADA 3: Wikipedia...');
@@ -375,18 +420,25 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
     if (!resp.ok) {
       const errorText = await resp.text().catch(() => 'Unknown error');
       console.error(`[WIKIPEDIA] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
-      return null;
-    }
-    const dados = await resp.json();
-    if (dados.type !== 'disambiguation' && dados.extract) {
-      console.log('[CONTEXTO] Wikipedia: Contexto encontrado!');
-      return dados.extract.substring(0, 2000);
+    } else {
+      const dados = await resp.json();
+      if (dados.type !== 'disambiguation' && dados.extract) {
+        console.log('[CONTEXTO] Wikipedia: Contexto encontrado!');
+        return dados.extract.substring(0, 2000);
+      }
     }
   } catch (err) {
     console.error('[CONTEXTO] Wikipedia erro:', err);
   }
 
-  console.log('[CONTEXTO] CAMADA 4: OpenRouter (mini-IA)...');
+  console.log('[CONTEXTO] CAMADA 4: Brave Search...');
+  const ctxBrave = await buscarBrave(`significado da musica ${nomeLimpo} ${artistaLimpo}`);
+  if (ctxBrave && validarContexto(ctxBrave, letra)) {
+    console.log('[CONTEXTO] Brave Search: Contexto encontrado!');
+    return ctxBrave.substring(0, 2000);
+  }
+
+  console.log('[CONTEXTO] CAMADA 5: OpenRouter (mini-IA)...');
   if (env.OPENROUTER_API_KEY) {
     try {
       const idiomaPrompt = lang === 'pt' ? 'em português' : 'in English';
@@ -412,19 +464,19 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
       if (!resp.ok) {
         const errorText = await resp.text().catch(() => 'Unknown error');
         console.error(`[OPENROUTER CONTEXTO] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
-        return null;
-      }
-      const dados = await resp.json();
-      const aiContent = dados?.choices?.[0]?.message?.content;
-      if (!aiContent) {
-        console.error('[OPENROUTER CONTEXTO] OpenRouter não retornou escolhas válidas.');
-        return null;
-      }
-      const texto = aiContent.trim();
-      console.log(`[CONTEXTO] Resposta Bruta: ${texto.substring(0, 300)}...`);
-      if (texto && validarContexto(texto, letra)) {
-        console.log('[CONTEXTO] OpenRouter: Contexto gerado via IA!');
-        return texto.substring(0, 2000);
+      } else {
+        const dados = await resp.json();
+        const aiContent = dados?.choices?.[0]?.message?.content;
+        if (!aiContent) {
+          console.error('[OPENROUTER CONTEXTO] OpenRouter não retornou escolhas válidas.');
+        } else {
+          const texto = aiContent.trim();
+          console.log(`[CONTEXTO] Resposta Bruta: ${texto.substring(0, 300)}...`);
+          if (texto && validarContexto(texto, letra)) {
+            console.log('[CONTEXTO] OpenRouter: Contexto gerado via IA!');
+            return texto.substring(0, 2000);
+          }
+        }
       }
     } catch (err) {
       console.error('[CONTEXTO] OpenRouter erro:', err);
@@ -445,15 +497,47 @@ async function buscarCapaMusica(nomeMusica, artista) {
     if (!resp.ok) {
       const errorText = await resp.text().catch(() => 'Unknown error');
       console.error(`[APPLE MUSIC] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
-      return null;
+      return { coverUrl: null, previewUrl: null };
     }
     const dados = await resp.json();
     const track = dados?.results?.[0];
-    if (!track?.artworkUrl100) return null;
-    return track.artworkUrl100.replace('100x100bb', '1000x1000bb');
+    let coverUrl = null;
+    if (track?.artworkUrl100) coverUrl = track.artworkUrl100.replace('100x100bb', '1000x1000bb');
+    const previewUrl = track?.previewUrl || null;
+    return { coverUrl, previewUrl };
   } catch (err) {
     console.error('[APPLE MUSIC] Erro:', err);
+    return { coverUrl: null, previewUrl: null };
+  }
+}
+
+async function obterCacheMusica(nomeMusica, artista, env) {
+  try {
+    const kv = env.MOOVIBE_DB;
+    if (!kv) return null;
+    const key = `cache:${slugify(nomeMusica)}:${slugify(artista || '')}`;
+    const cached = await kv.get(key, 'json');
+    if (cached) {
+      console.log(`[CACHE] Cache encontrado para chave: ${key}`);
+      return cached;
+    }
     return null;
+  } catch (err) {
+    console.error('[CACHE] Falha ao ler cache:', err);
+    return null;
+  }
+}
+
+async function gravarCacheMusica(nomeMusica, artista, letra, contextoExtra, env) {
+  try {
+    const kv = env.MOOVIBE_DB;
+    if (!kv) return;
+    const key = `cache:${slugify(nomeMusica)}:${slugify(artista || '')}`;
+    const payload = { letra, contexto: contextoExtra };
+    await kv.put(key, JSON.stringify(payload), { expirationTtl: 60 * 60 * 24 * 30 });
+    console.log(`[CACHE] Cache gravado para chave: ${key}`);
+  } catch (err) {
+    console.error('[CACHE] Falha ao gravar cache:', err);
   }
 }
 
@@ -506,13 +590,16 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
     if (!resp.ok) {
       const errorText = await resp.text().catch(() => 'Unknown error');
       console.error(`[OPENROUTER RECOMENDACAO] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
-      return null;
+      if (resp.status === 429) {
+        return { _errorCode: 'RATE_LIMITED' };
+      }
+      return { _errorCode: 'AI_UNAVAILABLE' };
     }
     const dados = await resp.json();
     const aiContent = dados?.choices?.[0]?.message?.content;
     if (!aiContent) {
       console.error('[OPENROUTER RECOMENDACAO] OpenRouter não retornou escolhas válidas. Payload:', JSON.stringify(dados).substring(0, 500));
-      return null;
+      return { _errorCode: 'AI_UNAVAILABLE' };
     }
     let textoIA = aiContent.trim();
     console.log(`[OPENROUTER] Resposta Bruta:\n${textoIA}\n`);
@@ -532,10 +619,10 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
       return parsed;
     }
     console.error('[OPENROUTER] Nenhum JSON encontrado.');
-    return null;
+    return { _errorCode: 'AI_UNAVAILABLE' };
   } catch (err) {
     console.error('[OPENROUTER] Erro na requisicao:', err);
-    return null;
+    return { _errorCode: 'AI_UNAVAILABLE' };
   }
 }
 
@@ -767,9 +854,23 @@ export async function onRequest(context) {
     if (!nome_musica) return jsonResponse({ error: { message: 'Nome da música é obrigatório.' } }, 400);
 
     console.log('\n=== INICIANDO PIPELINE ===');
-    const letra = await buscarLetraMusica(nome_musica, artista, env);
-    let contextoExtra = await buscarContextoMusica(nome_musica, artista, env, letra, lang);
-    if (!validarContexto(contextoExtra, letra)) contextoExtra = null;
+    let letra = '';
+    let contextoExtra = null;
+    const cacheMusica = await obterCacheMusica(nome_musica, artista, env);
+    if (cacheMusica) {
+      letra = cacheMusica.letra || '';
+      contextoExtra = cacheMusica.contexto || null;
+      console.log('[CACHE] Usando letra e contexto do cache.');
+    } else {
+      letra = await buscarLetraMusica(nome_musica, artista, env);
+      contextoExtra = await buscarContextoMusica(nome_musica, artista, env, letra, lang);
+      if (!validarContexto(contextoExtra, letra)) contextoExtra = null;
+      await gravarCacheMusica(nome_musica, artista, letra, contextoExtra, env);
+    }
+    if (!letra && !contextoExtra) {
+      console.error('FALHA CRÍTICA: Nenhuma letra nem contexto encontrado em nenhuma camada');
+      return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: 'SONG_NOT_FOUND' } }, 404);
+    }
 
     const historico = await listHistory(env);
     const filmesExcluidosGlobais = [];
@@ -794,7 +895,15 @@ export async function onRequest(context) {
     );
     if (!recomendacaoIA) {
       console.error('FALHA CRÍTICA: IA não retornou recomendação válida');
-      return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.' } }, 500);
+      return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: 'AI_UNAVAILABLE' } }, 503);
+    }
+    if (recomendacaoIA._errorCode === 'RATE_LIMITED') {
+      console.error('FALHA CRÍTICA: Rate limit no OpenRouter');
+      return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: 'RATE_LIMITED' } }, 429);
+    }
+    if (recomendacaoIA._errorCode === 'AI_UNAVAILABLE') {
+      console.error('FALHA CRÍTICA: IA indisponível');
+      return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: 'AI_UNAVAILABLE' } }, 503);
     }
     const nomeFilme = sanitizarTituloFilme(recomendacaoIA.filme || recomendacaoIA.filme_sugerido || '');
     const anoFilme = recomendacaoIA.ano || recomendacaoIA.ano_filme || '';
@@ -855,7 +964,9 @@ export async function onRequest(context) {
       if (poster) dadosFilme.cenas = [poster, poster, poster];
     }
 
-    const coverUrl = await buscarCapaMusica(nome_musica, artista);
+    const capaDados = await buscarCapaMusica(nome_musica, artista);
+    const coverUrl = capaDados?.coverUrl || '';
+    const previewUrl = capaDados?.previewUrl || null;
     const imdbUrl = dadosFilme?.imdb_id ? `https://www.imdb.com/title/${dadosFilme.imdb_id}/` : `https://www.imdb.com/find?q=${encodeURIComponent(nomeFilme)}`;
     const letterboxdUrl = dadosFilme?.id_tmdb ? `https://letterboxd.com/tmdb/${dadosFilme.id_tmdb}` : `https://letterboxd.com/search/${encodeURIComponent(nomeFilme)}/`;
     const slug = slugify(nomeFilme + '-' + nome_musica);
@@ -870,7 +981,8 @@ export async function onRequest(context) {
         director: dadosFilme?.diretor || 'Nao encontrado',
         synopsis: dadosFilme?.sinopse || 'Sinopse nao disponivel.',
         poster_url: dadosFilme?.poster || '',
-        cover_url: coverUrl || '',
+        cover_url: coverUrl,
+        audio_preview_url: previewUrl,
         stills: dadosFilme?.cenas || [],
         quotes,
         ai_explanation: `<p>${justificativa}</p>`,
@@ -888,7 +1000,7 @@ export async function onRequest(context) {
     return jsonResponse(resposta, 200);
   } catch (error) {
     console.error('Pages Function error:', error);
-    return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.' } }, 500);
+    return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: 'UNKNOWN' } }, 500);
   }
 }
 
