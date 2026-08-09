@@ -23,7 +23,7 @@ URL_GENIUS_SEARCH = URL_GENIUS_BASE + "/search"
 URL_GENIUS_SONGS = URL_GENIUS_BASE + "/songs"
 URL_DUCKDUCKGO = "https://" + "api.duckduckgo.com/"
 
-# Modelo OpenRouter free (atualizado periodicamente)
+# Modelo OpenRouter free
 # Verifique filtro :free em https://openrouter.ai/models
 # IMPORTANTE: "openrouter/free" é o auto-router oficial do OpenRouter e sempre seleciona
 # automaticamente um modelo gratuito disponível no momento da chamada, evitando quebras
