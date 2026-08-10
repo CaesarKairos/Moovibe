@@ -96,8 +96,56 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // Mapeamento view → URL, título e descrição (SEO)
+    const VIEW_ROUTES = {
+        'view-home': {
+            path: '/',
+            title: 'Moovibe — Descubra o filme com a vibe da sua música',
+            description: 'Moovibe encontra o filme perfeito para a sua música favorita: digite uma faixa e descubra qual filme carrega exatamente a mesma atmosfera, cor e vibe.'
+        },
+        'view-about': {
+            path: '/about',
+            title: 'Moovibe — Sobre',
+            description: 'Conheça o Moovibe: o projeto que conecta músicas a filmes pela atmosfera, cor e vibe.'
+        },
+        'view-how-it-works': {
+            path: '/how-it-works',
+            title: 'Moovibe — Como funciona',
+            description: 'Entenda como o Moovibe encontra o filme com a mesma vibe da sua música favorita.'
+        },
+        'view-hall-of-fame': {
+            path: '/hall-of-fame',
+            title: 'Moovibe — Hall da Fama',
+            description: 'As maiores conexões entre música e cinema já descobertas pelo Moovibe.'
+        }
+    };
+
+    function viewToPath(targetView) {
+        const rota = VIEW_ROUTES[targetView?.id];
+        return rota ? rota.path : null;
+    }
+
+    function pathToView(pathname) {
+        for (const [viewId, rota] of Object.entries(VIEW_ROUTES)) {
+            if (rota.path === pathname) return document.getElementById(viewId);
+        }
+        return null;
+    }
+
+    function atualizarMetaPorView(targetView) {
+        const rota = VIEW_ROUTES[targetView?.id];
+        if (!rota) return;
+        document.title = rota.title;
+        const metaDesc = document.querySelector('meta[name="description"]');
+        if (metaDesc) metaDesc.setAttribute('content', rota.description);
+    }
+
     function applyLanguage() {
         const dictionary = i18n[lang] || i18n['en'];
+        // Sincroniza o atributo lang do <html> com o idioma ativo
+        if (document.documentElement) {
+            document.documentElement.setAttribute('lang', lang === 'pt' ? 'pt-BR' : 'en');
+        }
         document.querySelectorAll('[data-i18n]').forEach(el => {
             const key = el.getAttribute('data-i18n');
             const value = dictionary[key];
@@ -180,13 +228,21 @@ document.addEventListener('DOMContentLoaded', () => {
         if (audioBtn) audioBtn.classList.remove('playing');
     }
 
-    function switchView(targetView) {
+    function switchView(targetView, viaUI = false) {
         if (!targetView) return;
         pararAudio();
         document.querySelectorAll('.view-section').forEach(view => {
             view.classList.remove('active');
         });
         targetView.classList.add('active');
+        // SEO: atualiza URL (apenas quando a navegação vem da UI) + título + meta description
+        const novaUrl = viewToPath(targetView);
+        if (novaUrl !== null) {
+            if (viaUI) {
+                window.history.pushState(null, '', novaUrl);
+            }
+            atualizarMetaPorView(targetView);
+        }
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
@@ -218,9 +274,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                     injectResults(data);
                     switchView(viewResults);
-                    // Atualiza a URL com o slug para compartilhamento
+                    // Atualiza a URL com o slug para compartilhamento (rota real /share/{slug})
                     if (data && data.share_slug) {
-                        window.history.pushState(null, '', '/?r=' + data.share_slug);
+                        window.history.pushState(null, '', '/share/' + data.share_slug);
                     }
                 }
             })
@@ -240,7 +296,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function goHome() {
         resetSearch();
-        switchView(viewHome);
+        switchView(viewHome, true);
     }
 
     // --- Autocomplete de música (LRCLIB) ---
@@ -450,7 +506,7 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             const targetId = link.getAttribute('data-view');
             const target = document.getElementById(targetId);
-            switchView(target);
+            switchView(target, true);
             if (targetId === 'view-hall-of-fame') {
                 loadHallOfFame();
             }
@@ -615,10 +671,11 @@ document.addEventListener('DOMContentLoaded', () => {
         card.appendChild(overlay);
     }
 
-    // --- Shared Link Detection (?r=) ---
-    // Se a URL contiver ?r=slug, carrega diretamente o resultado compartilhado
-    const sharedSlug = getUrlParam('r');
-    if (sharedSlug) {
+    // --- Detecção de rota inicial ---
+    // 1) Links compartilhados agora usam /share/{slug} (rota real, não query param)
+    const sharedMatch = window.location.pathname.match(/^\/share\/([^/]+)\/?$/);
+    if (sharedMatch) {
+        const sharedSlug = decodeURIComponent(sharedMatch[1]);
         // Pula a tela inicial e faz fetch GET para buscar o share
         switchView(viewLoading);
         loadingText.textContent = i18n[lang]?.loading_shared || "Loading shared vibe...";
@@ -642,6 +699,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.error('Erro ao carregar link compartilhado:', error);
                 showError(i18n[lang]?.error_message || 'Este link não está mais disponível. Tente fazer uma nova busca.');
             });
+    } else {
+        // 2) Acesso direto a /about, /how-it-works ou /hall-of-fame (F5/link direto)
+        const viewInicial = pathToView(window.location.pathname);
+        if (viewInicial) {
+            switchView(viewInicial, false);
+        }
     }
 
     // --- Event Listeners ---
@@ -710,6 +773,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (songLrclibIdInput) songLrclibIdInput.value = '';
             closeSuggestions();
         });
+    });
+
+    // Botões voltar/avançar do navegador entre as views mapeadas
+    window.addEventListener('popstate', () => {
+        const viewAlvo = pathToView(window.location.pathname);
+        if (viewAlvo) {
+            switchView(viewAlvo, false);
+        } else if (window.location.pathname === '/') {
+            switchView(viewHome, false);
+        }
     });
 
     applyLanguage();

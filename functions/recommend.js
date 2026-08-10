@@ -3,9 +3,8 @@
  * Lógica espelhada de app.py (Python → JavaScript)
  */
 
-const LRCLIB_URL = 'https://lrclib.net/api';
-const LRCLIB_GET_URL = `${LRCLIB_URL}/get`;
-const LRCLIB_SEARCH_URL = `${LRCLIB_URL}/search`;
+import { LRCLIB_URL, LRCLIB_GET_URL, LRCLIB_SEARCH_URL, lrclibHeaders, lrclibThrottle } from './_lib/lrclib.js';
+
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3/movie';
@@ -15,7 +14,6 @@ const GENIUS_BASE_URL = 'https://api.genius.com';
 const GENIUS_SEARCH_URL = `${GENIUS_BASE_URL}/search`;
 const GENIUS_SONGS_URL = `${GENIUS_BASE_URL}/songs`;
 const DUCKDUCKGO_URL = 'https://api.duckduckgo.com/';
-const LRCLIB_THROTTLE_MS = 250;
 const MOOVIBE_VERSION = '1.0';
 const MOOVIBE_USER_AGENT = `Moovibe/${MOOVIBE_VERSION} (mailto:cesarbatistasantos08@gmail.com)`;
 
@@ -30,21 +28,6 @@ const MOOVIBE_USER_AGENT = `Moovibe/${MOOVIBE_VERSION} (mailto:cesarbatistasanto
 const OPENROUTER_MODEL = 'openrouter/free';
 
 const BROWSER_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-let lrclibLastRequest = 0;
-function lrclibThrottle() {
-  const now = Date.now();
-  const wait = Math.max(0, LRCLIB_THROTTLE_MS - (now - lrclibLastRequest));
-  lrclibLastRequest = now + wait;
-  return wait > 0 ? new Promise(resolve => setTimeout(resolve, wait)) : Promise.resolve();
-}
-
-function lrclibHeaders() {
-  return {
-    'User-Agent': MOOVIBE_USER_AGENT,
-    'X-User-Agent': MOOVIBE_USER_AGENT,
-  };
-}
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -886,57 +869,6 @@ function limparHTML(texto) {
 export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
-  if (request.method === 'GET' && url.pathname.includes('/recommend-history')) {
-    const items = await listHistory(env);
-    return jsonResponse({ items });
-  }
-  if (request.method === 'GET' && url.pathname.includes('/lrclib-search')) {
-    // Autocomplete de música (feature web) — proxy para o LRCLIB /api/search
-    const termo = (url.searchParams.get('q') || '').trim();
-    if (!termo) return jsonResponse({ items: [] });
-    try {
-      await lrclibThrottle();
-      const resp = await fetch(`${LRCLIB_SEARCH_URL}?q=${encodeURIComponent(termo)}`, { headers: lrclibHeaders() });
-      if (!resp.ok) {
-        const errorText = await resp.text().catch(() => 'Unknown error');
-        console.error(`[LRCLIB-SEARCH] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
-        return jsonResponse({ items: [] });
-      }
-      const dados = await resp.json();
-      if (!Array.isArray(dados)) return jsonResponse({ items: [] });
-
-      // Filtragem e deduplicação: descarta instrumentais e deduplica por
-      // track_name + artist_name. Para cada combinação, mantém o PRIMEIRO
-      // item que tenha plainLyrics preenchido (senão o primeiro em geral).
-      const porChave = new Map();
-      for (const item of dados) {
-        if (!item || item.instrumental === true) continue;
-        const trackName = item.trackName || item.track_name || '';
-        const artistName = item.artistName || item.artist_name || '';
-        if (!trackName) continue;
-        const chave = `${trackName.toLowerCase()}|${artistName.toLowerCase()}`;
-        if (!porChave.has(chave)) {
-          porChave.set(chave, []);
-        }
-        porChave.get(chave).push(item);
-      }
-      const itens = [];
-      for (const grupo of porChave.values()) {
-        const comLetra = grupo.find(g => g?.plainLyrics && g.plainLyrics.trim().length > 0) || grupo[0];
-        itens.push({
-          id: comLetra.id,
-          trackName: comLetra.trackName || comLetra.track_name || '',
-          artistName: comLetra.artistName || comLetra.artist_name || '',
-        });
-        if (itens.length >= 8) break;
-      }
-      console.log(`[LRCLIB-SEARCH] "${termo}" → ${itens.length} sugestões.`);
-      return jsonResponse({ items: itens });
-    } catch (err) {
-      console.error('[LRCLIB-SEARCH] Erro:', err);
-      return jsonResponse({ items: [] });
-    }
-  }
   if (request.method === 'GET' && url.pathname.includes('/recommend')) {
     const kv = env.MOOVIBE_DB;
     if (!kv) return jsonResponse([]);
