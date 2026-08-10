@@ -197,10 +197,13 @@ def extrair_json_de_texto(texto_bruto):
 # ==========================================
 # BUSCA GENERICA: Brave Search
 # ==========================================
-def buscar_brave(query):
+def buscar_brave(query, origem=''):
     """
     Busca no Brave Search, remove blocos <script>, <style> e tags HTML,
     retorna o texto limpo ou None.
+
+    O parâmetro 'origem' é apenas para observabilidade — indica se a chamada
+    veio da busca de letra ('LETRA') ou da busca de contexto ('CONTEXTO').
     """
     try:
         url = f"https://search.brave.com/search?q={urllib.parse.quote(query)}"
@@ -214,6 +217,7 @@ def buscar_brave(query):
 
         html = resp.text
         # Remove blocos <script>...</script> e <style>...</style>
+        # (Python já usa re.DOTALL | re.IGNORECASE corretamente)
         html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
         html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
         # Remove tags HTML restantes
@@ -222,8 +226,26 @@ def buscar_brave(query):
         texto = re.sub(r'\s+', ' ', texto).strip()
         # Trunca para evitar excesso
         texto = texto[:5000]
+
+        # Trava de segurança: se ainda houver sinais fortes de markup residual,
+        # rejeita o texto e deixa o pipeline seguir pra próxima camada.
+        marcadores_residuais = [
+            '@font-face',
+            'usestrict',
+            'cdn.search.brave.com',
+            '_app/immutable',
+            'format("woff2',
+            'unicode-range:',
+        ]
+        tem_marcador_residual = any(m in texto for m in marcadores_residuais)
+        densidade_caracteres = sum(1 for c in texto if c in '{};') / max(1, len(texto))
+        if texto and (tem_marcador_residual or densidade_caracteres > 0.05):
+            print("[BRAVE] Texto rejeitado: ainda contém markup residual")
+            return None
+
         if texto:
-            print(f"[BRAVE] OK! {len(texto)} chars obtidos.")
+            rotulo = f" (origem={origem})" if origem else ""
+            print(f"[BRAVE] OK!{rotulo} {len(texto)} chars obtidos.")
             return texto
         return None
     except Exception as e:
@@ -337,9 +359,15 @@ def buscar_letra_musica(nome_musica, artista):
             resp_search = requests.get(URL_LRCLIB_SEARCH, params=params_search, headers=lrclib_headers(), timeout=10)
         if resp_search.status_code == 200:
             dados = resp_search.json()
-            if isinstance(dados, list) and dados and dados[0].get("plainLyrics"):
+            # Percorre o array e usa o PRIMEIRO item que tenha plainLyrics não vazio
+            # (o índice 0 pode ser um instrumental/cover/só syncedLyrics).
+            com_letra = next(
+                (item for item in dados if isinstance(item, dict) and item.get("plainLyrics") and str(item.get("plainLyrics", "")).strip()),
+                None
+            ) if isinstance(dados, list) else None
+            if com_letra:
                 print("[LETRA] LRCLIB /api/search: Letra encontrada!")
-                return dados[0]["plainLyrics"][:5000]
+                return com_letra["plainLyrics"][:5000]
     except Exception as e:
         print(f"[LETRA] LRCLIB /api/search erro: {e}")
 
@@ -362,7 +390,7 @@ def buscar_letra_musica(nome_musica, artista):
 
     print("[LETRA] CAMADA 3: Brave Search...")
     query_brave = f"{nome_limpo} {artista_limpo} lyrics"
-    letra_brave = buscar_brave(query_brave)
+    letra_brave = buscar_brave(query_brave, origem='LETRA')
     if letra_brave:
         print("[LETRA] Brave Search: Letra encontrada!")
         return letra_brave[:5000]
@@ -492,7 +520,7 @@ def buscar_contexto_musica(nome_musica, artista, lang='en'):
 
     print("[CONTEXTO] CAMADA 4: Brave Search...")
     query_brave = f"significado da musica {nome_limpo} {artista_limpo}"
-    ctx_brave = buscar_brave(query_brave)
+    ctx_brave = buscar_brave(query_brave, origem='CONTEXTO')
     if ctx_brave:
         print("[CONTEXTO] FONTE=BRAVE")
         print("[CONTEXTO] Brave Search: Contexto encontrado!")

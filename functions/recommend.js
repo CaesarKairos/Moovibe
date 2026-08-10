@@ -160,7 +160,7 @@ function extrairDiretorWikipedia(extract) {
   return 'Disponível na Wikipédia';
 }
 
-async function buscarBrave(query) {
+async function buscarBrave(query, origem = '') {
   try {
     const url = `https://search.brave.com/search?q=${encodeURIComponent(query)}`;
     const resp = await fetch(url, {
@@ -174,13 +174,32 @@ async function buscarBrave(query) {
       return null;
     }
     const html = await resp.text();
-    let texto = html.replace(/<script[^>]*>.*?<\/script>/gi, '');
-    texto = texto.replace(/<style[^>]*>.*?<\/style>/gi, '');
+    // Flag 's' (dotAll) garante que blocos <script>/<style> quebrados em várias
+    // linhas sejam removidos por completo em vez de vazar HTML/CSS/JS cru.
+    let texto = html.replace(/<script[^>]*>.*?<\/script>/gis, '');
+    texto = texto.replace(/<style[^>]*>.*?<\/style>/gis, '');
     texto = texto.replace(/<[^>]+>/g, '');
     texto = texto.replace(/\s+/g, ' ').trim();
     texto = texto.substring(0, 5000);
+    // Trava de segurança: se ainda houver sinais fortes de markup residual,
+    // rejeita o texto e deixa o pipeline seguir pra próxima camada.
+    const marcadoresResiduais = [
+      '@font-face',
+      'usestrict',
+      'cdn.search.brave.com',
+      '_app/immutable',
+      'format("woff2',
+      'unicode-range:',
+    ];
+    const temMarcadorResidual = marcadoresResiduais.some((m) => texto.includes(m));
+    const densidadeCaracteres = (texto.match(/[{};]/g) || []).length / Math.max(1, texto.length);
+    if (texto && (temMarcadorResidual || densidadeCaracteres > 0.05)) {
+      console.warn('[BRAVE] Texto rejeitado: ainda contém markup residual');
+      return null;
+    }
     if (texto) {
-      console.log(`[BRAVE] OK! ${texto.length} chars obtidos.`);
+      const rotulo = origem ? ` (origem=${origem})` : '';
+      console.log(`[BRAVE] OK!${rotulo} ${texto.length} chars obtidos.`);
       return texto;
     }
     return null;
@@ -217,9 +236,49 @@ async function buscarCitacoesFilme(nomeFilme) {
   return [];
 }
 
-async function buscarLetraMusica(nomeMusica, artista, env) {
+async function buscarLetraPorIdLrclib(id) {
+  if (!id) return null;
+  console.log('[LETRA] CAMADA 0: LRCLIB /api/get/{id}...');
+  try {
+    await lrclibThrottle();
+    const resp = await fetch(`${LRCLIB_URL}/get/${encodeURIComponent(id)}`, { headers: lrclibHeaders() });
+    if (resp.status === 429) {
+      const retryAfter = parseInt(resp.headers.get('Retry-After') || '2', 10);
+      console.log(`[LETRA] LRCLIB /api/get/{id} rate limited. Aguardando ${retryAfter}s...`);
+      await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      // No retry, tenta de novo
+      const retryResp = await fetch(`${LRCLIB_URL}/get/${encodeURIComponent(id)}`, { headers: lrclibHeaders() });
+      if (retryResp.ok) {
+        const data = await retryResp.json();
+        if (data?.plainLyrics) {
+          console.log('[LETRA] LRCLIB /api/get/{id}: Letra encontrada (apos retry)!');
+          return data.plainLyrics.substring(0, 5000);
+        }
+      }
+    } else if (resp.ok) {
+      const data = await resp.json();
+      if (data?.plainLyrics) {
+        console.log('[LETRA] LRCLIB /api/get/{id}: Letra encontrada!');
+        return data.plainLyrics.substring(0, 5000);
+      }
+    }
+  } catch (err) {
+    console.error('[LETRA] LRCLIB /api/get/{id} erro:', err);
+  }
+  return null;
+}
+
+async function buscarLetraMusica(nomeMusica, artista, env, lrclibId = null) {
   const nomeLimpo = limparTermoMusica(nomeMusica);
   const artistaLimpo = limparTermoMusica(artista) || artista;
+
+  // CAMADA 0: busca direta por ID do LRCLIB (só quando o usuário escolheu
+  // uma sugestão do autocomplete — é uma busca exata, sem ambiguidade).
+  if (lrclibId) {
+    const letraPorId = await buscarLetraPorIdLrclib(lrclibId);
+    if (letraPorId) return letraPorId;
+    console.log('[LETRA] CAMADA 0 falhou, seguindo para as demais camadas...');
+  }
 
   console.log('[LETRA] CAMADA 1: LRCLIB /api/get...');
   try {
@@ -261,16 +320,20 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
       const retryResp = await fetch(`${LRCLIB_SEARCH_URL}?${paramsSearch}`, { headers: lrclibHeaders() });
       if (retryResp.ok) {
         const dados = await retryResp.json();
-        if (Array.isArray(dados) && dados.length > 0 && dados[0].plainLyrics) {
+        // Percorre o array e usa o PRIMEIRO item que tenha plainLyrics não vazio
+        // (o índice 0 pode ser um instrumental/cover/só syncedLyrics).
+        const comLetra = Array.isArray(dados) ? dados.find(item => item?.plainLyrics && item.plainLyrics.trim().length > 0) : null;
+        if (comLetra) {
           console.log('[LETRA] LRCLIB /api/search: Letra encontrada (apos retry)!');
-          return dados[0].plainLyrics.substring(0, 5000);
+          return comLetra.plainLyrics.substring(0, 5000);
         }
       }
     } else if (respSearch.ok) {
       const dados = await respSearch.json();
-      if (Array.isArray(dados) && dados.length > 0 && dados[0].plainLyrics) {
+      const comLetra = Array.isArray(dados) ? dados.find(item => item?.plainLyrics && item.plainLyrics.trim().length > 0) : null;
+      if (comLetra) {
         console.log('[LETRA] LRCLIB /api/search: Letra encontrada!');
-        return dados[0].plainLyrics.substring(0, 5000);
+        return comLetra.plainLyrics.substring(0, 5000);
       }
     }
   } catch (err) {
@@ -300,9 +363,19 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
           return null;
         }
         const html = await pageResp.text();
+        // ATENÇÃO: o Genius mudou a marcação de letra várias vezes. Hoje ele usa
+        // data-lyrics-container="true" (a antiga <div class="lyrics"> não existe mais).
+        // Este seletor pode precisar de manutenção futura se o Genius mudar o HTML de novo.
+        const containersLyrics = html.match(/<div[^>]*data-lyrics-container="true"[^>]*>[\s\S]*?<\/div>/gi) || [];
+        if (containersLyrics.length > 0) {
+          const letraGeniusConcatenada = containersLyrics.join(' ');
+          console.log(`[LETRA] Genius: Letra encontrada (${containersLyrics.length} container(s))!`);
+          return limparHTML(letraGeniusConcatenada).substring(0, 5000);
+        }
+        // Fallback: se o seletor novo não casar, tenta o antigo antes de desistir
         const lyricsMatch = html.match(/<div[^>]*class="lyrics"[^>]*>([\s\S]*?)<\/div>/i);
         if (lyricsMatch) {
-          console.log('[LETRA] Genius: Letra encontrada!');
+          console.log('[LETRA] Genius: Letra encontrada (seletor legado class="lyrics")!');
           return limparHTML(lyricsMatch[1]).substring(0, 5000);
         }
       }
@@ -312,7 +385,7 @@ async function buscarLetraMusica(nomeMusica, artista, env) {
   }
 
   console.log('[LETRA] CAMADA 3: Brave Search...');
-  const letraBrave = await buscarBrave(`${nomeLimpo} ${artistaLimpo} lyrics`);
+  const letraBrave = await buscarBrave(`${nomeLimpo} ${artistaLimpo} lyrics`, 'LETRA');
   if (letraBrave) {
     console.log('[LETRA] Brave Search: Letra encontrada!');
     return letraBrave.substring(0, 5000);
@@ -437,7 +510,7 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
   }
 
   console.log('[CONTEXTO] CAMADA 4: Brave Search...');
-  const ctxBrave = await buscarBrave(`significado da musica ${nomeLimpo} ${artistaLimpo}`);
+  const ctxBrave = await buscarBrave(`significado da musica ${nomeLimpo} ${artistaLimpo}`, 'CONTEXTO');
   if (ctxBrave && validarContexto(ctxBrave, letra)) {
     console.log('[CONTEXTO] FONTE=BRAVE');
     console.log('[CONTEXTO] Brave Search: Contexto encontrado!');
@@ -817,6 +890,53 @@ export async function onRequest(context) {
     const items = await listHistory(env);
     return jsonResponse({ items });
   }
+  if (request.method === 'GET' && url.pathname.includes('/lrclib-search')) {
+    // Autocomplete de música (feature web) — proxy para o LRCLIB /api/search
+    const termo = (url.searchParams.get('q') || '').trim();
+    if (!termo) return jsonResponse({ items: [] });
+    try {
+      await lrclibThrottle();
+      const resp = await fetch(`${LRCLIB_SEARCH_URL}?q=${encodeURIComponent(termo)}`, { headers: lrclibHeaders() });
+      if (!resp.ok) {
+        const errorText = await resp.text().catch(() => 'Unknown error');
+        console.error(`[LRCLIB-SEARCH] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
+        return jsonResponse({ items: [] });
+      }
+      const dados = await resp.json();
+      if (!Array.isArray(dados)) return jsonResponse({ items: [] });
+
+      // Filtragem e deduplicação: descarta instrumentais e deduplica por
+      // track_name + artist_name. Para cada combinação, mantém o PRIMEIRO
+      // item que tenha plainLyrics preenchido (senão o primeiro em geral).
+      const porChave = new Map();
+      for (const item of dados) {
+        if (!item || item.instrumental === true) continue;
+        const trackName = item.trackName || item.track_name || '';
+        const artistName = item.artistName || item.artist_name || '';
+        if (!trackName) continue;
+        const chave = `${trackName.toLowerCase()}|${artistName.toLowerCase()}`;
+        if (!porChave.has(chave)) {
+          porChave.set(chave, []);
+        }
+        porChave.get(chave).push(item);
+      }
+      const itens = [];
+      for (const grupo of porChave.values()) {
+        const comLetra = grupo.find(g => g?.plainLyrics && g.plainLyrics.trim().length > 0) || grupo[0];
+        itens.push({
+          id: comLetra.id,
+          trackName: comLetra.trackName || comLetra.track_name || '',
+          artistName: comLetra.artistName || comLetra.artist_name || '',
+        });
+        if (itens.length >= 8) break;
+      }
+      console.log(`[LRCLIB-SEARCH] "${termo}" → ${itens.length} sugestões.`);
+      return jsonResponse({ items: itens });
+    } catch (err) {
+      console.error('[LRCLIB-SEARCH] Erro:', err);
+      return jsonResponse({ items: [] });
+    }
+  }
   if (request.method === 'GET' && url.pathname.includes('/recommend')) {
     const kv = env.MOOVIBE_DB;
     if (!kv) return jsonResponse([]);
@@ -856,7 +976,7 @@ export async function onRequest(context) {
 
   try {
     const body = await request.json();
-    const { nome_musica, artista } = body;
+    const { nome_musica, artista, lrclib_id } = body;
     const lang = body.lang === 'pt' ? 'pt' : 'en';
     if (!nome_musica) return jsonResponse({ error: { message: 'Nome da música é obrigatório.' } }, 400);
 
@@ -869,7 +989,7 @@ export async function onRequest(context) {
       contextoExtra = cacheMusica.contexto || null;
       console.log('[CACHE] Usando letra e contexto do cache.');
     } else {
-      letra = await buscarLetraMusica(nome_musica, artista, env);
+      letra = await buscarLetraMusica(nome_musica, artista, env, lrclib_id || null);
       contextoExtra = await buscarContextoMusica(nome_musica, artista, env, letra, lang);
       if (!validarContexto(contextoExtra, letra)) contextoExtra = null;
       await gravarCacheMusica(nome_musica, artista, letra, contextoExtra, env);

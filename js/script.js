@@ -117,6 +117,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const searchForm = document.getElementById('search-form');
     const songInput = document.getElementById('song-title');
     const artistInput = document.getElementById('artist-name');
+    const songSuggestions = document.getElementById('song-suggestions');
+    const songLrclibIdInput = document.getElementById('song-lrclib-id');
     const btnSearchAgain = document.getElementById('btn-search-again');
     const tagButtons = document.querySelectorAll('.tag-btn');
     const logoEl = document.querySelector('.nav-logo h1');
@@ -232,12 +234,146 @@ document.addEventListener('DOMContentLoaded', () => {
     function resetSearch() {
         if (songInput) songInput.value = '';
         if (artistInput) artistInput.value = '';
+        if (songLrclibIdInput) songLrclibIdInput.value = '';
+        closeSuggestions();
     }
 
     function goHome() {
         resetSearch();
         switchView(viewHome);
     }
+
+    // --- Autocomplete de música (LRCLIB) ---
+    // Replica a interação de barra de busca de app de streaming: o usuário
+    // digita algumas letras e vê sugestões aparecendo embaixo do campo.
+    // A fonte é o LRCLIB (proxy /lrclib-search no backend), sem dependência paga.
+    let autocompleteItems = [];
+    let autocompleteIndex = -1;
+    let autocompleteTimer = null;
+
+    function closeSuggestions() {
+        if (songSuggestions) {
+            songSuggestions.classList.remove('active');
+            songSuggestions.innerHTML = '';
+        }
+        autocompleteItems = [];
+        autocompleteIndex = -1;
+    }
+
+    function selectSuggestion(item) {
+        if (!item) return;
+        if (songInput) songInput.value = item.trackName || '';
+        if (artistInput) artistInput.value = item.artistName || '';
+        if (songLrclibIdInput) songLrclibIdInput.value = String(item.id || '');
+        closeSuggestions();
+    }
+
+    function updateHighlight() {
+        if (!songSuggestions) return;
+        const els = songSuggestions.querySelectorAll('.autocomplete-item');
+        els.forEach((el, i) => {
+            el.classList.toggle('selected', i === autocompleteIndex);
+        });
+        if (autocompleteIndex >= 0 && els[autocompleteIndex]) {
+            els[autocompleteIndex].scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    function renderSuggestions(items) {
+        if (!songSuggestions) return;
+        autocompleteItems = items;
+        autocompleteIndex = -1;
+        songSuggestions.innerHTML = '';
+        if (!items || items.length === 0) {
+            // Graceful degradation: se não retornar nada, simplesmente não mostra
+            closeSuggestions();
+            return;
+        }
+        items.forEach((item, index) => {
+            const div = document.createElement('div');
+            div.className = 'autocomplete-item';
+            div.setAttribute('role', 'option');
+            div.dataset.index = String(index);
+
+            const title = document.createElement('div');
+            title.className = 'ac-title';
+            title.textContent = item.trackName || '';
+
+            const artist = document.createElement('div');
+            artist.className = 'ac-artist';
+            artist.textContent = item.artistName || '';
+
+            div.appendChild(title);
+            div.appendChild(artist);
+            div.addEventListener('click', () => selectSuggestion(item));
+            div.addEventListener('mousemove', () => {
+                autocompleteIndex = index;
+                updateHighlight();
+            });
+            songSuggestions.appendChild(div);
+        });
+        songSuggestions.classList.add('active');
+    }
+
+    async function fetchSuggestions(termo) {
+        try {
+            const resp = await fetch('/lrclib-search?q=' + encodeURIComponent(termo));
+            if (!resp.ok) {
+                closeSuggestions();
+                return;
+            }
+            const data = await resp.json();
+            const items = Array.isArray(data.items) ? data.items : [];
+            renderSuggestions(items);
+        } catch (err) {
+            // Graceful degradation: se falhar, o campo funciona como digitação livre normal
+            closeSuggestions();
+        }
+    }
+
+    if (songInput) {
+        songInput.addEventListener('input', () => {
+            // Usuário digitou manualmente → não é mais uma sugestão escolhida
+            if (songLrclibIdInput) songLrclibIdInput.value = '';
+            const termo = songInput.value.trim();
+            closeSuggestions();
+            // Só dispara a partir de 2 caracteres, pra não bombardear o endpoint
+            if (termo.length < 2) return;
+            clearTimeout(autocompleteTimer);
+            autocompleteTimer = setTimeout(() => {
+                if (!viewHome.classList.contains('active')) return;
+                fetchSuggestions(termo);
+            }, 350);
+        });
+
+        songInput.addEventListener('keydown', (e) => {
+            if (!songSuggestions || !songSuggestions.classList.contains('active')) return;
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                autocompleteIndex = Math.min(autocompleteIndex + 1, autocompleteItems.length - 1);
+                updateHighlight();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                autocompleteIndex = Math.max(autocompleteIndex - 1, -1);
+                updateHighlight();
+            } else if (e.key === 'Enter') {
+                if (autocompleteIndex >= 0 && autocompleteItems[autocompleteIndex]) {
+                    e.preventDefault();
+                    selectSuggestion(autocompleteItems[autocompleteIndex]);
+                }
+            } else if (e.key === 'Escape') {
+                closeSuggestions();
+            }
+        });
+    }
+
+    // Fecha o dropdown ao clicar fora
+    document.addEventListener('click', (e) => {
+        if (!songSuggestions) return;
+        const group = songInput && songInput.closest('.autocomplete-group');
+        if (group && group.contains(e.target)) return;
+        closeSuggestions();
+    });
 
     async function loadHallOfFame() {
         const grid = document.getElementById('hall-grid');
@@ -542,7 +678,12 @@ document.addEventListener('DOMContentLoaded', () => {
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ nome_musica: song, artista: artist, lang: lang })
+            body: JSON.stringify({
+                nome_musica: song,
+                artista: artist,
+                lang: lang,
+                lrclib_id: songLrclibIdInput ? songLrclibIdInput.value : ''
+            })
         })
         .then(response => {
             if (!response.ok) {
@@ -566,6 +707,8 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.addEventListener('click', (e) => {
             songInput.value = e.target.textContent;
             artistInput.value = '';
+            if (songLrclibIdInput) songLrclibIdInput.value = '';
+            closeSuggestions();
         });
     });
 

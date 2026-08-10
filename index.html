@@ -51,9 +51,11 @@
                     <div class="tape yellow-tape top-left"></div>
                     
                     <form id="search-form">
-                        <div class="input-group">
+                        <div class="input-group autocomplete-group">
                             <label for="song-title" data-i18n="label_song">SONG TITLE (WRITE CORRECTLY)</label>
-                            <input type="text" id="song-title" placeholder='"Bohemian Rhapsody"' required>
+                            <input type="text" id="song-title" placeholder='"Bohemian Rhapsody"' required autocomplete="off">
+                            <input type="hidden" id="song-lrclib-id" value="">
+                            <div id="song-suggestions" class="autocomplete-dropdown" role="listbox" aria-label="Music suggestions"></div>
                         </div>
 
                         <div class="input-group">

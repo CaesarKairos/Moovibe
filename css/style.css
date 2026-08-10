@@ -265,6 +265,68 @@ h1, h2, h3, h4, .font-display {
     color: var(--text-dark);
 }
 
+/* ==========================================================================
+   Autocomplete (dropdown de sugestões de música via LRCLIB)
+   ========================================================================== */
+.autocomplete-group {
+    position: relative;
+}
+
+.autocomplete-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: #fff;
+    border: var(--brutalist-border);
+    box-shadow: var(--brutalist-shadow);
+    z-index: 50;
+    max-height: 280px;
+    overflow-y: auto;
+}
+
+.autocomplete-dropdown.active {
+    display: block;
+}
+
+.autocomplete-item {
+    padding: 10px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid rgba(0,0,0,0.08);
+    transition: background-color 0.15s;
+}
+
+.autocomplete-item:last-child {
+    border-bottom: none;
+}
+
+.autocomplete-item:hover,
+.autocomplete-item.selected {
+    background-color: rgba(203, 163, 88, 0.18);
+}
+
+.autocomplete-item .ac-title {
+    font-family: var(--font-display);
+    font-size: 0.95rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    color: var(--text-dark);
+}
+
+.autocomplete-item .ac-artist {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: #555;
+}
+
+.autocomplete-empty {
+    padding: 12px;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: #777;
+}
+
 .input-group input:focus {
     outline: none;
     background-color: #fff;
