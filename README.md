@@ -43,12 +43,27 @@ O Moovibe possui duas formas de execução:
 ├── css/style.css           # Estilos
 ├── js/script.js            # Lógica do frontend
 ├── functions/
-│   └── recommend.js        # API (Pages Function)
+│   ├── _lib/
+│   │   └── lrclib.js       # Módulo compartilhado LRCLIB
+│   ├── recommend.js        # API principal (Pages Function)
+│   ├── lrclib-search.js    # Autocomplete de música (/lrclib-search)
+│   └── share/
+│       └── [slug].js        # Open Graph dinâmico (/share/{slug})
+├── _redirects              # SPA fallback (Cloudflare Pages)
+├── robots.txt              # SEO
+├── sitemap.xml             # SEO
+├── images/
+│   └── og-image.png        # Imagem padrão Open Graph (1200x630)
 ├── .env.example            # Exemplo de variáveis de ambiente
 └── app.py                  # Versão Python (terminal)
 ```
 
 O frontend faz uma requisição `POST /recommend` para a Pages Function, que orquestra todas as APIs e retorna um JSON com os dados do filme recomendado.
+
+**Funcionalidades:**
+- 🔍 **Autocomplete de música**: ao digitar no campo de busca, sugestões do LRCLIB aparecem em tempo real (debounce, navegação por teclado).
+- 🔗 **Links compartilháveis**: cada recomendação gera uma URL `/share/{slug}` com preview rico (Open Graph dinâmico).
+- 🌐 **SEO básico**: meta tags, canonical, sitemap, robots.txt e URLs reais por view (`/about`, `/how-it-works`, `/hall-of-fame`) com suporte a voltar/avançar do navegador.
 
 ---
 
@@ -141,9 +156,10 @@ Digite o nome de uma música e o artista quando solicitado. O resultado será ex
 | [Cloudflare Pages](https://pages.cloudflare.com/) | Hospedagem fullstack (frontend + API) |
 | [OpenRouter](https://openrouter.ai/) | IA para recomendação de filmes |
 | [TMDb](https://www.themoviedb.org/) | Dados de filmes (pôster, sinopse, diretor) |
-| [LRCLIB](https://lrclib.net/) | Letras de músicas |
+| [LRCLIB](https://lrclib.net/) | Letras de músicas (fonte principal) |
 | [Genius](https://genius.com/) | Contexto e significado das músicas |
-| [DuckDuckGo](https://duckduckgo.com/) | Fallback de busca na web |
+| [DuckDuckGo](https://duckduckgo.com/) | Fallback de contexto na web |
+| [Apple Music / iTunes](https://www.apple.com/itunes/) | Capa do álbum e prévia de áudio |
 
 ---
 
