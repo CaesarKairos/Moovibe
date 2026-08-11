@@ -668,20 +668,61 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
     console.log(`[OPENROUTER] Resposta Bruta:\n${textoIA}\n`);
     if (!textoIA) return null;
     textoIA = textoIA.replace(/```json/g, '').replace(/```/g, '').trim();
-    if (/User Safety/i.test(textoIA) || /\bsafe\b/i.test(textoIA)) {
-      console.error('[OPENROUTER] Resposta de seguranca detectada.');
-      return null;
-    }
-    const parsed = extrairJSON(textoIA);
-    if (parsed && typeof parsed === 'object') {
-      parsed.filme = sanitizarTituloFilme(parsed.filme || parsed.filme_sugerido || '');
-      if (!parsed.citacoes || !Array.isArray(parsed.citacoes) || parsed.citacoes.length < 3) {
-        const quotes = extrairQuotesDaLetra(letra, 3);
-        parsed.citacoes = quotes.length >= 3 ? quotes : [];
+
+    // Apenas considera "User Safety" se for a frase exata (sem a palavra solta "safe")
+    const isSafety = /User Safety/i.test(textoIA);
+    if (!isSafety) {
+      const parsed = extrairJSON(textoIA);
+      if (parsed && typeof parsed === 'object' && parsed.filme) {
+        parsed.filme = sanitizarTituloFilme(parsed.filme || parsed.filme_sugerido || '');
+        if (!parsed.citacoes || !Array.isArray(parsed.citacoes) || parsed.citacoes.length < 3) {
+          const quotes = extrairQuotesDaLetra(letra, 3);
+          parsed.citacoes = quotes.length >= 3 ? quotes : [];
+        }
+        return parsed;
       }
-      return parsed;
     }
-    console.error('[OPENROUTER] Nenhum JSON encontrado.');
+
+    // Se não extraiu JSON E o texto contém "User Safety", faz retry
+    if (isSafety) {
+      for (let tentativa = 1; tentativa <= 2; tentativa++) {
+        console.log(`[OPENROUTER] Resposta de seguranca detectada, tentando novamente (tentativa ${tentativa}/3)...`);
+        await new Promise(r => setTimeout(r, 1500 * tentativa));
+        try {
+          const respRetry = await fetch(OPENROUTER_URL, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+              'HTTP-Referer': 'https://moovibe.pages.dev',
+              'X-Title': 'Moovibe',
+            },
+            body: JSON.stringify(body),
+          });
+          if (!respRetry.ok) continue;
+          const dadosRetry = await respRetry.json();
+          const textoRetry = (dadosRetry?.choices?.[0]?.message?.content || '').trim();
+          if (!textoRetry) continue;
+          const textoRetryLimpo = textoRetry.replace(/```json/g, '').replace(/```/g, '').trim();
+          const parsedRetry = extrairJSON(textoRetryLimpo);
+          if (parsedRetry && typeof parsedRetry === 'object' && parsedRetry.filme) {
+            console.log('=== [DEBUG] JSON EXTRAIDO COM SUCESSO (RETRY) ===');
+            console.log(JSON.stringify(parsedRetry, null, 2));
+            parsedRetry.filme = sanitizarTituloFilme(parsedRetry.filme || parsedRetry.filme_sugerido || '');
+            if (!parsedRetry.citacoes || !Array.isArray(parsedRetry.citacoes) || parsedRetry.citacoes.length < 3) {
+              const quotes = extrairQuotesDaLetra(letra, 3);
+              parsedRetry.citacoes = quotes.length >= 3 ? quotes : [];
+            }
+            return parsedRetry;
+          }
+        } catch (err) {
+          console.error('[OPENROUTER] Erro no retry:', err);
+          continue;
+        }
+      }
+    }
+
+    console.error('[OPENROUTER] Nenhum JSON encontrado na resposta.');
     return { _errorCode: 'AI_UNAVAILABLE' };
   } catch (err) {
     console.error('[OPENROUTER] Erro na requisicao:', err);

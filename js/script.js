@@ -14,7 +14,6 @@ document.addEventListener('DOMContentLoaded', () => {
             hero_eyebrow: '<span class="red-line"></span> THE CINEMA WAS ALWAYS INSIDE THE MUSIC',
             hero_subtitle: '<em>Every song already has a film.</em> <strong>We find it.</strong>',
             label_song: 'SONG TITLE (WRITE CORRECTLY)',
-            label_artist: 'ARTIST — OPTIONAL (BUT HELPS A LOT)',
             btn_find: 'FIND MY MOVIE →',
             try_label: 'TRY:',
             loading_initial: 'Listening to the atmosphere...',
@@ -39,24 +38,23 @@ document.addEventListener('DOMContentLoaded', () => {
             hall_subtitle: 'The greatest music-to-film matches ever discovered.',
             how_it_works_title: 'HOW IT WORKS',
             step1_title: 'INGEST: lyrics + context',
-            step1_text: 'We take your song and pull together lyrics and meaning from multiple sources—LRCLIB, Genius, Brave Search, and Wikipedia PT—so the recommendation has real musical context, not just a title match.',
-            step2_title: 'ENRICH: songfacts + cover art',
-            step2_text: 'We then add real artist-curated facts from Songfacts and fetch the album cover from Apple Music. These extras help the model understand the song’s actual vibe, backstory, and visual identity.',
+            step1_text: 'We take your song and pull together lyrics and meaning from multiple sources—LRCLIB (with exact ID lookup when you pick a suggestion), Genius, Brave Search, and Wikipedia PT/EN—so the recommendation has real musical context, not just a title match.',
+            step2_title: 'ENRICH: cover art + audio preview',
+            step2_text: 'We fetch the album cover and a short audio preview from iTunes, giving the model a concrete visual and sonic reference for the song’s identity. The same sources above already provide the lyrical and historical context needed to understand the vibe.',
             step3_title: 'MATCH: AI + TMDb',
             step3_text: 'A strict JSON prompt asks the model to choose one real TMDb film—complete with a poetic justification, vibe title, tags, and lyric-based quotes. If TMDb is missing data, Wikipedia or Brave Search backfills the gaps.',
-            step4_title: 'PERSIST + render',
-            step4_text: 'The final match is stored in Cloudflare KV history and rendered as poster, stills, quotes, and links. The same logic also runs in the local Python terminal version.',
+            step4_title: 'PERSIST + share',
+            step4_text: 'The final match is stored in Cloudflare KV history and rendered as poster, stills, quotes, and links. The share link shows the movie poster and synopsis when opened on social media, thanks to dynamic Open Graph.',
             about_title: 'ABOUT',
-            about_p1: "Este projeto foi criado por um amante de filmes — sem a pretensão de ser crítico ou 'cinéfilo' — que também é obcecado por música e trilhas sonoras. E ele foi feito para pessoas que sentem o mesmo.",
-            about_p2: "Sabe quando uma música te faz sentir tanta coisa — como a grandiosidade melancólica de Sign of the Times do Harry Styles — que você queria que ela durasse muito mais? Três minutos raramente são suficientes para processar tudo o que uma faixa pode transmitir. Eu sempre quis estender essa sensação. Já que uma música não pode te abraçar por duas horas seguidas, um filme pode.",
-            about_p3: "O Moovibe nasceu dessa minha vontade: criar uma ponte que encontre automaticamente o filme perfeito que carrega exatamente a mesma aura, a mesma cor e a mesma vibe da sua música favorita.",
-            about_p4: "Se essa experiência fez você sentir algo legal, encontrou um filme incrível para a sua noite ou simplesmente curtiu a ideia, considere me seguir nas redes sociais ou apoiar o projeto de alguma forma. E se você for desenvolvedor, o código-fonte está aberto no meu GitHub te esperando."
+            about_p1: "This project was created by a film lover — without any claim to being a critic or 'cinephile' — who is also obsessed with music and soundtracks. And it was made for people who feel the same.",
+            about_p2: "You know when a song makes you feel so much — like the melancholic grandeur of Harry Styles' Sign of the Times — that you wish it could last much longer? Three minutes are rarely enough to process everything a track can convey. I always wanted to extend that feeling. Since a song can't hug you for two hours straight, a movie can.",
+            about_p3: "Moovibe was born from this desire: to create a bridge that automatically finds the perfect film that carries exactly the same aura, the same color, and the same vibe of your favorite song.",
+            about_p4: "If this experience made you feel something cool, found an amazing film for your night, or simply liked the idea, consider following me on social media or supporting the project somehow. And if you're a developer, the source code is open waiting for you on my GitHub."
         },
         pt: {
             hero_eyebrow: '<span class="red-line"></span> O CINEMA ESTAVA SEMPRE DENTRO DA MÚSICA',
             hero_subtitle: '<em>Cada música já tem um filme.</em> <strong>Nós encontramos.</strong>',
             label_song: 'TÍTULO DA MÚSICA (ESCREVA CORRETAMENTE)',
-            label_artist: 'ARTISTA — OPCIONAL (MAS AJUDA MUITO)',
             btn_find: 'ENCONTRAR MEU FILME →',
             try_label: 'TENTE:',
             loading_initial: 'Escutando a atmosfera...',
@@ -81,13 +79,13 @@ document.addEventListener('DOMContentLoaded', () => {
             hall_subtitle: 'As maiores conexões entre música e cinema já descobertas.',
             how_it_works_title: 'COMO FUNCIONA',
             step1_title: 'INGESTAR: letras + contexto',
-            step1_text: 'Nós pegamos a sua música e reunimos letras e significado de várias fontes—LRCLIB, Genius, Brave Search e Wikipedia PT—para que a recomendação tenha contexto musical real, não apenas uma coincidência de título.',
-            step2_title: 'ENRIQUECER: songfacts + capa do álbum',
-            step2_text: 'Depois adicionamos fatos curados pelo próprio artista via Songfacts e buscamos a capa do álbum na Apple Music. Esses extras ajudam o modelo a entender a vibe real, a história e a identidade visual da música.',
+            step1_text: 'Nós pegamos a sua música e reunimos letras e significado de várias fontes—LRCLIB (com busca exata por ID quando você escolhe uma sugestão), Genius, Brave Search e Wikipedia PT/EN—para que a recomendação tenha contexto musical real, não apenas uma coincidência de título.',
+            step2_title: 'ENRIQUECER: capa do álbum + prévia',
+            step2_text: 'Depois buscamos a capa do álbum e uma prévia curta de áudio no iTunes, dando ao modelo uma referência visual e sonora concreta da identidade da música. As fontes anteriores já fornecem o contexto lírico e histórico para entender a vibe.',
             step3_title: 'COMBINAR: IA + TMDb',
             step3_text: 'Um prompt JSON estrito pede para o modelo escolher um filme real do TMDb—com uma justificativa poética, título de vibe, tags e citações baseadas na letra. Se o TMDb estiver faltando dados, Wikipedia ou Brave Search completam as lacunas.',
-            step4_title: 'PERSISTIR + renderizar',
-            step4_text: 'A combinação final é salva no histórico do Cloudflare KV e renderizada como pôster, stills, citações e links. A mesma lógica também roda na versão terminal Python local.',
+            step4_title: 'PERSISTIR + compartilhar',
+            step4_text: 'A combinação final é salva no histórico do Cloudflare KV e renderizada como pôster, stills, citações e links. O link de compartilhamento exibe o pôster e a sinopse do filme quando aberto nas redes sociais, graças ao Open Graph dinâmico.',
             about_title: 'SOBRE',
             about_p1: "Este projeto foi criado por um amante de filmes — sem a pretensão de ser crítico ou 'cinéfilo' — que também é obcecado por música e trilhas sonoras. E ele foi feito para pessoas que sentem o mesmo.",
             about_p2: "Sabe quando uma música te faz sentir tanta coisa — como a grandiosidade melancólica de Sign of the Times do Harry Styles — que você queria que ela durasse muito mais? Três minutos raramente são suficientes para processar tudo o que uma faixa pode transmitir. Eu sempre quis estender essa sensação. Já que uma música não pode te abraçar por duas horas seguidas, um filme pode.",
@@ -732,7 +730,7 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         
         const song = songInput.value.trim();
-        const artist = artistInput.value.trim();
+        const artist = artistInput ? artistInput.value.trim() : '';
 
         if (!song) return;
 
@@ -769,7 +767,7 @@ document.addEventListener('DOMContentLoaded', () => {
     tagButtons.forEach(btn => {
         btn.addEventListener('click', (e) => {
             songInput.value = e.target.textContent;
-            artistInput.value = '';
+            if (artistInput) artistInput.value = '';
             if (songLrclibIdInput) songLrclibIdInput.value = '';
             closeSuggestions();
         });

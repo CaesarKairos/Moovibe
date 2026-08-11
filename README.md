@@ -64,6 +64,7 @@ O frontend faz uma requisição `POST /recommend` para a Pages Function, que orq
 - 🔍 **Autocomplete de música**: ao digitar no campo de busca, sugestões do LRCLIB aparecem em tempo real (debounce, navegação por teclado).
 - 🔗 **Links compartilháveis**: cada recomendação gera uma URL `/share/{slug}` com preview rico (Open Graph dinâmico).
 - 🌐 **SEO básico**: meta tags, canonical, sitemap, robots.txt e URLs reais por view (`/about`, `/how-it-works`, `/hall-of-fame`) com suporte a voltar/avançar do navegador.
+- 🛡️ **Pipeline resiliente**: retry automático para respostas de segurança do OpenRouter, com detecção precisa de "User Safety" sem falsos positivos.
 
 ---
 
@@ -160,6 +161,7 @@ Digite o nome de uma música e o artista quando solicitado. O resultado será ex
 | [Genius](https://genius.com/) | Contexto e significado das músicas |
 | [DuckDuckGo](https://duckduckgo.com/) | Fallback de contexto na web |
 | [Apple Music / iTunes](https://www.apple.com/itunes/) | Capa do álbum e prévia de áudio |
+| [OpenRouter](https://openrouter.ai/) | IA para recomendação de filmes (com retry para respostas de segurança) |
 
 ---
 

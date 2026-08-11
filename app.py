@@ -682,19 +682,45 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
             return None
         
         # Trata resposta de safety do OpenRouter
-        if "User Safety" in texto_ia or "safe" in texto_ia.lower():
-            print("[DEBUG] Resposta de seguranca detectada.")
-            return None
-
-        # Parse robusto de JSON
-        dados = extrair_json_de_texto(texto_ia)
-        if dados and isinstance(dados, dict):
-            print("=== [DEBUG] JSON EXTRAIDO COM SUCESSO ===")
-            print(json.dumps(dados, indent=2, ensure_ascii=False))
-            if "filme" in dados:
+        # Apenas considera "User Safety" se for a frase exata (sem a palavra solta "safe")
+        is_safety = "User Safety" in texto_ia
+        if not is_safety:
+            # Tenta extrair JSON primeiro; se conseguir, não é safety
+            dados = extrair_json_de_texto(texto_ia)
+            if dados and isinstance(dados, dict) and "filme" in dados:
+                print("=== [DEBUG] JSON EXTRAIDO COM SUCESSO ===")
+                print(json.dumps(dados, indent=2, ensure_ascii=False))
                 dados["filme"] = sanitizar_titulo_filme(dados.get("filme") or dados.get("filme_sugerido", ""))
                 return dados
-        
+
+        # Se não extraiu JSON E o texto contém a frase exata "User Safety", faz retry
+        if is_safety:
+            for tentativa in range(1, 3):
+                print(f"[OPENROUTER] Resposta de seguranca detectada, tentando novamente (tentativa {tentativa}/3)...")
+                time.sleep(1.5 * tentativa)
+                try:
+                    resp_retry = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=25)
+                    if resp_retry.status_code != 200:
+                        continue
+                    dados_retry = resp_retry.json()
+                    texto_retry = ""
+                    if isinstance(dados_retry, dict):
+                        choices_retry = dados_retry.get("choices")
+                        if choices_retry and isinstance(choices_retry, list) and choices_retry[0]:
+                            texto_retry = choices_retry[0].get("message", {}).get("content", "")
+                    if not isinstance(texto_retry, str) or not texto_retry.strip():
+                        continue
+                    texto_retry = texto_retry.replace('```json', '').replace('```', '').strip()
+                    dados_retry_parsed = extrair_json_de_texto(texto_retry)
+                    if dados_retry_parsed and isinstance(dados_retry_parsed, dict) and "filme" in dados_retry_parsed:
+                        print("=== [DEBUG] JSON EXTRAIDO COM SUCESSO (RETRY) ===")
+                        print(json.dumps(dados_retry_parsed, indent=2, ensure_ascii=False))
+                        dados_retry_parsed["filme"] = sanitizar_titulo_filme(dados_retry_parsed.get("filme") or dados_retry_parsed.get("filme_sugerido", ""))
+                        return dados_retry_parsed
+                except Exception as e:
+                    print(f"[OPENROUTER] Erro no retry: {e}")
+                    continue
+
         print("[DEBUG] Nenhum JSON encontrado na resposta.")
         return None
 
