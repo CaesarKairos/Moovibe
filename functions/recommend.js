@@ -633,7 +633,7 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
     const body = {
       model: OPENROUTER_MODEL,
       temperature: 0.3,
-      max_tokens: 2000,
+      max_tokens: 900,
       reasoning: { effort: 'low', exclude: true },
       messages: [
         { role: 'system', content: promptSistema },

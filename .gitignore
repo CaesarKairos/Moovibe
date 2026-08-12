@@ -36,3 +36,10 @@ dist/
 # Arquivos do sistema
 .DS_Store
 Thumbs.db
+
+# Cloudflare Wrangler (cache/build local)
+.wrangler/
+
+# Arquivos do sistema
+.DS_Store
+Thumbs.db
