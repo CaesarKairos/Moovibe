@@ -641,7 +641,6 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
     payload = {
         "model": OPENROUTER_MODEL,
         "temperature": 0.3,
-"max_tokens": 900,
         "reasoning": {"effort": "low", "exclude": True},
         "messages": [
             {"role": "system", "content": prompt_sistema},
@@ -665,7 +664,7 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
 
         # Fallback: alguns modelos exigem reasoning obrigatório e rejeitam o
         # parâmetro `reasoning` com erro 400. Se isso acontecer, refaz a chamada
-        # uma vez sem o campo `reasoning` (mantendo apenas o max_tokens).
+        # uma vez sem o campo `reasoning`.
         if resp.status_code == 400:
             corpo_erro = resp.text or ""
             if "reasoning" in corpo_erro.lower():

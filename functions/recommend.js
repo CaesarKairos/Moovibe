@@ -633,7 +633,6 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
     const body = {
       model: OPENROUTER_MODEL,
       temperature: 0.3,
-      max_tokens: 900,
       reasoning: { effort: 'low', exclude: true },
       messages: [
         { role: 'system', content: promptSistema },
@@ -654,7 +653,7 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
     });
     // Fallback: alguns modelos exigem reasoning obrigatório e rejeitam o
     // parâmetro `reasoning` com erro 400. Se isso acontecer, refaz a chamada
-    // uma vez sem o campo `reasoning` (mantendo apenas o max_tokens).
+    // uma vez sem o campo `reasoning`.
     if (resp.status === 400) {
       const errorText = await resp.text().catch(() => '');
       if (errorText.toLowerCase().includes('reasoning')) {
