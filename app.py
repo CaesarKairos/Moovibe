@@ -31,6 +31,7 @@ URL_DUCKDUCKGO = "https://" + "api.duckduckgo.com/"
 # modelo pago). Se no futuro quiser fixar um modelo específico por controle de qualidade,
 # confira antes a lista atual em openrouter.ai/models com o filtro Price = Free, pois IDs
 # hardcoded podem ser descontinuados sem aviso.
+#
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
 URL_TMDB_BUSCA = "https://" + "api.themoviedb.org/3/search/movie"
 URL_TMDB_BASE = "https://" + "api.themoviedb.org/3/movie"
