@@ -27,6 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
             link_imdb: 'IMDb',
             link_letterboxd: 'Letterboxd',
             link_tiktok: 'TikTok',
+            song_card_label: 'THE SONG',
             btn_new_search: '← NEW SEARCH',
             error_title: 'SOMETHING WENT WRONG',
             error_message: "Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.",
@@ -68,6 +69,7 @@ document.addEventListener('DOMContentLoaded', () => {
             link_imdb: 'IMDb',
             link_letterboxd: 'Letterboxd',
             link_tiktok: 'TikTok',
+            song_card_label: 'A MÚSICA',
             btn_new_search: '← NOVA BUSCA',
             error_title: 'ALGO DEU ERRADO',
             error_message: "Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.",
@@ -578,7 +580,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const elOrigTitle = document.getElementById('res-original-title');
         if (elOrigTitle) elOrigTitle.textContent = safeStr(movie.original_title);
-        
+
+        // Song Card
+        const elSongTitle = document.getElementById('res-song-title');
+        if (elSongTitle) elSongTitle.textContent = song;
+
+        const elSongArtist = document.getElementById('res-song-artist');
+        if (elSongArtist) {
+            elSongArtist.textContent = artist;
+            elSongArtist.style.display = artist ? '' : 'none';
+        }
+
+        const elSongCover = document.getElementById('res-song-cover');
+        if (elSongCover) {
+            const coverUrl = movie.cover_url;
+            if (coverUrl) {
+                elSongCover.src = coverUrl;
+                elSongCover.style.display = '';
+            } else {
+                elSongCover.removeAttribute('src');
+                elSongCover.style.display = 'none';
+            }
+        }
+
         // Audio Preview
         if (audioPreview && audioBtn) {
             const audioUrl = movie.audio_preview_url;

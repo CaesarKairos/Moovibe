@@ -548,6 +548,65 @@ h1, h2, h3, h4, .font-display {
     color: var(--accent-red);
 }
 
+/* Song Card */
+.song-card {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 1.5rem;
+    padding: 1rem;
+    background: #fff;
+    border: var(--brutalist-border);
+    box-shadow: var(--brutalist-shadow);
+}
+
+.song-card-cover {
+    width: 72px;
+    height: 72px;
+    object-fit: cover;
+    border: var(--brutalist-border);
+    flex-shrink: 0;
+}
+
+.song-card-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.song-card-label {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: var(--accent-red);
+    margin-bottom: 0.25rem;
+}
+
+.song-card-title {
+    font-family: var(--font-display);
+    font-size: 1.1rem;
+    line-height: 1.2;
+    text-transform: uppercase;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.song-card-artist {
+    font-family: var(--font-body);
+    font-style: italic;
+    font-size: 0.9rem;
+    color: #666;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.song-card .audio-preview-btn {
+    margin-top: 0;
+    flex-shrink: 0;
+}
+
 /* Polaroids / Stills */
 .polaroid {
     background: #fff;
