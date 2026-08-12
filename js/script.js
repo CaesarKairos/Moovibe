@@ -631,6 +631,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const elImdb = document.getElementById('res-imdb');
         if (elImdb) elImdb.href = safeStr(movie.imdb_url);
 
+        const elTmdb = document.getElementById('res-tmdb');
+        if (elTmdb) {
+            const tmdbUrl = safeStr(movie.tmdb_url);
+            if (tmdbUrl) {
+                elTmdb.href = tmdbUrl;
+                elTmdb.style.display = '';
+            } else {
+                elTmdb.style.display = 'none';
+            }
+        }
+
         const elLb = document.getElementById('res-letterboxd');
         if (elLb) elLb.href = safeStr(movie.letterboxd_url);
 

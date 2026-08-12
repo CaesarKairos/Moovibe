@@ -747,6 +747,39 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
 # ==========================================
 # 4. DADOS DO FILME (TMDb + Fallbacks)
 # ==========================================
+def selecionar_melhor_imagem(imagens, idioma_preferido='en'):
+    """
+    Seleciona a melhor imagem de um array de imagens do TMDb.
+    Prioriza:
+      1. Idioma preferido (ex: 'en' ou 'pt')
+      2. Maior vote_average (com fallback para 0)
+      3. Maior vote_count (com fallback para 0)
+      4. Maior resolução (width * height)
+    """
+    if not imagens:
+        return None
+
+    def pontuacao(img):
+        pontos = 0
+        idioma = (img.get("iso_639_1") or "").lower()
+        # Prioriza idioma preferido, depois sem idioma, depois outros
+        if idioma == idioma_preferido:
+            pontos += 100
+        elif idioma == "":
+            pontos += 50
+        # Maior vote_average
+        pontos += min((img.get("vote_average") or 0) * 10, 40)
+        # Maior vote_count (normalizado)
+        pontos += min((img.get("vote_count") or 0) / 10, 30)
+        # Maior resolução
+        resolucao = (img.get("width") or 0) * (img.get("height") or 0)
+        if resolucao > 0:
+            pontos += min(resolucao / 100000, 20)
+        return pontos
+
+    return max(imagens, key=pontuacao)
+
+
 def obter_detalhes_filme_tmdb(nome_filme, ano=None, lang='en'):
     """
     Busca dados do filme no TMDb.
@@ -792,22 +825,27 @@ def obter_detalhes_filme_tmdb(nome_filme, ano=None, lang='en'):
                 break
 
         url_imagens = f"{URL_TMDB_BASE}/{filme_id}/images"
-        params_imagens = {"api_key": TMDB_API_KEY, "include_image_language": "en,null"}
+        params_imagens = {"api_key": TMDB_API_KEY, "include_image_language": "en,null,pt"}
         resp_imagens = requests.get(url_imagens, params=params_imagens, headers={"User-Agent": MOOVIBE_USER_AGENT}, timeout=10)
         dados_imagens = resp_imagens.json() if resp_imagens.status_code == 200 else {}
 
         cenas = []
-        for backdrop in dados_imagens.get("backdrops", [])[:15]:
+        # Seleciona melhores backdrops por score (vote_average * vote_count)
+        backdrops = dados_imagens.get("backdrops", [])
+        backdrops_ordenados = sorted(
+            [b for b in backdrops if b.get("file_path")],
+            key=lambda b: (b.get("vote_average") or 0) * (b.get("vote_count") or 0),
+            reverse=True
+        )[:15]
+        for backdrop in backdrops_ordenados:
             if backdrop.get("file_path"):
                 cenas.append(f"https://image.tmdb.org/t/p/w780{backdrop['file_path']}")
 
+        # Seleciona o melhor poster usando o seletor inteligente
         poster_url = None
-        for poster in dados_imagens.get("posters", []):
-            if poster.get("file_path"):
-                lang_poster = (poster.get("iso_639_1") or "").lower()
-                if lang_poster in ("en", "") or lang_poster is None:
-                    poster_url = f"https://image.tmdb.org/t/p/w500{poster['file_path']}"
-                    break
+        melhor_poster = selecionar_melhor_imagem(dados_imagens.get("posters", []), lang)
+        if melhor_poster and melhor_poster.get("file_path"):
+            poster_url = f"https://image.tmdb.org/t/p/w500{melhor_poster['file_path']}"
         if not poster_url and filme_basico.get("poster_path"):
             poster_url = f"https://image.tmdb.org/t/p/w500{filme_basico['poster_path']}"
 
@@ -816,8 +854,12 @@ def obter_detalhes_filme_tmdb(nome_filme, ano=None, lang='en'):
         if tagline and isinstance(tagline, str):
             tagline = tagline.strip()
 
+        # Gera tmdb_url a partir do ID
+        tmdb_url = f"https://www.themoviedb.org/movie/{filme_id}"
+
         return {
             "id_tmdb": filme_id,
+            "tmdb_url": tmdb_url,
             "titulo_pt": filme_basico.get("title"),
             "titulo_original": filme_basico.get("original_title"),
             "ano": filme_basico.get("release_date", "----")[:4],
@@ -1003,6 +1045,134 @@ def buscar_dados_filme_fallback(nome_filme, ano, lang='en'):
 
     print("[FILME FALLBACK] Todas as camadas falharam.")
     return None
+
+
+# ==========================================
+# 4b. CAPA E PREVIEW DE AUDIO (com fallbacks)
+# ==========================================
+def buscar_capa_musica(nome_musica, artista):
+    """
+    Busca capa e preview de áudio com fallback sequencial.
+
+    Pipeline:
+      1. Apple/iTunes (capa + preview)
+      2. Deezer (capa + preview) - se Apple falhar
+      3. MusicBrainz + Cover Art Archive (apenas capa) - se anteriores falharem
+
+    Capa e preview são independentes: se a Apple retornar capa mas não preview,
+    tenta-se o preview do Deezer sem descartar a capa da Apple.
+    """
+    cover_url = None
+    preview_url = None
+    cover_source = None
+    preview_source = None
+
+    # --- Tenta Apple/iTunes ---
+    try:
+        query = urllib.parse.quote(f"{nome_musica} {artista}")
+        url = f"https://itunes.apple.com/search?term={query}&entity=song&limit=1"
+        resp = requests.get(url, headers={"User-Agent": MOOVIBE_USER_AGENT}, timeout=10)
+        if resp.status_code == 200:
+            dados = resp.json()
+            results = dados.get("results") or []
+            if results:
+                track = results[0]
+                artwork = track.get("artworkUrl100")
+                if artwork:
+                    cover_url = artwork.replace("100x100bb", "1000x1000bb")
+                    cover_source = "apple"
+                preview = track.get("previewUrl")
+                if preview:
+                    preview_url = preview
+                    preview_source = "apple"
+    except Exception as e:
+        print(f"[APPLE MUSIC] Erro: {e}")
+
+    # Se Apple não retornou capa, tenta Deezer
+    if not cover_url:
+        try:
+            query = urllib.parse.quote(f"{artista} {nome_musica}")
+            deezer_resp = requests.get(
+                f"https://api.deezer.com/search?q={query}&limit=1",
+                headers={"User-Agent": MOOVIBE_USER_AGENT},
+                timeout=10
+            )
+            if deezer_resp.status_code == 200:
+                deezer_data = deezer_resp.json()
+                deezer_track = (deezer_data.get("data") or [None])[0]
+                if deezer_track:
+                    album = deezer_track.get("album") or {}
+                    if album.get("cover_big"):
+                        cover_url = album["cover_big"]
+                        cover_source = "deezer"
+                    if not preview_url and deezer_track.get("preview"):
+                        preview_url = deezer_track["preview"]
+                        preview_source = "deezer"
+        except Exception as e:
+            print(f"[DEEZER] Erro: {e}")
+
+    # Se Apple não retornou preview, tenta Deezer para preview
+    if not preview_url:
+        try:
+            query = urllib.parse.quote(f"{artista} {nome_musica}")
+            deezer_resp = requests.get(
+                f"https://api.deezer.com/search?q={query}&limit=1",
+                headers={"User-Agent": MOOVIBE_USER_AGENT},
+                timeout=10
+            )
+            if deezer_resp.status_code == 200:
+                deezer_data = deezer_resp.json()
+                deezer_track = (deezer_data.get("data") or [None])[0]
+                if deezer_track and deezer_track.get("preview"):
+                    preview_url = deezer_track["preview"]
+                    preview_source = "deezer"
+        except Exception as e:
+            print(f"[DEEZER] Erro no preview: {e}")
+
+    # Se ainda não tem capa, tenta MusicBrainz + Cover Art Archive
+    if not cover_url:
+        try:
+            query = urllib.parse.quote(f"{artista} {nome_musica}")
+            mb_resp = requests.get(
+                f"https://musicbrainz.org/ws/2/record/?query={query}&fmt=json&limit=1",
+                headers={"User-Agent": MOOVIBE_USER_AGENT},
+                timeout=10
+            )
+            if mb_resp.status_code == 200:
+                mb_data = mb_resp.json()
+                recordings = mb_data.get("recordings") or []
+                if recordings:
+                    releases = recordings[0].get("releases") or []
+                    if releases:
+                        release_id = releases[0].get("id")
+                        if release_id:
+                            caa_resp = requests.get(
+                                f"https://coverartarchive.org/release/{release_id}",
+                                headers={"User-Agent": MOOVIBE_USER_AGENT},
+                                timeout=10
+                            )
+                            if caa_resp.status_code == 200:
+                                caa_data = caa_resp.json()
+                                images = caa_data.get("images") or []
+                                front = next(
+                                    (img for img in images if img.get("front") is True or img.get("type") == "Front"),
+                                    None
+                                )
+                                if front and front.get("image"):
+                                    cover_url = front["image"]
+                                    cover_source = "musicbrainz"
+                                elif images and images[0].get("image"):
+                                    cover_url = images[0]["image"]
+                                    cover_source = "musicbrainz"
+        except Exception as e:
+            print(f"[MUSICBRAINZ] Erro: {e}")
+
+    return {
+        "cover_url": cover_url,
+        "preview_url": preview_url,
+        "cover_source": cover_source,
+        "preview_source": preview_source,
+    }
 
 
 # ==========================================
@@ -1272,6 +1442,20 @@ def main():
             print(f"TikTok (Browser): https://www.tiktok.com/search?q={tiktok_query}")
             print(f"TikTok (Open directly in App): tiktok://search?keyword={tiktok_query}")
 
+        # Busca capa e preview de forma independente (com fallbacks)
+        capa_dados = buscar_capa_musica(nome_musica, artista)
+        cover_url = capa_dados.get("cover_url") or ""
+        preview_url = capa_dados.get("preview_url") or None
+        cover_source = capa_dados.get("cover_source") or None
+        preview_source = capa_dados.get("preview_source") or None
+
+        # Gera tmdb_url independente de imdb_id
+        tmdb_url = None
+        if dados_filme and dados_filme.get("tmdb_url"):
+            tmdb_url = dados_filme["tmdb_url"]
+        elif dados_filme and dados_filme.get("id_tmdb"):
+            tmdb_url = f"https://www.themoviedb.org/movie/{dados_filme['id_tmdb']}"
+
         # === PAYLOAD FINAL CONSOLIDADO ===
         payload_final = {
             "song": nome_musica,
@@ -1283,11 +1467,17 @@ def main():
                 "director": dados_filme.get("diretor") if dados_filme else "Nao encontrado",
                 "synopsis": dados_filme.get("sinopse") if dados_filme else "Sinopse indisponivel.",
                 "poster_url": dados_filme.get("poster") if dados_filme else None,
+                "cover_url": cover_url,
+                "audio_preview_url": preview_url,
+                "cover_source": cover_source,
+                "preview_source": preview_source,
                 "stills": dados_filme.get("cenas", []) if dados_filme else [],
                 "quotes": dados_filme.get("citacoes", []) if dados_filme else [],
                 "ai_explanation": f"<p>{justificativa}</p>",
                 "vibe_title": vibe_title if 'vibe_title' in locals() else "CINEMATIC INTROSPECTION",
                 "tags": tags if 'tags' in locals() else [],
+                "tmdb_id": dados_filme.get("id_tmdb") if dados_filme else None,
+                "tmdb_url": tmdb_url,
                 "imdb_url": f"https://www.imdb.com/title/{dados_filme['imdb_id']}/" if (dados_filme and dados_filme.get("imdb_id")) else f"https://www.imdb.com/find?q={urllib.parse.quote(nome_filme_ia)}",
                 "letterboxd_url": f"https://letterboxd.com/tmdb/{dados_filme['id_tmdb']}" if (dados_filme and dados_filme.get("id_tmdb")) else f"https://letterboxd.com/search/{urllib.parse.quote(nome_filme_ia)}/",
                 "tiktok_url": f"https://www.tiktok.com/search?q={tiktok_query}",

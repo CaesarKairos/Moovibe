@@ -550,28 +550,142 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
   return null;
 }
 
+/**
+ * Busca capa e preview de áudio com fallback sequencial.
+ *
+ * Pipeline:
+ *   1. Apple/iTunes (capa + preview)
+ *   2. Deezer (capa + preview) - se Apple falhar
+ *   3. MusicBrainz + Cover Art Archive (apenas capa) - se anteriores falharem
+ *
+ * Capa e preview são independentes: se a Apple retornar capa mas não preview,
+ * tenta-se o preview do Deezer sem descartar a capa da Apple.
+ */
 async function buscarCapaMusica(nomeMusica, artista) {
+  let coverUrl = null;
+  let previewUrl = null;
+  let coverSource = null;
+  let previewSource = null;
+
+  // --- Tenta Apple/iTunes ---
   try {
     const query = encodeURIComponent(`${nomeMusica} ${artista}`);
     const url = `https://itunes.apple.com/search?term=${query}&entity=song&limit=1`;
     const resp = await fetch(url, {
       headers: { 'User-Agent': MOOVIBE_USER_AGENT },
     });
-    if (!resp.ok) {
-      const errorText = await resp.text().catch(() => 'Unknown error');
-      console.error(`[APPLE MUSIC] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
-      return { coverUrl: null, previewUrl: null };
+    if (resp.ok) {
+      const dados = await resp.json();
+      const track = dados?.results?.[0];
+      if (track?.artworkUrl100) {
+        coverUrl = track.artworkUrl100.replace('100x100bb', '1000x1000bb');
+        coverSource = 'apple';
+      }
+      if (track?.previewUrl) {
+        previewUrl = track.previewUrl;
+        previewSource = 'apple';
+      }
     }
-    const dados = await resp.json();
-    const track = dados?.results?.[0];
-    let coverUrl = null;
-    if (track?.artworkUrl100) coverUrl = track.artworkUrl100.replace('100x100bb', '1000x1000bb');
-    const previewUrl = track?.previewUrl || null;
-    return { coverUrl, previewUrl };
   } catch (err) {
     console.error('[APPLE MUSIC] Erro:', err);
-    return { coverUrl: null, previewUrl: null };
   }
+
+  // Se Apple não retornou capa, tenta Deezer
+  if (!coverUrl) {
+    try {
+      const query = encodeURIComponent(`${artista} ${nomeMusica}`);
+      const deezerResp = await fetch(`https://api.deezer.com/search?q=${query}&limit=1`, {
+        headers: { 'User-Agent': MOOVIBE_USER_AGENT },
+      });
+      if (deezerResp.ok) {
+        const deezerData = await deezerResp.json();
+        const deezerTrack = deezerData?.data?.[0];
+        if (deezerTrack) {
+          if (deezerTrack.album?.cover_big) {
+            coverUrl = deezerTrack.album.cover_big;
+            coverSource = 'deezer';
+          }
+          if (!previewUrl && deezerTrack.preview) {
+            previewUrl = deezerTrack.preview;
+            previewSource = 'deezer';
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[DEEZER] Erro:', err);
+    }
+  }
+
+  // Se Apple não retornou preview, tenta Deezer para preview
+  if (!previewUrl) {
+    try {
+      const query = encodeURIComponent(`${artista} ${nomeMusica}`);
+      const deezerResp = await fetch(`https://api.deezer.com/search?q=${query}&limit=1`, {
+        headers: { 'User-Agent': MOOVIBE_USER_AGENT },
+      });
+      if (deezerResp.ok) {
+        const deezerData = await deezerResp.json();
+        const deezerTrack = deezerData?.data?.[0];
+        if (deezerTrack?.preview) {
+          previewUrl = deezerTrack.preview;
+          previewSource = 'deezer';
+        }
+      }
+    } catch (err) {
+      console.error('[DEEZER] Erro no preview:', err);
+    }
+  }
+
+  // Se ainda não tem capa, tenta MusicBrainz + Cover Art Archive
+  if (!coverUrl) {
+    try {
+      const query = encodeURIComponent(`${artista} ${nomeMusica}`);
+      const mbResp = await fetch(
+        `https://musicbrainz.org/ws/2/record/?query=${query}&fmt=json&limit=1`,
+        {
+          headers: {
+            'User-Agent': `${MOOVIBE_USER_AGENT}`,
+          },
+        }
+      );
+      if (mbResp.ok) {
+        const mbData = await mbResp.json();
+        const releaseId = mbData?.recordings?.[0]?.releases?.[0]?.id;
+        if (releaseId) {
+          const caaResp = await fetch(
+            `https://coverartarchive.org/release/${releaseId}`,
+            {
+              headers: {
+                'User-Agent': `${MOOVIBE_USER_AGENT}`,
+              },
+            }
+          );
+          if (caaResp.ok) {
+            const caaData = await caaResp.json();
+            const front = caaData.images?.find(
+              (img) => img.front === true || img.type === 'Front'
+            );
+            if (front?.image) {
+              coverUrl = front.image;
+              coverSource = 'musicbrainz';
+            } else if (caaData.images?.[0]?.image) {
+              coverUrl = caaData.images[0].image;
+              coverSource = 'musicbrainz';
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[MUSICBRAINZ] Erro:', err);
+    }
+  }
+
+  return {
+    coverUrl,
+    previewUrl,
+    coverSource,
+    previewSource,
+  };
 }
 
 async function obterCacheMusica(nomeMusica, artista, env) {
@@ -752,6 +866,40 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
   }
 }
 
+/**
+ * Seleciona a melhor imagem de um array de imagens do TMDb.
+ * Prioriza:
+ *   1. Idioma preferido (ex: 'en' ou 'pt')
+ *   2. Maior vote_average (com fallback para 0)
+ *   3. Maior vote_count (com fallback para 0)
+ *   4. Maior resolução (width * height)
+ */
+function selecionarMelhorImagem(imagens, idiomaPreferido = 'en') {
+  if (!imagens || imagens.length === 0) return null;
+
+  const pontuacao = (img) => {
+    let pontos = 0;
+    const idioma = (img.iso_639_1 || '').toLowerCase();
+    // Prioriza idioma preferido, depois sem idioma, depois outros
+    if (idioma === idiomaPreferido) pontos += 100;
+    else if (idioma === '') pontos += 50;
+    // Maior vote_average
+    pontos += Math.min((img.vote_average || 0) * 10, 40);
+    // Maior vote_count (normalizado)
+    pontos += Math.min((img.vote_count || 0) / 10, 30);
+    // Maior resolução
+    const resolucao = (img.width || 0) * (img.height || 0);
+    if (resolucao > 0) {
+      pontos += Math.min(resolucao / 100000, 20);
+    }
+    return pontos;
+  };
+
+  return imagens.reduce((melhor, atual) => {
+    return pontuacao(atual) > pontuacao(melhor) ? atual : melhor;
+  }, imagens[0]);
+}
+
 async function obterDetalhesTMDB(nomeFilme, apiKey, ano, lang = 'en') {
   if (!apiKey) return null;
   try {
@@ -781,28 +929,40 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano, lang = 'en') {
         if (pessoa.job === 'Director') { diretor = pessoa.name; break; }
       }
     }
-    const respImagens = await fetch(`${TMDB_BASE_URL}/${filmeId}/images?api_key=${apiKey}&include_image_language=en,null`, { headers: { 'User-Agent': MOOVIBE_USER_AGENT } });
+    const respImagens = await fetch(`${TMDB_BASE_URL}/${filmeId}/images?api_key=${apiKey}&include_image_language=en,null,pt`, { headers: { 'User-Agent': MOOVIBE_USER_AGENT } });
     const cenas = [];
     let posterUrl = null;
     if (respImagens.ok) {
       const imagens = await respImagens.json();
-      for (const backdrop of (imagens?.backdrops || []).slice(0, 15)) {
+      // Seleciona melhores backdrops
+      const backdrops = imagens?.backdrops || [];
+      const melhoresBackdrops = backdrops
+        .filter(b => b.file_path)
+        .sort((a, b) => {
+          const scoreA = (a.vote_average || 0) * (a.vote_count || 0);
+          const scoreB = (b.vote_average || 0) * (b.vote_count || 0);
+          return scoreB - scoreA;
+        })
+        .slice(0, 15);
+      for (const backdrop of melhoresBackdrops) {
         if (backdrop.file_path) cenas.push(`https://image.tmdb.org/t/p/w780${backdrop.file_path}`);
       }
+      // Seleciona o melhor poster usando o seletor inteligente
       const posters = imagens?.posters || [];
-      for (const poster of posters) {
-        if (!poster.file_path) continue;
-        const idioma = (poster.iso_639_1 || '').toLowerCase();
-        if (idioma === 'en' || idioma === '') {
-          posterUrl = `https://image.tmdb.org/t/p/w500${poster.file_path}`;
-          break;
-        }
+      const melhorPoster = selecionarMelhorImagem(posters, lang);
+      if (melhorPoster && melhorPoster.file_path) {
+        posterUrl = `https://image.tmdb.org/t/p/w500${melhorPoster.file_path}`;
       }
     }
     if (!posterUrl && filmeBasico.poster_path) posterUrl = `https://image.tmdb.org/t/p/w500${filmeBasico.poster_path}`;
     const tagline = (detalhes && typeof detalhes === 'object' && detalhes.tagline) ? detalhes.tagline.trim() : '';
+
+    // Gera tmdb_url a partir do ID
+    const tmdbUrl = `https://www.themoviedb.org/movie/${filmeId}`;
+
     return {
       id_tmdb: filmeId,
+      tmdb_url: tmdbUrl,
       titulo_pt: filmeBasico.title,
       titulo_original: filmeBasico.original_title,
       ano: (filmeBasico.release_date || '----').substring(0, 4),
@@ -1045,6 +1205,7 @@ export async function onRequest(context) {
       if (fallback) {
         dadosFilme = {
           id_tmdb: null,
+          tmdb_url: null,
           titulo_pt: nomeFilme,
           titulo_original: nomeFilme,
           ano: anoFilme || 'Nao informado',
@@ -1057,6 +1218,7 @@ export async function onRequest(context) {
       } else {
         dadosFilme = {
           id_tmdb: null,
+          tmdb_url: null,
           titulo_pt: nomeFilme,
           titulo_original: nomeFilme,
           ano: anoFilme || 'Nao informado',
@@ -1086,11 +1248,25 @@ export async function onRequest(context) {
       if (poster) dadosFilme.cenas = [poster, poster, poster];
     }
 
+    // Busca capa e preview de forma independente
     const capaDados = await buscarCapaMusica(nome_musica, artista);
     const coverUrl = capaDados?.coverUrl || '';
     const previewUrl = capaDados?.previewUrl || null;
-    const imdbUrl = dadosFilme?.imdb_id ? `https://www.imdb.com/title/${dadosFilme.imdb_id}/` : `https://www.imdb.com/find?q=${encodeURIComponent(nomeFilme)}`;
-    const letterboxdUrl = dadosFilme?.id_tmdb ? `https://letterboxd.com/tmdb/${dadosFilme.id_tmdb}` : `https://letterboxd.com/search/${encodeURIComponent(nomeFilme)}/`;
+    const coverSource = capaDados?.coverSource || null;
+    const previewSource = capaDados?.previewSource || null;
+
+    // Gera tmdb_url independente de imdb_id
+    const tmdbUrl = dadosFilme?.tmdb_url || (dadosFilme?.id_tmdb ? `https://www.themoviedb.org/movie/${dadosFilme.id_tmdb}` : null);
+
+    // Gera imdb_url com fallback para /find apenas se não tiver imdb_id
+    const imdbUrl = dadosFilme?.imdb_id
+      ? `https://www.imdb.com/title/${dadosFilme.imdb_id}/`
+      : `https://www.imdb.com/find?q=${encodeURIComponent(nomeFilme)}`;
+
+    const letterboxdUrl = dadosFilme?.id_tmdb
+      ? `https://letterboxd.com/tmdb/${dadosFilme.id_tmdb}`
+      : `https://letterboxd.com/search/${encodeURIComponent(nomeFilme)}/`;
+
     const slug = slugify(nomeFilme + '-' + nome_musica);
     const resposta = {
       song: nome_musica,
@@ -1105,11 +1281,15 @@ export async function onRequest(context) {
         poster_url: dadosFilme?.poster || '',
         cover_url: coverUrl,
         audio_preview_url: previewUrl,
+        cover_source: coverSource,
+        preview_source: previewSource,
         stills: dadosFilme?.cenas || [],
         quotes,
         ai_explanation: `<p>${justificativa}</p>`,
         vibe_title: vibeTitle,
         tags,
+        tmdb_id: dadosFilme?.id_tmdb || null,
+        tmdb_url: tmdbUrl,
         imdb_url: imdbUrl,
         letterboxd_url: letterboxdUrl,
         tiktok_url: `https://www.tiktok.com/search?q=${encodeURIComponent(nomeFilme + ' edit')}`,

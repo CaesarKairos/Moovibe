@@ -3,6 +3,7 @@ CONTEXT.md
 test_style.py
 test_lyrics_pipeline.py
 test_genius_layer.py
+test_moovibe.py
 
 # Variáveis de ambiente
 .env
