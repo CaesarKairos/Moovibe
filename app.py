@@ -641,6 +641,8 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
     payload = {
         "model": OPENROUTER_MODEL,
         "temperature": 0.3,
+        "max_tokens": 2000,
+        "reasoning": {"effort": "low", "exclude": True},
         "messages": [
             {"role": "system", "content": prompt_sistema},
             {"role": "user", "content": conteudo_usuario}
@@ -660,6 +662,19 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
         tempo_inicio = time.time()
         resp = requests.post(URL_OPENROUTER, headers=headers, json=payload, timeout=25)
         tempo_resposta = round(time.time() - tempo_inicio, 2)
+
+        # Fallback: alguns modelos exigem reasoning obrigatório e rejeitam o
+        # parâmetro `reasoning` com erro 400. Se isso acontecer, refaz a chamada
+        # uma vez sem o campo `reasoning` (mantendo apenas o max_tokens).
+        if resp.status_code == 400:
+            corpo_erro = resp.text or ""
+            if "reasoning" in corpo_erro.lower():
+                print("[OPENROUTER] Modelo rejeitou parametro reasoning, tentando sem ele...")
+                payload_sem_reasoning = {k: v for k, v in payload.items() if k != "reasoning"}
+                print(f"[DEBUG] Payload sem reasoning:\n{json.dumps(payload_sem_reasoning, indent=2, ensure_ascii=False)}")
+                tempo_inicio = time.time()
+                resp = requests.post(URL_OPENROUTER, headers=headers, json=payload_sem_reasoning, timeout=25)
+                tempo_resposta = round(time.time() - tempo_inicio, 2)
 
         print(f"\n=== [DEBUG] RESPOSTA OPENROUTER ===")
         print(f"Status Code: {resp.status_code}")

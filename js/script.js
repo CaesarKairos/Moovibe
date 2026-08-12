@@ -162,9 +162,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- DOM Elements ---
     const searchForm = document.getElementById('search-form');
     const songInput = document.getElementById('song-title');
-    const artistInput = document.getElementById('artist-name');
     const songSuggestions = document.getElementById('song-suggestions');
     const songLrclibIdInput = document.getElementById('song-lrclib-id');
+    // Estado em memória do artista resolvido (o input #artist-name foi removido
+    // na unificação do campo de busca; o artista agora é guardado aqui).
+    let artistaResolvido = '';
     const btnSearchAgain = document.getElementById('btn-search-again');
     const tagButtons = document.querySelectorAll('.tag-btn');
     const logoEl = document.querySelector('.nav-logo h1');
@@ -287,7 +289,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function resetSearch() {
         if (songInput) songInput.value = '';
-        if (artistInput) artistInput.value = '';
+        artistaResolvido = '';
         if (songLrclibIdInput) songLrclibIdInput.value = '';
         closeSuggestions();
     }
@@ -317,7 +319,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function selectSuggestion(item) {
         if (!item) return;
         if (songInput) songInput.value = item.trackName || '';
-        if (artistInput) artistInput.value = item.artistName || '';
+        artistaResolvido = item.artistName || '';
         if (songLrclibIdInput) songLrclibIdInput.value = String(item.id || '');
         closeSuggestions();
     }
@@ -726,13 +728,72 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    searchForm.addEventListener('submit', (e) => {
+    // Tenta extrair artista do texto digitado livremente usando separadores comuns.
+    // Último recurso quando o LRCLIB não retorna nada.
+    function extrairArtistaDoTexto(texto) {
+        if (!texto) return { musica: texto, artista: '' };
+        // Separa por " - ", " – ", " by ", " de " (case-insensitive)
+        const separadores = [/\s+-\s+/, /\s+–\s+/, /\s+by\s+/i, /\s+de\s+/i];
+        for (const sep of separadores) {
+            const partes = texto.split(sep);
+            if (partes.length >= 2) {
+                const musica = partes[0].trim();
+                const artista = partes.slice(1).join(' - ').trim();
+                if (musica && artista) return { musica, artista };
+            }
+        }
+        return { musica: texto, artista: '' };
+    }
+
+    // Resolve o artista via /lrclib-search quando o usuário digitou livremente
+    // e enviou sem escolher uma sugestão do autocomplete (lrclib_id vazio).
+    async function resolverArtistaViaLrclib(song) {
+        try {
+            const resp = await fetch('/lrclib-search?q=' + encodeURIComponent(song));
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            const items = Array.isArray(data.items) ? data.items : [];
+            if (items.length > 0) {
+                const primeiro = items[0];
+                console.log('[LRCLIB-RESOLVE] Sugestão encontrada:', primeiro.trackName, '-', primeiro.artistName);
+                return {
+                    trackName: primeiro.trackName || song,
+                    artistName: primeiro.artistName || '',
+                    id: primeiro.id || ''
+                };
+            }
+        } catch (err) {
+            console.error('[LRCLIB-RESOLVE] Erro na busca:', err);
+        }
+        return null;
+    }
+
+    searchForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         
-        const song = songInput.value.trim();
-        const artist = artistInput ? artistInput.value.trim() : '';
-
+        let song = songInput.value.trim();
         if (!song) return;
+
+        // Se o usuário digitou livremente (sem escolher sugestão), tenta resolver
+        // o artista via LRCLIB antes de montar o payload do /recommend.
+        const lrclibIdAtual = songLrclibIdInput ? songLrclibIdInput.value : '';
+        if (!lrclibIdAtual) {
+            const resolvido = await resolverArtistaViaLrclib(song);
+            if (resolvido) {
+                song = resolvido.trackName || song;
+                artistaResolvido = resolvido.artistName || '';
+                if (songLrclibIdInput) songLrclibIdInput.value = String(resolvido.id || '');
+                console.log('[LRCLIB-RESOLVE] Artista preenchido automaticamente:', artistaResolvido);
+            } else {
+                // Último recurso: tenta dividir o texto digitado por separadores comuns
+                const { musica, artista } = extrairArtistaDoTexto(song);
+                song = musica;
+                artistaResolvido = artista;
+                if (artista) console.log('[LRCLIB-RESOLVE] Artista extraído do texto:', artista);
+            }
+        }
+
+        const artist = artistaResolvido;
 
         const fetchPromise = fetch('/recommend', {
             method: 'POST',
@@ -767,7 +828,7 @@ document.addEventListener('DOMContentLoaded', () => {
     tagButtons.forEach(btn => {
         btn.addEventListener('click', (e) => {
             songInput.value = e.target.textContent;
-            if (artistInput) artistInput.value = '';
+            artistaResolvido = '';
             if (songLrclibIdInput) songLrclibIdInput.value = '';
             closeSuggestions();
         });

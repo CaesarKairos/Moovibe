@@ -633,6 +633,8 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
     const body = {
       model: OPENROUTER_MODEL,
       temperature: 0.3,
+      max_tokens: 2000,
+      reasoning: { effort: 'low', exclude: true },
       messages: [
         { role: 'system', content: promptSistema },
         { role: 'user', content: conteudoUsuario },
@@ -640,7 +642,7 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
     };
     console.log('\n[DEBUG] Enviando Payload para OpenRouter (RECOMENDACAO):', JSON.stringify(body, null, 2));
     console.log(`[OPENROUTER] Tentando modelo: ${OPENROUTER_MODEL}`);
-    const resp = await fetch(OPENROUTER_URL, {
+    let resp = await fetch(OPENROUTER_URL, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -650,6 +652,27 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
       },
       body: JSON.stringify(body),
     });
+    // Fallback: alguns modelos exigem reasoning obrigatório e rejeitam o
+    // parâmetro `reasoning` com erro 400. Se isso acontecer, refaz a chamada
+    // uma vez sem o campo `reasoning` (mantendo apenas o max_tokens).
+    if (resp.status === 400) {
+      const errorText = await resp.text().catch(() => '');
+      if (errorText.toLowerCase().includes('reasoning')) {
+        console.log('[OPENROUTER] Modelo rejeitou parametro reasoning, tentando sem ele...');
+        const { reasoning, ...bodySemReasoning } = body;
+        console.log('[DEBUG] Payload sem reasoning:', JSON.stringify(bodySemReasoning, null, 2));
+        resp = await fetch(OPENROUTER_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://moovibe.pages.dev',
+            'X-Title': 'Moovibe',
+          },
+          body: JSON.stringify(bodySemReasoning),
+        });
+      }
+    }
     if (!resp.ok) {
       const errorText = await resp.text().catch(() => 'Unknown error');
       console.error(`[OPENROUTER RECOMENDACAO] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
