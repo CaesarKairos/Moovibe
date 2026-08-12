@@ -19,7 +19,7 @@ URL_LRCLIB_GET = URL_LRCLIB_BASE + "/get"
 URL_LRCLIB_SEARCH = URL_LRCLIB_BASE + "/search"
 URL_OPENROUTER = "https://" + "openrouter.ai/api/v1/chat/completions"
 URL_GENIUS_BASE = "https://" + "api.genius.com"
-URL_GENIUS_SEARCH = URL_GENIUS_BASE + "/search
+URL_GENIUS_SEARCH = URL_GENIUS_BASE + "/search"
 URL_GENIUS_SONGS = URL_GENIUS_BASE + "/songs"
 URL_DUCKDUCKGO = "https://" + "api.duckduckgo.com/"
 
