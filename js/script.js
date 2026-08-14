@@ -28,7 +28,6 @@ document.addEventListener('DOMContentLoaded', () => {
             link_letterboxd: 'Letterboxd',
             link_tiktok: 'TikTok',
             song_card_label: 'THE SONG',
-            alternatives_title: 'MORE LIKE THIS',
             btn_new_search: '← NEW SEARCH',
             error_title: 'SOMETHING WENT WRONG',
             error_message: "Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.",
@@ -71,7 +70,6 @@ document.addEventListener('DOMContentLoaded', () => {
             link_letterboxd: 'Letterboxd',
             link_tiktok: 'TikTok',
             song_card_label: 'A MÚSICA',
-            alternatives_title: 'MAIS COMO ESTE',
             btn_new_search: '← NOVA BUSCA',
             error_title: 'ALGO DEU ERRADO',
             error_message: "Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.",
@@ -190,8 +188,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const MAX_SONGS = 3;
     let extraSongCount = 0;
     let extraSongInputs = [];
-    const alternativesSection = document.getElementById('alternatives-section');
-    const alternativesGrid = document.getElementById('alternatives-grid');
 
     // Loading strings for cinematic feel
     const loadingMessages = lang === 'pt'
@@ -801,58 +797,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        // Alternatives (sugestões de filmes alternativos)
-        const alternatives = safeArr(movie.alternatives).slice(0, 2);
-        if (alternativesSection && alternativesGrid) {
-            alternativesGrid.innerHTML = '';
-            if (alternatives.length > 0) {
-                alternatives.forEach((alt) => {
-                    const card = document.createElement('div');
-                    card.className = 'alternative-card';
-                    const img = document.createElement('img');
-                    img.src = safeStr(alt.poster_url);
-                    img.alt = safeStr(alt.titulo);
-                    img.loading = 'lazy';
-                    const call = document.createElement('div');
-                    call.className = 'alt-call';
-                    call.textContent = safeStr(alt.chamada);
-                    const title = document.createElement('div');
-                    title.className = 'alt-title';
-                    title.textContent = safeStr(alt.titulo);
-                    const meta = document.createElement('div');
-                    meta.className = 'alt-meta';
-                    meta.textContent = `${safeStr(alt.ano)}${alt.diretor ? ' — ' + safeStr(alt.diretor) : ''}`;
-                    card.appendChild(img);
-                    card.appendChild(call);
-                    card.appendChild(title);
-                    card.appendChild(meta);
-                    // Links externos (IMDb e Letterboxd) baseados no título e ano
-                    const altTitle = safeStr(alt.titulo);
-                    const altYear = safeStr(alt.ano);
-                    const linksWrap = document.createElement('div');
-                    linksWrap.className = 'alt-links';
-                    const imdbLink = document.createElement('a');
-                    imdbLink.className = 'alt-link';
-                    imdbLink.target = '_blank';
-                    imdbLink.rel = 'noopener noreferrer';
-                    imdbLink.textContent = 'IMDb';
-                    imdbLink.href = `https://www.imdb.com/find?q=${encodeURIComponent(altTitle + (altYear ? ' ' + altYear : ''))}`;
-                    const lbLink = document.createElement('a');
-                    lbLink.className = 'alt-link';
-                    lbLink.target = '_blank';
-                    lbLink.rel = 'noopener noreferrer';
-                    lbLink.textContent = 'Letterboxd';
-                    lbLink.href = `https://letterboxd.com/search/${encodeURIComponent(altTitle + (altYear ? ' ' + altYear : ''))}/`;
-                    linksWrap.appendChild(imdbLink);
-                    linksWrap.appendChild(lbLink);
-                    card.appendChild(linksWrap);
-                    alternativesGrid.appendChild(card);
-                });
-                alternativesSection.style.display = '';
-            } else {
-                alternativesSection.style.display = 'none';
-            }
-        }
     }
 
     function aplicarOverlayHall(card, movie) {
