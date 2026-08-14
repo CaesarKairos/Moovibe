@@ -1257,12 +1257,26 @@ export async function onRequest(context) {
       if (poster) dadosFilme.cenas = [poster, poster, poster];
     }
 
-    // Busca capa e preview de forma independente
+    // Busca capa e preview de forma independente (música principal)
     const capaDados = await buscarCapaMusica(nome_musica, artista);
     const coverUrl = capaDados?.coverUrl || '';
     const previewUrl = capaDados?.previewUrl || null;
     const coverSource = capaDados?.coverSource || null;
     const previewSource = capaDados?.previewSource || null;
+
+    // Busca capa e preview para cada música extra (até 3 no total)
+    const songs = [{ title: nome_musica, artist: artista || '', cover_url: coverUrl, audio_preview_url: previewUrl }];
+    if (musicasExtras.length > 0) {
+      for (const extra of musicasExtras) {
+        const extraCapa = await buscarCapaMusica(extra, '');
+        songs.push({
+          title: extra,
+          artist: '',
+          cover_url: extraCapa?.coverUrl || '',
+          audio_preview_url: extraCapa?.previewUrl || null,
+        });
+      }
+    }
 
     // Gera tmdb_url independente de imdb_id
     const tmdbUrl = dadosFilme?.tmdb_url || (dadosFilme?.id_tmdb ? `https://www.themoviedb.org/movie/${dadosFilme.id_tmdb}` : null);
@@ -1284,22 +1298,33 @@ export async function onRequest(context) {
         const altTitulo = sanitizarTituloFilme(alt?.titulo || '');
         if (!altTitulo) continue;
         const altDetalhes = await obterDetalhesTMDB(altTitulo, env.TMDB_API_KEY, alt?.ano || '', lang);
+        const altAno = alt?.ano || (altDetalhes?.ano || '');
         alternativasComPoster.push({
           chamada: alt?.chamada || '',
           titulo: altTitulo,
-          ano: alt?.ano || (altDetalhes?.ano || ''),
+          ano: altAno,
           diretor: alt?.diretor || (altDetalhes?.diretor || ''),
           poster_url: altDetalhes?.poster || '',
+          imdb_url: altDetalhes?.imdb_id
+            ? `https://www.imdb.com/title/${altDetalhes.imdb_id}/`
+            : `https://www.imdb.com/find?q=${encodeURIComponent(altTitulo + (altAno ? ' ' + altAno : ''))}`,
+          letterboxd_url: altDetalhes?.id_tmdb
+            ? `https://letterboxd.com/tmdb/${altDetalhes.id_tmdb}`
+            : `https://letterboxd.com/search/${encodeURIComponent(altTitulo + (altAno ? ' ' + altAno : ''))}/`,
         });
       }
     } else if (alternativas.length > 0) {
       for (const alt of alternativas) {
+        const altTitulo = sanitizarTituloFilme(alt?.titulo || '');
+        const altAno = alt?.ano || '';
         alternativasComPoster.push({
           chamada: alt?.chamada || '',
-          titulo: sanitizarTituloFilme(alt?.titulo || ''),
-          ano: alt?.ano || '',
+          titulo: altTitulo,
+          ano: altAno,
           diretor: alt?.diretor || '',
           poster_url: '',
+          imdb_url: `https://www.imdb.com/find?q=${encodeURIComponent(altTitulo + (altAno ? ' ' + altAno : ''))}`,
+          letterboxd_url: `https://letterboxd.com/search/${encodeURIComponent(altTitulo + (altAno ? ' ' + altAno : ''))}/`,
         });
       }
     }
@@ -1308,6 +1333,7 @@ export async function onRequest(context) {
     const resposta = {
       song: nome_musica,
       artist: artista || '',
+      songs,
       share_slug: slug,
       movie: {
         title: dadosFilme?.titulo_pt || nomeFilme,

@@ -1494,6 +1494,22 @@ def main():
         cover_source = capa_dados.get("cover_source") or None
         preview_source = capa_dados.get("preview_source") or None
 
+        # Busca capa e preview para cada música extra (até 3 no total)
+        songs = [{
+            "title": nome_musica,
+            "artist": artista,
+            "cover_url": cover_url,
+            "audio_preview_url": preview_url,
+        }]
+        for extra in musicas_extras:
+            extra_capa = buscar_capa_musica(extra, "")
+            songs.append({
+                "title": extra,
+                "artist": "",
+                "cover_url": extra_capa.get("cover_url") or "",
+                "audio_preview_url": extra_capa.get("preview_url") or None,
+            })
+
         # Gera tmdb_url independente de imdb_id
         tmdb_url = None
         if dados_filme and dados_filme.get("tmdb_url"):
@@ -1524,6 +1540,7 @@ def main():
         payload_final = {
             "song": nome_musica,
             "artist": artista,
+            "songs": songs,
             "movie": {
                 "title": dados_filme.get("titulo_pt") if dados_filme else nome_filme_ia,
                 "original_title": dados_filme.get("titulo_original") if dados_filme else nome_filme_ia,
@@ -1546,7 +1563,9 @@ def main():
                         "titulo": sanitizar_titulo_filme(alt.get("titulo", "")),
                         "ano": alt.get("ano", ""),
                         "diretor": alt.get("diretor", ""),
-                        "poster_url": ""
+                        "poster_url": "",
+                        "imdb_url": f"https://www.imdb.com/find?q={urllib.parse.quote(sanitizar_titulo_filme(alt.get('titulo', '')) + (' ' + str(alt.get('ano', '')) if alt.get('ano') else ''))}",
+                        "letterboxd_url": f"https://letterboxd.com/search/{urllib.parse.quote(sanitizar_titulo_filme(alt.get('titulo', '')) + (' ' + str(alt.get('ano', '')) if alt.get('ano') else ''))}/"
                     }
                     for alt in (recomendacao_ia.get("alternativas") or [])
                 ],

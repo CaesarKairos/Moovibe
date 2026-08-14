@@ -177,24 +177,7 @@
                         <a href="#" id="res-letterboxd" target="_blank" class="text-link" data-i18n="link_letterboxd">Letterboxd</a>
                         <a href="#" id="res-tiktok" target="_blank" class="text-link" data-i18n="link_tiktok">TikTok</a>
                     </div>
-                    <div class="song-card" id="res-song-card">
-                        <img id="res-song-cover" class="song-card-cover" src="" alt="" style="display:none;">
-                        <div class="song-card-info">
-                            <p class="song-card-label" data-i18n="song_card_label">THE SONG</p>
-                            <p class="song-card-title" id="res-song-title"></p>
-                            <p class="song-card-artist" id="res-song-artist"></p>
-                        </div>
-                        <audio id="res-audio-preview" preload="none"></audio>
-                        <button id="res-audio-btn" class="audio-preview-btn" style="display:none;" aria-label="Play audio preview">
-                            <span class="play-icon" aria-hidden="true"></span>
-                            <span class="audio-btn-label">PREVIEW</span>
-                        </button>
-                    </div>
-
-                    <div id="alternatives-section" class="alternatives-section" style="display:none;">
-                        <h3 class="alternatives-title" data-i18n="alternatives_title">MORE LIKE THIS</h3>
-                        <div id="alternatives-grid" class="alternatives-grid"></div>
-                    </div>
+                    <div id="res-songs-list" class="songs-list"></div>
                 </article>
 
                 <div class="poster-container">
@@ -224,6 +207,11 @@
                         <p class="polaroid-quote" id="res-quote-3"></p>
                     </div>
                 </div>
+            </div>
+
+            <div id="alternatives-section" class="alternatives-section" style="display:none;">
+                <h3 class="alternatives-title" data-i18n="alternatives_title">MORE LIKE THIS</h3>
+                <div id="alternatives-grid" class="alternatives-grid"></div>
             </div>
 
             <div class="action-footer">

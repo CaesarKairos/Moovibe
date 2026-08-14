@@ -28,6 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
             link_letterboxd: 'Letterboxd',
             link_tiktok: 'TikTok',
             song_card_label: 'THE SONG',
+            alternatives_title: 'MORE LIKE THIS',
             btn_new_search: '← NEW SEARCH',
             error_title: 'SOMETHING WENT WRONG',
             error_message: "Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.",
@@ -70,6 +71,7 @@ document.addEventListener('DOMContentLoaded', () => {
             link_letterboxd: 'Letterboxd',
             link_tiktok: 'TikTok',
             song_card_label: 'A MÚSICA',
+            alternatives_title: 'MAIS COMO ESTE',
             btn_new_search: '← NOVA BUSCA',
             error_title: 'ALGO DEU ERRADO',
             error_message: "Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.",
@@ -183,8 +185,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const loadingText = document.getElementById('loading-text');
     const errorMessage = document.getElementById('error-message');
     const btnRetry = document.getElementById('btn-retry');
-    const audioPreview = document.getElementById('res-audio-preview');
-    const audioBtn = document.getElementById('res-audio-btn');
     const btnAddSong = document.getElementById('btn-add-song');
     const extraSongsContainer = document.getElementById('extra-songs-container');
     const MAX_SONGS = 3;
@@ -230,11 +230,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function pararAudio() {
-        if (audioPreview && !audioPreview.paused) {
-            audioPreview.pause();
-            audioPreview.currentTime = 0;
-        }
-        if (audioBtn) audioBtn.classList.remove('playing');
+        // Pausa todos os players de áudio dinâmicos dos cards de música
+        document.querySelectorAll('.song-card audio').forEach(audio => {
+            if (!audio.paused) {
+                audio.pause();
+                audio.currentTime = 0;
+            }
+        });
+        document.querySelectorAll('.song-card .audio-preview-btn').forEach(btn => {
+            btn.classList.remove('playing');
+        });
     }
 
     function switchView(targetView, viaUI = false) {
@@ -649,40 +654,77 @@ document.addEventListener('DOMContentLoaded', () => {
         const elOrigTitle = document.getElementById('res-original-title');
         if (elOrigTitle) elOrigTitle.textContent = safeStr(movie.original_title);
 
-        // Song Card
-        const elSongTitle = document.getElementById('res-song-title');
-        if (elSongTitle) elSongTitle.textContent = song;
-
-        const elSongArtist = document.getElementById('res-song-artist');
-        if (elSongArtist) {
-            elSongArtist.textContent = artist;
-            elSongArtist.style.display = artist ? '' : 'none';
-        }
-
-        const elSongCover = document.getElementById('res-song-cover');
-        if (elSongCover) {
-            const coverUrl = movie.cover_url;
-            if (coverUrl) {
-                elSongCover.src = coverUrl;
-                elSongCover.style.display = '';
-            } else {
-                elSongCover.removeAttribute('src');
-                elSongCover.style.display = 'none';
-            }
-        }
-
-        // Audio Preview
-        if (audioPreview && audioBtn) {
-            const audioUrl = movie.audio_preview_url;
-            if (audioUrl) {
-                audioPreview.src = audioUrl;
-                audioBtn.style.display = 'inline-flex';
-                audioBtn.classList.remove('playing');
-            } else {
-                pararAudio();
-                audioPreview.removeAttribute('src');
-                audioBtn.style.display = 'none';
-            }
+        // Songs List (múltiplas músicas: principal + extras)
+        const songsList = document.getElementById('res-songs-list');
+        if (songsList) {
+            songsList.innerHTML = '';
+            const songs = safeArr(data && data.songs);
+            const songsToRender = songs.length > 0 ? songs : [{ title: song, artist: artist, cover_url: movie.cover_url, audio_preview_url: movie.audio_preview_url }];
+            songsToRender.forEach((s, index) => {
+                const card = document.createElement('div');
+                card.className = 'song-card';
+                const cover = document.createElement('img');
+                cover.className = 'song-card-cover';
+                cover.alt = '';
+                const coverUrl = safeStr(s.cover_url);
+                if (coverUrl) {
+                    cover.src = coverUrl;
+                } else {
+                    cover.style.display = 'none';
+                }
+                const info = document.createElement('div');
+                info.className = 'song-card-info';
+                const label = document.createElement('p');
+                label.className = 'song-card-label';
+                label.textContent = i18n[lang]?.song_card_label || 'THE SONG';
+                const titleEl = document.createElement('p');
+                titleEl.className = 'song-card-title';
+                titleEl.textContent = safeStr(s.title) || song;
+                const artistEl = document.createElement('p');
+                artistEl.className = 'song-card-artist';
+                artistEl.textContent = safeStr(s.artist);
+                artistEl.style.display = safeStr(s.artist) ? '' : 'none';
+                info.appendChild(label);
+                info.appendChild(titleEl);
+                info.appendChild(artistEl);
+                card.appendChild(cover);
+                card.appendChild(info);
+                const audioUrl = safeStr(s.audio_preview_url);
+                if (audioUrl) {
+                    const audio = document.createElement('audio');
+                    audio.preload = 'none';
+                    audio.src = audioUrl;
+                    const btn = document.createElement('button');
+                    btn.className = 'audio-preview-btn';
+                    btn.setAttribute('aria-label', lang === 'pt' ? 'Reproduzir prévia de áudio' : 'Play audio preview');
+                    const playIcon = document.createElement('span');
+                    playIcon.className = 'play-icon';
+                    playIcon.setAttribute('aria-hidden', 'true');
+                    const btnLabel = document.createElement('span');
+                    btnLabel.className = 'audio-btn-label';
+                    btnLabel.textContent = lang === 'pt' ? 'PRÉVIA' : 'PREVIEW';
+                    btn.appendChild(playIcon);
+                    btn.appendChild(btnLabel);
+                    btn.addEventListener('click', () => {
+                        if (audio.paused) {
+                            audio.play().then(() => {
+                                btn.classList.add('playing');
+                            }).catch(err => {
+                                console.error('Falha ao reproduzir prévia:', err);
+                            });
+                        } else {
+                            audio.pause();
+                            btn.classList.remove('playing');
+                        }
+                    });
+                    audio.addEventListener('ended', () => {
+                        btn.classList.remove('playing');
+                    });
+                    card.appendChild(audio);
+                    card.appendChild(btn);
+                }
+                songsList.appendChild(card);
+            });
         }
 
         // Poster & Text
@@ -784,6 +826,26 @@ document.addEventListener('DOMContentLoaded', () => {
                     card.appendChild(call);
                     card.appendChild(title);
                     card.appendChild(meta);
+                    // Links externos (IMDb e Letterboxd) baseados no título e ano
+                    const altTitle = safeStr(alt.titulo);
+                    const altYear = safeStr(alt.ano);
+                    const linksWrap = document.createElement('div');
+                    linksWrap.className = 'alt-links';
+                    const imdbLink = document.createElement('a');
+                    imdbLink.className = 'alt-link';
+                    imdbLink.target = '_blank';
+                    imdbLink.rel = 'noopener noreferrer';
+                    imdbLink.textContent = 'IMDb';
+                    imdbLink.href = `https://www.imdb.com/find?q=${encodeURIComponent(altTitle + (altYear ? ' ' + altYear : ''))}`;
+                    const lbLink = document.createElement('a');
+                    lbLink.className = 'alt-link';
+                    lbLink.target = '_blank';
+                    lbLink.rel = 'noopener noreferrer';
+                    lbLink.textContent = 'Letterboxd';
+                    lbLink.href = `https://letterboxd.com/search/${encodeURIComponent(altTitle + (altYear ? ' ' + altYear : ''))}/`;
+                    linksWrap.appendChild(imdbLink);
+                    linksWrap.appendChild(lbLink);
+                    card.appendChild(linksWrap);
                     alternativesGrid.appendChild(card);
                 });
                 alternativesSection.style.display = '';
@@ -844,25 +906,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- Event Listeners ---
-
-    if (audioBtn) {
-        audioBtn.addEventListener('click', () => {
-            if (!audioPreview) return;
-            if (audioPreview.paused) {
-                audioPreview.play().then(() => {
-                    audioBtn.classList.add('playing');
-                }).catch(err => {
-                    console.error('Falha ao reproduzir prévia:', err);
-                });
-            } else {
-                audioPreview.pause();
-                audioBtn.classList.remove('playing');
-            }
-        });
-        audioPreview.addEventListener('ended', () => {
-            audioBtn.classList.remove('playing');
-        });
-    }
 
     // Tenta extrair artista do texto digitado livremente usando separadores comuns.
     // Último recurso quando o LRCLIB não retorna nada.

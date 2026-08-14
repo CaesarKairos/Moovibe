@@ -1138,33 +1138,36 @@ h1, h2, h3, h4, .font-display {
 /* ==========================================================================
    Alternatives (sugestões de filmes alternativos)
    ========================================================================== */
-/* Alternativas compactas dentro do editorial-block */
+/* Card independente (irmão do editorial-block), sem linha divisória */
 .alternatives-section {
-    margin-top: 2rem;
-    padding-top: 1.5rem;
-    border-top: 2px solid var(--text-dark);
+    margin-top: 3rem;
+    padding: 2rem;
+    background: var(--bg-paper);
+    border: var(--brutalist-border);
+    box-shadow: var(--brutalist-shadow);
+    position: relative;
 }
 
 .alternatives-title {
     font-family: var(--font-display);
-    font-size: 1.2rem;
-    margin-bottom: 1rem;
+    font-size: 1.4rem;
+    margin-bottom: 1.25rem;
 }
 
 .alternatives-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 0.75rem;
+    gap: 1rem;
 }
 
 .alternative-card {
     background: #fff;
     border: 1px solid var(--text-dark);
     box-shadow: 2px 2px 0px var(--text-dark);
-    padding: 0.5rem;
+    padding: 0.75rem;
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: 0.5rem;
     transition: var(--transition);
 }
 
@@ -1184,23 +1187,66 @@ h1, h2, h3, h4, .font-display {
 
 .alternative-card .alt-call {
     font-family: var(--font-mono);
-    font-size: 0.55rem;
+    font-size: 0.8rem;
     font-style: italic;
     color: var(--accent-red);
-    line-height: 1.2;
+    line-height: 1.4;
 }
 
 .alternative-card .alt-title {
     font-family: var(--font-display);
-    font-size: 0.75rem;
+    font-size: 0.85rem;
     text-transform: uppercase;
-    line-height: 1.1;
+    line-height: 1.2;
 }
 
 .alternative-card .alt-meta {
     font-family: var(--font-mono);
-    font-size: 0.6rem;
+    font-size: 0.7rem;
     color: #555;
+}
+
+.alternative-card .alt-links {
+    display: flex;
+    gap: 12px;
+    margin-top: 0.25rem;
+    padding-top: 0.5rem;
+    border-top: 1px dashed rgba(0,0,0,0.15);
+}
+
+.alternative-card .alt-link {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dark);
+    text-decoration: none;
+    transition: color 0.2s;
+}
+
+.alternative-card .alt-link:hover {
+    color: var(--accent-red);
+    text-decoration: underline;
+}
+
+.alternative-card .alt-link:focus-visible {
+    outline: 2px dashed var(--accent-red);
+    outline-offset: 3px;
+}
+
+/* ==========================================================================
+   Songs List (múltiplas músicas na tela de resultado)
+   ========================================================================== */
+.songs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    margin-top: 1.5rem;
+}
+
+.songs-list .song-card {
+    margin-top: 0;
 }
 
 /* ==========================================================================
@@ -1529,7 +1575,7 @@ h1, h2, h3, h4, .font-display {
     /* Alternatives */
     .alternatives-section {
         margin-top: 1.5rem;
-        padding-top: 1rem;
+        padding: 1.25rem;
     }
     .alternatives-title {
         font-size: 1.1rem;
@@ -1540,15 +1586,18 @@ h1, h2, h3, h4, .font-display {
         gap: 0.5rem;
     }
     .alternative-card {
-        padding: 0.4rem;
+        padding: 0.5rem;
     }
     .alternative-card .alt-call {
-        font-size: 0.5rem;
-    }
-    .alternative-card .alt-title {
         font-size: 0.7rem;
     }
+    .alternative-card .alt-title {
+        font-size: 0.75rem;
+    }
     .alternative-card .alt-meta {
-        font-size: 0.55rem;
+        font-size: 0.65rem;
+    }
+    .alternative-card .alt-link {
+        font-size: 0.65rem;
     }
 }
