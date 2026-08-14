@@ -1140,8 +1140,9 @@ h1, h2, h3, h4, .font-display {
    ========================================================================== */
 /* Card independente (irmão do editorial-block), sem linha divisória */
 .alternatives-section {
-    margin-top: 3rem;
-    padding: 2rem;
+    margin-top: -2rem;      /* sobe para preencher o espaço ocioso abaixo da descrição principal */
+    max-width: 560px;       /* restrição estrita de largura */
+    padding: 1.5rem;
     background: var(--bg-paper);
     border: var(--brutalist-border);
     box-shadow: var(--brutalist-shadow);
@@ -1150,13 +1151,13 @@ h1, h2, h3, h4, .font-display {
 
 .alternatives-title {
     font-family: var(--font-display);
-    font-size: 1.4rem;
-    margin-bottom: 1.25rem;
+    font-size: 1rem;        /* menor que o título do filme principal */
+    margin-bottom: 1rem;
 }
 
 .alternatives-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, 160px);  /* colunas fixas = miniaturas */
     gap: 1rem;
 }
 
@@ -1178,6 +1179,7 @@ h1, h2, h3, h4, .font-display {
 
 .alternative-card img {
     width: 100%;
+    max-width: 140px;       /* miniatura, não pôster de tamanho real */
     aspect-ratio: 2/3;
     object-fit: cover;
     border: 1px solid #ccc;
@@ -1574,7 +1576,8 @@ h1, h2, h3, h4, .font-display {
 
     /* Alternatives */
     .alternatives-section {
-        margin-top: 1.5rem;
+        margin-top: 1.5rem;     /* sem margem negativa no mobile */
+        max-width: 100%;
         padding: 1.25rem;
     }
     .alternatives-title {
@@ -1582,7 +1585,7 @@ h1, h2, h3, h4, .font-display {
         margin-bottom: 0.75rem;
     }
     .alternatives-grid {
-        grid-template-columns: repeat(2, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 120px));
         gap: 0.5rem;
     }
     .alternative-card {
