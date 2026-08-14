@@ -211,6 +211,9 @@ h1, h2, h3, h4, .font-display {
     min-height: calc(100vh - 100px);
     padding: 3rem 4rem 6rem;
     padding-right: calc(4rem + 40px); /* Account for film strip */
+    max-width: 100%;
+    overflow-x: hidden;
+    box-sizing: border-box;
 }
 
 .view-section.active {
@@ -231,6 +234,12 @@ h1, h2, h3, h4, .font-display {
     gap: 4rem;
     align-items: center;
     margin-top: 2rem;
+    width: 100%;
+    max-width: 100%;
+}
+
+.hero-container > * {
+    min-width: 0;  /* previne overflow horizontal dos filhos do grid */
 }
 
 .brutalist-card {
@@ -492,6 +501,12 @@ h1, h2, h3, h4, .font-display {
     grid-template-columns: 1fr 1.2fr 1fr;
     gap: 3rem;
     align-items: start;
+    width: 100%;
+    max-width: 100%;
+}
+
+.results-layout > * {
+    min-width: 0;  /* previne overflow horizontal dos filhos do grid */
 }
 
 /* Editorial Block */
@@ -1141,12 +1156,14 @@ h1, h2, h3, h4, .font-display {
 /* Card independente (irmão do editorial-block), sem linha divisória */
 .alternatives-section {
     margin-top: -2rem;      /* sobe para preencher o espaço ocioso abaixo da descrição principal */
-    max-width: 560px;       /* restrição estrita de largura */
+    width: 100%;            /* mesma largura do container acima (results-layout) */
+    max-width: 100%;        /* sem restrição de largura fixa */
     padding: 1.5rem;
     background: var(--bg-paper);
     border: var(--brutalist-border);
     box-shadow: var(--brutalist-shadow);
     position: relative;
+    box-sizing: border-box;
 }
 
 .alternatives-title {
@@ -1157,8 +1174,9 @@ h1, h2, h3, h4, .font-display {
 
 .alternatives-grid {
     display: grid;
-    grid-template-columns: repeat(2, 160px);  /* colunas fixas = miniaturas */
+    grid-template-columns: repeat(2, 1fr);  /* os 2 filmes dividem o espaço meio a meio */
     gap: 1rem;
+    width: 100%;
 }
 
 .alternative-card {
@@ -1170,6 +1188,9 @@ h1, h2, h3, h4, .font-display {
     flex-direction: column;
     gap: 0.5rem;
     transition: var(--transition);
+    min-width: 0;           /* permite que o card encolha dentro do grid */
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .alternative-card:hover {
@@ -1179,7 +1200,7 @@ h1, h2, h3, h4, .font-display {
 
 .alternative-card img {
     width: 100%;
-    max-width: 140px;       /* miniatura, não pôster de tamanho real */
+    max-width: 100%;        /* preenche todo o card, sem largura fixa */
     aspect-ratio: 2/3;
     object-fit: cover;
     border: 1px solid #ccc;
@@ -1210,6 +1231,7 @@ h1, h2, h3, h4, .font-display {
 
 .alternative-card .alt-links {
     display: flex;
+    flex-wrap: wrap;
     gap: 12px;
     margin-top: 0.25rem;
     padding-top: 0.5rem;
@@ -1585,8 +1607,8 @@ h1, h2, h3, h4, .font-display {
         margin-bottom: 0.75rem;
     }
     .alternatives-grid {
-        grid-template-columns: repeat(2, minmax(0, 120px));
-        gap: 0.5rem;
+        grid-template-columns: 1fr;  /* empilha os 2 filmes em 1 coluna no mobile */
+        gap: 0.75rem;
     }
     .alternative-card {
         padding: 0.5rem;
