@@ -300,7 +300,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (songInput) songInput.value = '';
         artistaResolvido = '';
         if (songLrclibIdInput) songLrclibIdInput.value = '';
-        closeSuggestions();
+        if (songSuggestions) {
+            songSuggestions.classList.remove('active');
+            songSuggestions.innerHTML = '';
+        }
         // Remove todos os campos extras
         if (extraSongsContainer) extraSongsContainer.innerHTML = '';
         extraSongCount = 0;
@@ -334,6 +337,14 @@ document.addEventListener('DOMContentLoaded', () => {
         extraSongCount++;
         extraSongInputs.push(input);
         if (extraSongCount >= MAX_SONGS - 1 && btnAddSong) btnAddSong.disabled = true;
+        // Cria um dropdown de autocomplete para este campo extra
+        const dropdown = document.createElement('div');
+        dropdown.className = 'autocomplete-dropdown';
+        dropdown.setAttribute('role', 'listbox');
+        dropdown.setAttribute('aria-label', lang === 'pt' ? 'Sugestões de música' : 'Music suggestions');
+        row.appendChild(dropdown);
+        // Configura o autocomplete (mesma função de pesquisa do campo principal)
+        setupAutocomplete(input, dropdown);
         input.focus();
     }
 
@@ -350,95 +361,92 @@ document.addEventListener('DOMContentLoaded', () => {
     // Replica a interação de barra de busca de app de streaming: o usuário
     // digita algumas letras e vê sugestões aparecendo embaixo do campo.
     // A fonte é o LRCLIB (proxy /lrclib-search no backend), sem dependência paga.
-    let autocompleteItems = [];
-    let autocompleteIndex = -1;
-    let autocompleteTimer = null;
+    // A função setupAutocomplete é reutilizável: funciona no campo principal
+    // e também nos campos extras adicionados pelo botão "+".
 
-    function closeSuggestions() {
-        if (songSuggestions) {
-            songSuggestions.classList.remove('active');
-            songSuggestions.innerHTML = '';
+    function setupAutocomplete(input, dropdown, onSelect) {
+        if (!input || !dropdown) return;
+        let autocompleteItems = [];
+        let autocompleteIndex = -1;
+        let autocompleteTimer = null;
+
+        function closeSuggestions() {
+            dropdown.classList.remove('active');
+            dropdown.innerHTML = '';
+            autocompleteItems = [];
+            autocompleteIndex = -1;
         }
-        autocompleteItems = [];
-        autocompleteIndex = -1;
-    }
 
-    function selectSuggestion(item) {
-        if (!item) return;
-        if (songInput) songInput.value = item.trackName || '';
-        artistaResolvido = item.artistName || '';
-        if (songLrclibIdInput) songLrclibIdInput.value = String(item.id || '');
-        closeSuggestions();
-    }
-
-    function updateHighlight() {
-        if (!songSuggestions) return;
-        const els = songSuggestions.querySelectorAll('.autocomplete-item');
-        els.forEach((el, i) => {
-            el.classList.toggle('selected', i === autocompleteIndex);
-        });
-        if (autocompleteIndex >= 0 && els[autocompleteIndex]) {
-            els[autocompleteIndex].scrollIntoView({ block: 'nearest' });
-        }
-    }
-
-    function renderSuggestions(items) {
-        if (!songSuggestions) return;
-        autocompleteItems = items;
-        autocompleteIndex = -1;
-        songSuggestions.innerHTML = '';
-        if (!items || items.length === 0) {
-            // Graceful degradation: se não retornar nada, simplesmente não mostra
+        function selectSuggestion(item) {
+            if (!item) return;
+            input.value = item.trackName || '';
+            if (onSelect) onSelect(item);
             closeSuggestions();
-            return;
         }
-        items.forEach((item, index) => {
-            const div = document.createElement('div');
-            div.className = 'autocomplete-item';
-            div.setAttribute('role', 'option');
-            div.dataset.index = String(index);
 
-            const title = document.createElement('div');
-            title.className = 'ac-title';
-            title.textContent = item.trackName || '';
-
-            const artist = document.createElement('div');
-            artist.className = 'ac-artist';
-            artist.textContent = item.artistName || '';
-
-            div.appendChild(title);
-            div.appendChild(artist);
-            div.addEventListener('click', () => selectSuggestion(item));
-            div.addEventListener('mousemove', () => {
-                autocompleteIndex = index;
-                updateHighlight();
+        function updateHighlight() {
+            const els = dropdown.querySelectorAll('.autocomplete-item');
+            els.forEach((el, i) => {
+                el.classList.toggle('selected', i === autocompleteIndex);
             });
-            songSuggestions.appendChild(div);
-        });
-        songSuggestions.classList.add('active');
-    }
+            if (autocompleteIndex >= 0 && els[autocompleteIndex]) {
+                els[autocompleteIndex].scrollIntoView({ block: 'nearest' });
+            }
+        }
 
-    async function fetchSuggestions(termo) {
-        try {
-            const resp = await fetch('/lrclib-search?q=' + encodeURIComponent(termo));
-            if (!resp.ok) {
+        function renderSuggestions(items) {
+            autocompleteItems = items;
+            autocompleteIndex = -1;
+            dropdown.innerHTML = '';
+            if (!items || items.length === 0) {
+                // Graceful degradation: se não retornar nada, simplesmente não mostra
                 closeSuggestions();
                 return;
             }
-            const data = await resp.json();
-            const items = Array.isArray(data.items) ? data.items : [];
-            renderSuggestions(items);
-        } catch (err) {
-            // Graceful degradation: se falhar, o campo funciona como digitação livre normal
-            closeSuggestions();
-        }
-    }
+            items.forEach((item, index) => {
+                const div = document.createElement('div');
+                div.className = 'autocomplete-item';
+                div.setAttribute('role', 'option');
+                div.dataset.index = String(index);
 
-    if (songInput) {
-        songInput.addEventListener('input', () => {
-            // Usuário digitou manualmente → não é mais uma sugestão escolhida
-            if (songLrclibIdInput) songLrclibIdInput.value = '';
-            const termo = songInput.value.trim();
+                const title = document.createElement('div');
+                title.className = 'ac-title';
+                title.textContent = item.trackName || '';
+
+                const artist = document.createElement('div');
+                artist.className = 'ac-artist';
+                artist.textContent = item.artistName || '';
+
+                div.appendChild(title);
+                div.appendChild(artist);
+                div.addEventListener('click', () => selectSuggestion(item));
+                div.addEventListener('mousemove', () => {
+                    autocompleteIndex = index;
+                    updateHighlight();
+                });
+                dropdown.appendChild(div);
+            });
+            dropdown.classList.add('active');
+        }
+
+        async function fetchSuggestions(termo) {
+            try {
+                const resp = await fetch('/lrclib-search?q=' + encodeURIComponent(termo));
+                if (!resp.ok) {
+                    closeSuggestions();
+                    return;
+                }
+                const data = await resp.json();
+                const items = Array.isArray(data.items) ? data.items : [];
+                renderSuggestions(items);
+            } catch (err) {
+                // Graceful degradation: se falhar, o campo funciona como digitação livre normal
+                closeSuggestions();
+            }
+        }
+
+        input.addEventListener('input', () => {
+            const termo = input.value.trim();
             closeSuggestions();
             // Só dispara a partir de 2 caracteres, pra não bombardear o endpoint
             if (termo.length < 2) return;
@@ -449,8 +457,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }, 350);
         });
 
-        songInput.addEventListener('keydown', (e) => {
-            if (!songSuggestions || !songSuggestions.classList.contains('active')) return;
+        input.addEventListener('keydown', (e) => {
+            if (!dropdown.classList.contains('active')) return;
             if (e.key === 'ArrowDown') {
                 e.preventDefault();
                 autocompleteIndex = Math.min(autocompleteIndex + 1, autocompleteItems.length - 1);
@@ -468,15 +476,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 closeSuggestions();
             }
         });
+
+        // Fecha o dropdown ao clicar fora
+        document.addEventListener('click', (e) => {
+            const group = input.closest('.autocomplete-group') || input.parentElement;
+            if (group && group.contains(e.target)) return;
+            closeSuggestions();
+        });
+
+        return { closeSuggestions };
     }
 
-    // Fecha o dropdown ao clicar fora
-    document.addEventListener('click', (e) => {
-        if (!songSuggestions) return;
-        const group = songInput && songInput.closest('.autocomplete-group');
-        if (group && group.contains(e.target)) return;
-        closeSuggestions();
-    });
+    // Configura o autocomplete do campo principal
+    if (songInput && songSuggestions) {
+        setupAutocomplete(songInput, songSuggestions, (item) => {
+            artistaResolvido = item.artistName || '';
+            if (songLrclibIdInput) songLrclibIdInput.value = String(item.id || '');
+        });
+    }
 
     async function loadHallOfFame() {
         const grid = document.getElementById('hall-grid');
@@ -953,7 +970,10 @@ document.addEventListener('DOMContentLoaded', () => {
             songInput.value = e.target.textContent;
             artistaResolvido = '';
             if (songLrclibIdInput) songLrclibIdInput.value = '';
-            closeSuggestions();
+            if (songSuggestions) {
+                songSuggestions.classList.remove('active');
+                songSuggestions.innerHTML = '';
+            }
         });
     });
 

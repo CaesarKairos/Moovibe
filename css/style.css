@@ -1056,16 +1056,17 @@ h1, h2, h3, h4, .font-display {
     gap: 8px;
     align-items: center;
     margin-bottom: 0.75rem;
+    position: relative;
 }
 
 .extra-song-row .extra-song-input {
     flex: 1;
     min-width: 0;
-    padding: 0.75rem;
+    padding: 1rem;
     background-color: #eee9d8;
     border: var(--brutalist-border);
     font-family: var(--font-body);
-    font-size: 1rem;
+    font-size: 1.2rem;
     font-style: italic;
     color: var(--text-dark);
 }
@@ -1082,22 +1083,34 @@ h1, h2, h3, h4, .font-display {
 
 .remove-song-btn {
     flex-shrink: 0;
-    width: 36px;
-    height: 36px;
-    background: transparent;
-    color: var(--accent-red);
+    width: 48px;
+    background: var(--accent-gold);
+    color: var(--text-dark);
     font-family: var(--font-display);
-    font-size: 1.2rem;
+    font-size: 1.6rem;
     font-weight: bold;
-    border: 1px solid var(--accent-red);
+    border: var(--brutalist-border);
+    box-shadow: 3px 3px 0px var(--text-dark);
     cursor: pointer;
     transition: var(--transition);
     line-height: 1;
 }
 
 .remove-song-btn:hover {
-    background: var(--accent-red);
-    color: var(--bg-paper);
+    transform: translate(-2px, -2px);
+    box-shadow: 5px 5px 0px var(--text-dark);
+}
+
+.remove-song-btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: 1px 1px 0px var(--text-dark);
+}
+
+/* Dropdown de autocomplete nos campos extras: alinhado ao input,
+   descontando o botão de remover (48px) + gap (8px) */
+.extra-song-row .autocomplete-dropdown {
+    left: 0;
+    right: 56px;
 }
 
 /* ==========================================================================
@@ -1475,9 +1488,8 @@ h1, h2, h3, h4, .font-display {
         padding: 0.65rem;
     }
     .remove-song-btn {
-        width: 32px;
-        height: 32px;
-        font-size: 1rem;
+        width: 44px;
+        font-size: 1.4rem;
     }
 
     /* Alternatives */
