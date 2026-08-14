@@ -754,7 +754,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // Alternatives (sugestões de filmes alternativos)
-        const alternatives = safeArr(movie.alternatives);
+        const alternatives = safeArr(movie.alternatives).slice(0, 2);
         if (alternativesSection && alternativesGrid) {
             alternativesGrid.innerHTML = '';
             if (alternatives.length > 0) {

@@ -626,7 +626,7 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
         "nesse campo. Por exemplo, retorne 'The Great Gatsby' e NUNCA 'The Great Gatsby 2013'. "
         "O ano de lancamento deve habitar estritamente e apenas o campo 'ano' do JSON.\n\n"
 
-        "SUGESTOES ALTERNATIVAS: Alem do filme principal, sugira 3 filmes alternativos que tambem combinem "
+        "SUGESTOES ALTERNATIVAS: Alem do filme principal, sugira EXATAMENTE 2 filmes alternativos que tambem combinem "
         "com a vibe das musicas, mas que sejam diferentes do filme principal. Cada alternativa deve ter: "
         "'chamada' (uma frase curta e convidativa, ex: 'Se voce quer algo mais divertido'), 'titulo' "
         "(nome do filme SEM ano), 'ano' (4 digitos), 'diretor' (nome do diretor). Nao inclua sinopses longas.\n\n"
@@ -639,8 +639,7 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
         f'  "justificativa": "Uma explicacao poetica, profunda e envolvente ({idioma_justificativa}) conectando sentimentos da musica/letra com o filme.",\n'
         '  "alternativas": [\n'
         '    {"chamada": "Frase curta convidativa", "titulo": "Nome do filme alternativo SEM ano", "ano": "2020", "diretor": "Nome do diretor"},\n'
-        '    {"chamada": "Frase curta convidativa", "titulo": "Nome do filme alternativo SEM ano", "ano": "2018", "diretor": "Nome do diretor"},\n'
-        '    {"chamada": "Frase curta convidativa", "titulo": "Nome do filme alternativo SEM ano", "ano": "2015", "diretor": "Nome do diretor"}\n'
+        '    {"chamada": "Frase curta convidativa", "titulo": "Nome do filme alternativo SEM ano", "ano": "2018", "diretor": "Nome do diretor"}\n'
         "  ]\n"
         "}"
     )
