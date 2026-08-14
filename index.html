@@ -240,12 +240,12 @@
                     <div class="hiw-step">
                         <div class="step-number">01</div>
                         <h3 data-i18n="step1_title">INGEST: lyrics + context</h3>
-                        <p data-i18n="step1_text">We take your song and pull together lyrics and meaning from multiple sources—LRCLIB, Genius, Brave Search, and Wikipedia PT—so the recommendation has real musical context, not just a title match.</p>
+                        <p data-i18n="step1_text">We take your song and pull together lyrics and meaning from multiple sources—LRCLIB, Genius, DuckDuckGo, Wikipedia PT/EN, and Brave Search—so the recommendation has real musical context, not just a title match. The result is cached for 30 days to avoid repeating the same lookups.</p>
                     </div>
                     <div class="hiw-step">
                         <div class="step-number">02</div>
-                        <h3 data-i18n="step2_title">ENRICH: songfacts + cover art</h3>
-                        <p data-i18n="step2_text">We then add real artist-curated facts from Songfacts and fetch the album cover from Apple Music. These extras help the model understand the song’s actual vibe, backstory, and visual identity.</p>
+                        <h3 data-i18n="step2_title">ENRICH: cover + audio preview</h3>
+                        <p data-i18n="step2_text">We fetch the album cover and a short audio preview from Apple Music, with fallbacks to Deezer and MusicBrainz + Cover Art Archive. These extras give the model a concrete visual and sonic reference for the song’s identity.</p>
                     </div>
                     <div class="hiw-step">
                         <div class="step-number">03</div>
@@ -254,8 +254,8 @@
                     </div>
                     <div class="hiw-step">
                         <div class="step-number">04</div>
-                        <h3 data-i18n="step4_title">PERSIST + render</h3>
-                        <p data-i18n="step4_text">The final match is stored in Cloudflare KV history and rendered as poster, stills, quotes, and links. The same logic also runs in the local Python terminal version.</p>
+                        <h3 data-i18n="step4_title">PERSIST + share</h3>
+                        <p data-i18n="step4_text">The final match is stored in Cloudflare KV history and rendered as poster, stills, quotes, and links. A share link with dynamic Open Graph is generated so the movie poster and synopsis appear when shared on social media. The same logic also runs in the local Python terminal version.</p>
                     </div>
                 </div>
             </div>
