@@ -53,7 +53,7 @@ document.addEventListener('DOMContentLoaded', () => {
             about_p4: "If this experience made you feel something cool, found an amazing film for your night, or simply liked the idea, consider following me on social media or supporting the project somehow. And if you're a developer, the source code is open waiting for you on my GitHub."
         },
         pt: {
-            hero_eyebrow: '<span class="red-line"></span> O CINEMA ESTAVA SEMPRE DENTRO DA MÚSICA',
+            hero_eyebrow: '<span class="red-line"></span> O CINEMA ESTEVES SEMPRE DENTRO DA MÚSICA',
             hero_subtitle: '<em>Cada música já tem um filme.</em> <strong>Nós encontramos.</strong>',
             label_song: 'TÍTULO DA MÚSICA (ESCREVA CORRETAMENTE)',
             btn_find: 'ENCONTRAR MEU FILME →',

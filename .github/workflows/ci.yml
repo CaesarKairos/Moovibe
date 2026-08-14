@@ -25,7 +25,7 @@ jobs:
 
       - name: Run test_style.py
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
-          GENIUS_API_KEY: ${{ secrets.GENIUS_API_KEY }}
-        run: python test_style.py
+          OPENROUTER_API_KEY: "${{ secrets.OPENROUTER_API_KEY }}"
+          TMDB_API_KEY: "${{ secrets.TMDB_API_KEY }}"
+          GENIUS_API_KEY: "${{ secrets.GENIUS_API_KEY }}"
+        run: python tests/test_style.py

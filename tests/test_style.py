@@ -3,8 +3,8 @@
 import sys
 import os
 
-# Adiciona o diretório atual ao path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Adiciona a raiz do projeto ao path (um nível acima de tests/)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import (
     buscar_letra_musica,

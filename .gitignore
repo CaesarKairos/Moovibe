@@ -1,8 +1,8 @@
 # Arquivos do projeto
 CONTEXT.md
-test_style.py
+
+# Scripts de teste pessoais/exploratórios que não fazem parte do CI (não confundir com tests/, que é rastreado)
 test_lyrics_pipeline.py
-test_genius_layer.py
 test_moovibe.py
 
 # Variáveis de ambiente
@@ -40,7 +40,3 @@ Thumbs.db
 
 # Cloudflare Wrangler (cache/build local)
 .wrangler/
-
-# Arquivos do sistema
-.DS_Store
-Thumbs.db
