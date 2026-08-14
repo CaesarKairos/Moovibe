@@ -89,7 +89,9 @@
                             <label for="song-title" data-i18n="label_song">SONG TITLE (WRITE CORRECTLY)</label>
                             <div class="song-input-row">
                                 <input type="text" id="song-title" placeholder='Ex: "Bohemian Rhapsody" ou "Bohemian Rhapsody - Queen"' required autocomplete="off">
-                                <button type="button" id="btn-add-song" class="add-song-btn" aria-label="Add another song" title="Add another song">+</button>
+                                <button type="button" id="btn-add-song" class="add-song-btn" aria-label="Add another song" title="Add another song">
+                                    <img src="/images/plus.svg" alt="" width="24" height="24" aria-hidden="true">
+                                </button>
                             </div>
                             <input type="hidden" id="song-lrclib-id" value="">
                             <div id="song-suggestions" class="autocomplete-dropdown" role="listbox" aria-label="Music suggestions"></div>

@@ -1022,6 +1022,9 @@ h1, h2, h3, h4, .font-display {
 .add-song-btn {
     flex-shrink: 0;
     width: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     background: var(--accent-gold);
     color: var(--text-dark);
     font-family: var(--font-display);
@@ -1032,6 +1035,14 @@ h1, h2, h3, h4, .font-display {
     cursor: pointer;
     transition: var(--transition);
     line-height: 1;
+}
+
+.add-song-btn svg,
+.add-song-btn img {
+    width: 24px;
+    height: 24px;
+    flex-shrink: 0;
+    pointer-events: none;
 }
 
 .add-song-btn:hover {
@@ -1054,7 +1065,7 @@ h1, h2, h3, h4, .font-display {
 .extra-song-row {
     display: flex;
     gap: 8px;
-    align-items: center;
+    align-items: stretch;
     margin-bottom: 0.75rem;
     position: relative;
 }
@@ -1084,6 +1095,9 @@ h1, h2, h3, h4, .font-display {
 .remove-song-btn {
     flex-shrink: 0;
     width: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     background: var(--accent-gold);
     color: var(--text-dark);
     font-family: var(--font-display);
@@ -1094,6 +1108,14 @@ h1, h2, h3, h4, .font-display {
     cursor: pointer;
     transition: var(--transition);
     line-height: 1;
+}
+
+.remove-song-btn svg,
+.remove-song-btn img {
+    width: 24px;
+    height: 24px;
+    flex-shrink: 0;
+    pointer-events: none;
 }
 
 .remove-song-btn:hover {
@@ -1482,16 +1504,26 @@ h1, h2, h3, h4, .font-display {
         width: 44px;
         font-size: 1.4rem;
     }
+    .add-song-btn svg,
+    .add-song-btn img {
+        width: 20px;
+        height: 20px;
+    }
     .extra-song-row {
         gap: 6px;
     }
     .extra-song-row .extra-song-input {
-        font-size: 0.9rem;
-        padding: 0.65rem;
+        font-size: 1rem;
+        padding: 0.85rem;
     }
     .remove-song-btn {
         width: 44px;
         font-size: 1.4rem;
+    }
+    .remove-song-btn svg,
+    .remove-song-btn img {
+        width: 20px;
+        height: 20px;
     }
 
     /* Alternatives */

@@ -323,8 +323,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'remove-song-btn';
-        removeBtn.textContent = '×';
         removeBtn.setAttribute('aria-label', lang === 'pt' ? 'Remover música' : 'Remove song');
+        const removeIcon = document.createElement('img');
+        removeIcon.src = '/images/x.svg';
+        removeIcon.alt = '';
+        removeIcon.width = 24;
+        removeIcon.height = 24;
+        removeIcon.setAttribute('aria-hidden', 'true');
+        removeBtn.appendChild(removeIcon);
         removeBtn.addEventListener('click', () => {
             row.remove();
             extraSongCount--;
