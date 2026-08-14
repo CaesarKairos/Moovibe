@@ -87,10 +87,15 @@
                     <form id="search-form">
                         <div class="input-group autocomplete-group">
                             <label for="song-title" data-i18n="label_song">SONG TITLE (WRITE CORRECTLY)</label>
-                            <input type="text" id="song-title" placeholder='Ex: "Bohemian Rhapsody" ou "Bohemian Rhapsody - Queen"' required autocomplete="off">
+                            <div class="song-input-row">
+                                <input type="text" id="song-title" placeholder='Ex: "Bohemian Rhapsody" ou "Bohemian Rhapsody - Queen"' required autocomplete="off">
+                                <button type="button" id="btn-add-song" class="add-song-btn" aria-label="Add another song" title="Add another song">+</button>
+                            </div>
                             <input type="hidden" id="song-lrclib-id" value="">
                             <div id="song-suggestions" class="autocomplete-dropdown" role="listbox" aria-label="Music suggestions"></div>
                         </div>
+
+                        <div id="extra-songs-container"></div>
 
                         <button type="submit" class="btn-primary" data-i18n="btn_find">
                             FIND MY MOVIE &rarr;
@@ -212,6 +217,11 @@
                         <p class="polaroid-quote" id="res-quote-3"></p>
                     </div>
                 </div>
+            </div>
+
+            <div id="alternatives-section" class="alternatives-section" style="display:none;">
+                <h3 class="alternatives-title" data-i18n="alternatives_title">MORE LIKE THIS</h3>
+                <div id="alternatives-grid" class="alternatives-grid"></div>
             </div>
             
             <div class="action-footer">

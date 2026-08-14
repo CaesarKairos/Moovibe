@@ -583,7 +583,7 @@ def buscar_contexto_musica(nome_musica, artista, lang='en'):
 # ==========================================
 # 3. INTELIGENCIA ARTIFICIAL - RECOMENDACAO PRINCIPAL
 # ==========================================
-def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, filmes_excluidos_globais=None, filmes_excluidos_musica=None, lang='en'):
+def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, filmes_excluidos_globais=None, filmes_excluidos_musica=None, lang='en', musicas_extras=None):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -602,13 +602,18 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
 
     idioma_justificativa = "em português, até 4 frases" if lang == 'pt' else "in English, up to 4 sentences"
     prompt_sistema = (
-        "Voce e um curador de cinema genial. O usuario vai te passar uma musica e voce deve sugerir "
+        "Voce e um curador de cinema genial. O usuario vai te passar de 1 a 3 musicas e voce deve sugerir "
         "EXATAMENTE UM filme que compartilhe exatamente da mesma atmosfera emocional, paleta de cores "
-        "subtendida, ritmo psicologico ou alma lirica dessa musica. "
+        "subtendida, ritmo psicologico ou alma lirica dessas musicas. "
         "Nao se limite a conexoes obvias. Pense na vibe.\n\n"
 
         f"{regra_global}"
         f"{regra_especifica}"
+
+        "REGRA DE PROFUNDIDADE: Quanto mais musicas forem fornecidas, mais detalhada e profunda deve ser "
+        "a justificativa/analise do filme principal. Com 1 musica, escreva normalmente. Com 2 musicas, "
+        "escreva uma analise mais rica. Com 3 musicas, escreva uma analise extensa e detalhada conectando "
+        "todas as vibes.\n\n"
 
         "CRITICO: Voce DEVE sugerir um filme REAL existente no banco de dados do TMDb. "
         "PROIBIDO inventar titulos de filmes. Use APENAS o titulo original ou oficial em ingles/portugues. "
@@ -621,16 +626,31 @@ def obter_recomendacao_ia(nome_musica, artista, letra, contexto_extra=None, film
         "nesse campo. Por exemplo, retorne 'The Great Gatsby' e NUNCA 'The Great Gatsby 2013'. "
         "O ano de lancamento deve habitar estritamente e apenas o campo 'ano' do JSON.\n\n"
 
+        "SUGESTOES ALTERNATIVAS: Alem do filme principal, sugira 3 filmes alternativos que tambem combinem "
+        "com a vibe das musicas, mas que sejam diferentes do filme principal. Cada alternativa deve ter: "
+        "'chamada' (uma frase curta e convidativa, ex: 'Se voce quer algo mais divertido'), 'titulo' "
+        "(nome do filme SEM ano), 'ano' (4 digitos), 'diretor' (nome do diretor). Nao inclua sinopses longas.\n\n"
+
         "Sua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de formatacao markdown, "
         "apenas as chaves brutas). O JSON deve conter as seguintes chaves exatas:\n"
         "{\n"
         '  "filme": "Nome exato do filme (de preferencia o titulo original em ingles ou o mais conhecido, SEM o ano)",\n'
         '  "ano": "Ano de lancamento do filme sugerido (Apenas os 4 digitos numericos, ex: 2002)",\n'
-        f'  "justificativa": "Uma explicacao poetica, profunda e envolvente ({idioma_justificativa}) conectando sentimentos da musica/letra com o filme."\n'
+        f'  "justificativa": "Uma explicacao poetica, profunda e envolvente ({idioma_justificativa}) conectando sentimentos da musica/letra com o filme.",\n'
+        '  "alternativas": [\n'
+        '    {"chamada": "Frase curta convidativa", "titulo": "Nome do filme alternativo SEM ano", "ano": "2020", "diretor": "Nome do diretor"},\n'
+        '    {"chamada": "Frase curta convidativa", "titulo": "Nome do filme alternativo SEM ano", "ano": "2018", "diretor": "Nome do diretor"},\n'
+        '    {"chamada": "Frase curta convidativa", "titulo": "Nome do filme alternativo SEM ano", "ano": "2015", "diretor": "Nome do diretor"}\n'
+        "  ]\n"
         "}"
     )
 
-    conteudo_usuario = f"Musica: '{nome_musica}' do artista '{artista}'.\n"
+    conteudo_usuario = f"Musica principal: '{nome_musica}' do artista '{artista}'.\n"
+    if musicas_extras and len(musicas_extras) > 0:
+        conteudo_usuario += "Musicas adicionais fornecidas pelo usuario (use todas para capturar a vibe completa):\n"
+        for i, m in enumerate(musicas_extras, 2):
+            conteudo_usuario += f"  {i}. {m}\n"
+        conteudo_usuario += "\n"
     if letra:
         conteudo_usuario += f"Use a letra da musica para capturar a essencia poetica profunda:\n{letra}\n\n"
     else:
@@ -1235,6 +1255,31 @@ def main():
                 print("Please enter the artist as well for accuracy.")
                 continue
 
+        # Múltiplas músicas (máx. 3 no total)
+        musicas_extras = []
+        while len(musicas_extras) < 2:
+            if LANG == 'pt':
+                resposta = input("Deseja adicionar mais uma musica? (S/N): ").strip().lower()
+            else:
+                resposta = input("Do you want to add another song? (Y/N): ").strip().lower()
+            if resposta in ['s', 'y', 'sim', 'yes']:
+                if LANG == 'pt':
+                    extra = input("Digite o nome da musica adicional: ").strip()
+                else:
+                    extra = input("Enter the additional song name: ").strip()
+                if extra:
+                    musicas_extras.append(extra)
+                    print(f"✓ Musica adicionada ({len(musicas_extras) + 1}/3).")
+                else:
+                    if LANG == 'pt':
+                        print("Musica vazia, ignorada.")
+                    else:
+                        print("Empty song, ignored.")
+            else:
+                break
+        if musicas_extras:
+            print(f"[MULTI-SONGS] {len(musicas_extras)} musica(s) extra(s): {', '.join(musicas_extras)}")
+
         print()
         if LANG == 'pt':
             print("=== BUSCANDO LETRA DA MUSICA ===")
@@ -1285,7 +1330,8 @@ def main():
             nome_musica, artista, letra, contexto_extra,
             filmes_excluidos_globais=filmes_excluidos_globais,
             filmes_excluidos_musica=filmes_excluidos_musica,
-            lang=LANG
+            lang=LANG,
+            musicas_extras=musicas_extras
         )
 
         if not recomendacao_ia:
@@ -1456,6 +1502,25 @@ def main():
         elif dados_filme and dados_filme.get("id_tmdb"):
             tmdb_url = f"https://www.themoviedb.org/movie/{dados_filme['id_tmdb']}"
 
+        # === SUGESTOES ALTERNATIVAS (terminal) ===
+        alternativas = recomendacao_ia.get("alternativas") or []
+        if alternativas:
+            print()
+            print("--------------------------------------------------")
+            if LANG == 'pt':
+                print("SUGESTOES ALTERNATIVAS:")
+            else:
+                print("ALTERNATIVE SUGGESTIONS:")
+            print("--------------------------------------------------")
+            for alt in alternativas:
+                chamada = alt.get("chamada", "")
+                titulo_alt = sanitizar_titulo_filme(alt.get("titulo", ""))
+                ano_alt = alt.get("ano", "")
+                diretor_alt = alt.get("diretor", "")
+                print(f"  • {chamada}")
+                print(f"    {titulo_alt} ({ano_alt}) — {diretor_alt}")
+            print("--------------------------------------------------")
+
         # === PAYLOAD FINAL CONSOLIDADO ===
         payload_final = {
             "song": nome_musica,
@@ -1476,6 +1541,16 @@ def main():
                 "ai_explanation": f"<p>{justificativa}</p>",
                 "vibe_title": vibe_title if 'vibe_title' in locals() else "CINEMATIC INTROSPECTION",
                 "tags": tags if 'tags' in locals() else [],
+                "alternatives": [
+                    {
+                        "chamada": alt.get("chamada", ""),
+                        "titulo": sanitizar_titulo_filme(alt.get("titulo", "")),
+                        "ano": alt.get("ano", ""),
+                        "diretor": alt.get("diretor", ""),
+                        "poster_url": ""
+                    }
+                    for alt in (recomendacao_ia.get("alternativas") or [])
+                ],
                 "tmdb_id": dados_filme.get("id_tmdb") if dados_filme else None,
                 "tmdb_url": tmdb_url,
                 "imdb_url": f"https://www.imdb.com/title/{dados_filme['imdb_id']}/" if (dados_filme and dados_filme.get("imdb_id")) else f"https://www.imdb.com/find?q={urllib.parse.quote(nome_filme_ia)}",

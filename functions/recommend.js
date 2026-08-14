@@ -718,7 +718,7 @@ async function gravarCacheMusica(nomeMusica, artista, letra, contextoExtra, env)
   }
 }
 
-async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey, filmesExcluidosGlobais = [], filmesExcluidosMusica = [], lang = 'en') {
+async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, apiKey, filmesExcluidosGlobais = [], filmesExcluidosMusica = [], lang = 'en', musicasExtras = []) {
   if (!apiKey) return null;
 
   let regraGlobal = '';
@@ -731,9 +731,16 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
   }
 
   const idiomaJustificativa = lang === 'pt' ? 'em português, até 4 frases' : 'in English, up to 4 sentences';
-  const promptSistema = `Voce e um curador de cinema genial. O usuario vai te passar uma musica e voce deve sugerir EXATAMENTE UM filme que compartilhe exatamente da mesma atmosfera emocional, paleta de cores subtendida, ritmo psicologico ou alma lirica dessa musica. Nao se limite a conexoes obvias. Pense na vibe.\n\n${regraGlobal}${regraEspecifica}CRITICO: Voce DEVE sugerir um filme REAL existente no banco de dados do TMDb. PROIBIDO inventar titulos de filmes. Use APENAS o titulo original ou oficial em ingles/portugues. NAO use caracteres asiaticos (como chines, japones, coreano) a menos que seja um filme autenticamente asiatico com titulo original nesses caracteres. Se nao tiver certeza, escolha um filme classico e bem conhecido.\n\nREGRA ABSOLUTA: No campo 'filme', retorne APENAS o nome comercial puro do filme (em ingles ou portugues). E terminantemente PROIBIDO embutir o ano ao lado do nome do filme nesse campo. Por exemplo, retorne 'The Great Gatsby' e NUNCA 'The Great Gatsby 2013'. O ano de lancamento deve habitar estritamente e apenas o campo 'ano' do JSON.\n\nTAREFA EXTRA: Usando a letra da musica fornecida, extraia 3 trechos curtos (cada um entre 15 e 80 caracteres) que melhor capturem a vibe e a conexao emocional com o filme sugerido. Retorne esses trechos no campo 'citacoes' como um array de 3 strings.\n\nSua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de formatacao markdown, apenas as chaves brutas). O JSON deve conter as seguintes chaves exatas:\n{\n  "filme": "Nome exato do filme (de preferencia o titulo original em ingles ou o mais conhecido, SEM o ano)",\n  "ano": "Ano de lancamento do filme sugerido (Apenas os 4 digitos numericos, ex: 2002)",\n  "justificativa": "Uma explicacao poetica, profunda e envolvente (${idiomaJustificativa}) conectando sentimentos da musica/letra com o filme.",\n  "citacoes": ["Trecho 1 da letra que conecta com o filme", "Trecho 2 da letra que conecta com o filme", "Trecho 3 da letra que conecta com o filme"],\n  "vibe_title": "Um titulo CURTO e impactante em MAIUSCULAS (2-3 palavras) que capture a vibe, ex: 'OPERATIC CHAOS' ou 'MELANCHOLIC DREAM'",\n  "tags": ["Array de 4 tags em MAIUSCULAS descrevendo a vibe, ex: GRANDIOSE, TRAGICOMIC, CATHARTIC, MOSAIC"]\n}`;
+  const promptSistema = `Voce e um curador de cinema genial. O usuario vai te passar de 1 a 3 musicas e voce deve sugerir EXATAMENTE UM filme que compartilhe exatamente da mesma atmosfera emocional, paleta de cores subtendida, ritmo psicologico ou alma lirica dessas musicas. Nao se limite a conexoes obvias. Pense na vibe.\n\n${regraGlobal}${regraEspecifica}REGRA DE PROFUNDIDADE: Quanto mais musicas forem fornecidas, mais detalhada e profunda deve ser a justificativa/analise do filme principal. Com 1 musica, escreva normalmente. Com 2 musicas, escreva uma analise mais rica. Com 3 musicas, escreva uma analise extensa e detalhada conectando todas as vibes.\n\nCRITICO: Voce DEVE sugerir um filme REAL existente no banco de dados do TMDb. PROIBIDO inventar titulos de filmes. Use APENAS o titulo original ou oficial em ingles/portugues. NAO use caracteres asiaticos (como chines, japones, coreano) a menos que seja um filme autenticamente asiatico com titulo original nesses caracteres. Se nao tiver certeza, escolha um filme classico e bem conhecido.\n\nREGRA ABSOLUTA: No campo 'filme', retorne APENAS o nome comercial puro do filme (em ingles ou portugues). E terminantemente PROIBIDO embutir o ano ao lado do nome do filme nesse campo. Por exemplo, retorne 'The Great Gatsby' e NUNCA 'The Great Gatsby 2013'. O ano de lancamento deve habitar estritamente e apenas o campo 'ano' do JSON.\n\nTAREFA EXTRA: Usando a letra da musica fornecida, extraia 3 trechos curtos (cada um entre 15 e 80 caracteres) que melhor capturem a vibe e a conexao emocional com o filme sugerido. Retorne esses trechos no campo 'citacoes' como um array de 3 strings.\n\nSUGESTOES ALTERNATIVAS: Alem do filme principal, sugira 3 filmes alternativos que tambem combinem com a vibe das musicas, mas que sejam diferentes do filme principal. Cada alternativa deve ter: 'chamada' (uma frase curta e convidativa, ex: "Se voce quer algo mais divertido"), 'titulo' (nome do filme SEM ano), 'ano' (4 digitos), 'diretor' (nome do diretor). Nao inclua sinopses longas.\n\nSua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de formatacao markdown, apenas as chaves brutas). O JSON deve conter as seguintes chaves exatas:\n{\n  "filme": "Nome exato do filme (de preferencia o titulo original em ingles ou o mais conhecido, SEM o ano)",\n  "ano": "Ano de lancamento do filme sugerido (Apenas os 4 digitos numericos, ex: 2002)",\n  "justificativa": "Uma explicacao poetica, profunda e envolvente (${idiomaJustificativa}) conectando sentimentos da musica/letra com o filme.",\n  "citacoes": ["Trecho 1 da letra que conecta com o filme", "Trecho 2 da letra que conecta com o filme", "Trecho 3 da letra que conecta com o filme"],\n  "vibe_title": "Um titulo CURTO e impactante em MAIUSCULAS (2-3 palavras) que capture a vibe, ex: 'OPERATIC CHAOS' ou 'MELANCHOLIC DREAM'",\n  "tags": ["Array de 4 tags em MAIUSCULAS descrevendo a vibe, ex: GRANDIOSE, TRAGICOMIC, CATHARTIC, MOSAIC"],\n  "alternativas": [\n    {"chamada": "Frase curta convidativa", "titulo": "Nome do filme alternativo SEM ano", "ano": "2020", "diretor": "Nome do diretor"},\n    {"chamada": "Frase curta convidativa", "titulo": "Nome do filme alternativo SEM ano", "ano": "2018", "diretor": "Nome do diretor"},\n    {"chamada": "Frase curta convidativa", "titulo": "Nome do filme alternativo SEM ano", "ano": "2015", "diretor": "Nome do diretor"}\n  ]\n}`;
 
-  let conteudoUsuario = `Musica: '${nomeMusica}' do artista '${artista}'.\n`;
+  let conteudoUsuario = `Musica principal: '${nomeMusica}' do artista '${artista}'.\n`;
+  if (Array.isArray(musicasExtras) && musicasExtras.length > 0) {
+    conteudoUsuario += `Musicas adicionais fornecidas pelo usuario (use todas para capturar a vibe completa):\n`;
+    musicasExtras.forEach((m, i) => {
+      conteudoUsuario += `  ${i + 2}. ${m}\n`;
+    });
+    conteudoUsuario += `\n`;
+  }
   if (letra) {
     conteudoUsuario += `Use a letra da musica para capturar a essencia poetica profunda:\n${letra}\n\n`;
   } else {
@@ -1131,9 +1138,11 @@ export async function onRequest(context) {
 
   try {
     const body = await request.json();
-    const { nome_musica, artista, lrclib_id } = body;
+    const { nome_musica, artista, lrclib_id, musicas_extras } = body;
     const lang = body.lang === 'pt' ? 'pt' : 'en';
     if (!nome_musica) return jsonResponse({ error: { message: 'Nome da música é obrigatório.' } }, 400);
+    const musicasExtras = Array.isArray(musicas_extras) ? musicas_extras.filter(m => typeof m === 'string' && m.trim().length > 0) : [];
+    if (musicasExtras.length > 0) console.log(`[MULTI-SONGS] ${musicasExtras.length} música(s) extra(s): ${musicasExtras.join(', ')}`);
 
     console.log('\n=== INICIANDO PIPELINE ===');
     let letra = '';
@@ -1173,7 +1182,7 @@ export async function onRequest(context) {
 
     const recomendacaoIA = await obterRecomendacaoIA(
       nome_musica, artista, letra, contextoExtra, env.OPENROUTER_API_KEY,
-      filmesExcluidosGlobais, filmesExcluidosMusica, lang
+      filmesExcluidosGlobais, filmesExcluidosMusica, lang, musicasExtras
     );
     if (!recomendacaoIA) {
       console.error('FALHA CRÍTICA: IA não retornou recomendação válida');
@@ -1267,6 +1276,34 @@ export async function onRequest(context) {
       ? `https://letterboxd.com/tmdb/${dadosFilme.id_tmdb}`
       : `https://letterboxd.com/search/${encodeURIComponent(nomeFilme)}/`;
 
+    // Busca pôsteres para as alternativas no TMDb
+    const alternativas = Array.isArray(recomendacaoIA.alternativas) ? recomendacaoIA.alternativas : [];
+    const alternativasComPoster = [];
+    if (alternativas.length > 0 && env.TMDB_API_KEY) {
+      for (const alt of alternativas) {
+        const altTitulo = sanitizarTituloFilme(alt?.titulo || '');
+        if (!altTitulo) continue;
+        const altDetalhes = await obterDetalhesTMDB(altTitulo, env.TMDB_API_KEY, alt?.ano || '', lang);
+        alternativasComPoster.push({
+          chamada: alt?.chamada || '',
+          titulo: altTitulo,
+          ano: alt?.ano || (altDetalhes?.ano || ''),
+          diretor: alt?.diretor || (altDetalhes?.diretor || ''),
+          poster_url: altDetalhes?.poster || '',
+        });
+      }
+    } else if (alternativas.length > 0) {
+      for (const alt of alternativas) {
+        alternativasComPoster.push({
+          chamada: alt?.chamada || '',
+          titulo: sanitizarTituloFilme(alt?.titulo || ''),
+          ano: alt?.ano || '',
+          diretor: alt?.diretor || '',
+          poster_url: '',
+        });
+      }
+    }
+
     const slug = slugify(nomeFilme + '-' + nome_musica);
     const resposta = {
       song: nome_musica,
@@ -1288,6 +1325,7 @@ export async function onRequest(context) {
         ai_explanation: `<p>${justificativa}</p>`,
         vibe_title: vibeTitle,
         tags,
+        alternatives: alternativasComPoster,
         tmdb_id: dadosFilme?.id_tmdb || null,
         tmdb_url: tmdbUrl,
         imdb_url: imdbUrl,

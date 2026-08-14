@@ -185,6 +185,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnRetry = document.getElementById('btn-retry');
     const audioPreview = document.getElementById('res-audio-preview');
     const audioBtn = document.getElementById('res-audio-btn');
+    const btnAddSong = document.getElementById('btn-add-song');
+    const extraSongsContainer = document.getElementById('extra-songs-container');
+    const MAX_SONGS = 3;
+    let extraSongCount = 0;
+    let extraSongInputs = [];
+    const alternativesSection = document.getElementById('alternatives-section');
+    const alternativesGrid = document.getElementById('alternatives-grid');
 
     // Loading strings for cinematic feel
     const loadingMessages = lang === 'pt'
@@ -294,6 +301,44 @@ document.addEventListener('DOMContentLoaded', () => {
         artistaResolvido = '';
         if (songLrclibIdInput) songLrclibIdInput.value = '';
         closeSuggestions();
+        // Remove todos os campos extras
+        if (extraSongsContainer) extraSongsContainer.innerHTML = '';
+        extraSongCount = 0;
+        extraSongInputs = [];
+        if (btnAddSong) btnAddSong.disabled = false;
+    }
+
+    function addExtraSongField() {
+        if (!extraSongsContainer || extraSongCount >= MAX_SONGS - 1) return;
+        const row = document.createElement('div');
+        row.className = 'extra-song-row';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'extra-song-input';
+        input.placeholder = lang === 'pt' ? 'Adicione outra música...' : 'Add another song...';
+        input.autocomplete = 'off';
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'remove-song-btn';
+        removeBtn.textContent = '×';
+        removeBtn.setAttribute('aria-label', lang === 'pt' ? 'Remover música' : 'Remove song');
+        removeBtn.addEventListener('click', () => {
+            row.remove();
+            extraSongCount--;
+            extraSongInputs = extraSongInputs.filter(el => el !== input);
+            if (btnAddSong) btnAddSong.disabled = false;
+        });
+        row.appendChild(input);
+        row.appendChild(removeBtn);
+        extraSongsContainer.appendChild(row);
+        extraSongCount++;
+        extraSongInputs.push(input);
+        if (extraSongCount >= MAX_SONGS - 1 && btnAddSong) btnAddSong.disabled = true;
+        input.focus();
+    }
+
+    if (btnAddSong) {
+        btnAddSong.addEventListener('click', addExtraSongField);
     }
 
     function goHome() {
@@ -690,6 +735,39 @@ document.addEventListener('DOMContentLoaded', () => {
                 el.style.display = (quoteText || movieTitle) ? '' : 'none';
             }
         });
+
+        // Alternatives (sugestões de filmes alternativos)
+        const alternatives = safeArr(movie.alternatives);
+        if (alternativesSection && alternativesGrid) {
+            alternativesGrid.innerHTML = '';
+            if (alternatives.length > 0) {
+                alternatives.forEach((alt) => {
+                    const card = document.createElement('div');
+                    card.className = 'alternative-card';
+                    const img = document.createElement('img');
+                    img.src = safeStr(alt.poster_url);
+                    img.alt = safeStr(alt.titulo);
+                    img.loading = 'lazy';
+                    const call = document.createElement('div');
+                    call.className = 'alt-call';
+                    call.textContent = safeStr(alt.chamada);
+                    const title = document.createElement('div');
+                    title.className = 'alt-title';
+                    title.textContent = safeStr(alt.titulo);
+                    const meta = document.createElement('div');
+                    meta.className = 'alt-meta';
+                    meta.textContent = `${safeStr(alt.ano)}${alt.diretor ? ' — ' + safeStr(alt.diretor) : ''}`;
+                    card.appendChild(img);
+                    card.appendChild(call);
+                    card.appendChild(title);
+                    card.appendChild(meta);
+                    alternativesGrid.appendChild(card);
+                });
+                alternativesSection.style.display = '';
+            } else {
+                alternativesSection.style.display = 'none';
+            }
+        }
     }
 
     function aplicarOverlayHall(card, movie) {
@@ -830,6 +908,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const artist = artistaResolvido;
 
+        // Agrupa as músicas extras (até 3 no total)
+        const extraSongs = [];
+        if (extraSongInputs) {
+            for (const input of extraSongInputs) {
+                const val = input.value.trim();
+                if (val) extraSongs.push(val);
+            }
+        }
+
         const fetchPromise = fetch('/recommend', {
             method: 'POST',
             headers: {
@@ -839,7 +926,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 nome_musica: song,
                 artista: artist,
                 lang: lang,
-                lrclib_id: songLrclibIdInput ? songLrclibIdInput.value : ''
+                lrclib_id: songLrclibIdInput ? songLrclibIdInput.value : '',
+                musicas_extras: extraSongs
             })
         })
         .then(response => {
