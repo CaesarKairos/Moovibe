@@ -3,3 +3,4 @@ python-dotenv>=1.0.0
 lyricsgenius>=3.0.1
 duckduckgo_search>=6.0.0
 customtkinter>=5.2.0
+trafilatura>=2.2.0
