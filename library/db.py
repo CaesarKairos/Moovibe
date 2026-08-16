@@ -79,8 +79,36 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_movies_original_language ON movies(original_language);
             CREATE INDEX IF NOT EXISTS idx_movies_vote_average ON movies(vote_average);
             CREATE INDEX IF NOT EXISTS idx_movies_popularity ON movies(popularity);
+
+            CREATE TABLE IF NOT EXISTS collector_stats (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                novos INTEGER DEFAULT 0,
+                atualizados INTEGER DEFAULT 0,
+                duplicados INTEGER DEFAULT 0,
+                erros INTEGER DEFAULT 0,
+                tempo_total_segundos REAL DEFAULT 0
+            );
             """
         )
+
+        # Migração: na primeira vez que collector_stats é criada, inicializa com
+        # valores estimados a partir do banco existente.
+        row = conn.execute("SELECT id FROM collector_stats WHERE id = 1").fetchone()
+        if row is None:
+            total_filmes = conn.execute("SELECT COUNT(*) AS c FROM movies").fetchone()["c"]
+            atualizados = conn.execute(
+                "SELECT COUNT(*) AS c FROM movies WHERE created_at != updated_at"
+            ).fetchone()["c"]
+            # duplicados e erros não ficam registrados no banco; sem base confiável,
+            # iniciam em zero (não inventar números sem base real).
+            # tempo_total_segundos = 18000 (5h) reflete o tempo real já rodado antes
+            # desta tabela existir.
+            conn.execute(
+                "INSERT INTO collector_stats "
+                "(id, novos, atualizados, duplicados, erros, tempo_total_segundos) "
+                "VALUES (1, ?, ?, 0, 0, 18000)",
+                (total_filmes, atualizados),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -268,3 +296,59 @@ def get_movie(conn, tmdb_id: int):
     return conn.execute(
         "SELECT * FROM movies WHERE tmdb_id = ?", (tmdb_id,)
     ).fetchone()
+
+
+def get_collector_stats(conn):
+    """Retorna os totais acumulados da tabela collector_stats (ou zeros se ausente)."""
+    row = conn.execute(
+        "SELECT novos, atualizados, duplicados, erros, tempo_total_segundos "
+        "FROM collector_stats WHERE id = 1"
+    ).fetchone()
+    if row is None:
+        return {
+            "novos": 0,
+            "atualizados": 0,
+            "duplicados": 0,
+            "erros": 0,
+            "tempo_total_segundos": 0.0,
+        }
+    return {
+        "novos": row["novos"] or 0,
+        "atualizados": row["atualizados"] or 0,
+        "duplicados": row["duplicados"] or 0,
+        "erros": row["erros"] or 0,
+        "tempo_total_segundos": row["tempo_total_segundos"] or 0.0,
+    }
+
+
+def save_collector_stats(conn, novos: int, atualizados: int, duplicados: int,
+                         erros: int, tempo_total_segundos: float):
+    """Persiste os totais acumulados na tabela collector_stats (linha única id=1)."""
+    conn.execute(
+        """
+        INSERT INTO collector_stats (
+            id, novos, atualizados, duplicados, erros, tempo_total_segundos
+        ) VALUES (1, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            novos = excluded.novos,
+            atualizados = excluded.atualizados,
+            duplicados = excluded.duplicados,
+            erros = excluded.erros,
+            tempo_total_segundos = excluded.tempo_total_segundos
+        """,
+        (novos, atualizados, duplicados, erros, tempo_total_segundos),
+    )
+    conn.commit()
+
+
+def get_movies_by_source(conn, origem: str, limite: int = 500):
+    """
+    Retorna filmes cuja lista collected_from contém a origem informada.
+
+    Busca sob demanda, limitada para não carregar tudo em memória de uma vez.
+    """
+    return conn.execute(
+        "SELECT tmdb_id, title, release_year FROM movies "
+        "WHERE collected_from LIKE ? ORDER BY title LIMIT ?",
+        (f'%"{origem}"%', limite),
+    ).fetchall()

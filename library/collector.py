@@ -26,6 +26,17 @@ class Coletor:
         self._pause_event.set()  # começa "não pausado"
         self._stop_event = threading.Event()
         self._thread = None
+        self._stats_lock = threading.Lock()
+
+        # Carrega totais acumulados de sessões anteriores (tabela collector_stats)
+        conn = db.get_connection()
+        try:
+            db.init_db()
+            acumulado = db.get_collector_stats(conn)
+        finally:
+            conn.close()
+
+        self._tempo_base_acumulado = float(acumulado["tempo_total_segundos"] or 0)
         self._stats = {
             "novos": 0,
             "atualizados": 0,
@@ -33,7 +44,12 @@ class Coletor:
             "erros": 0,
             "paginas": 0,
         }
-        self._stats_lock = threading.Lock()
+        self._stats_acumulados = {
+            "novos": int(acumulado["novos"] or 0),
+            "atualizados": int(acumulado["atualizados"] or 0),
+            "duplicados": int(acumulado["duplicados"] or 0),
+            "erros": int(acumulado["erros"] or 0),
+        }
         self._tempo_inicio = None
         self._total_consultas = 0
         self._consultas_concluidas = 0
@@ -47,7 +63,23 @@ class Coletor:
             return
         self._stop_event.clear()
         self._pause_event.set()
+
+        # Recarrega totais acumulados do banco (pode ter persistido ao parar)
+        conn = db.get_connection()
+        try:
+            acumulado = db.get_collector_stats(conn)
+        finally:
+            conn.close()
+        self._tempo_base_acumulado = float(acumulado["tempo_total_segundos"] or 0)
+        self._stats_acumulados = {
+            "novos": int(acumulado["novos"] or 0),
+            "atualizados": int(acumulado["atualizados"] or 0),
+            "duplicados": int(acumulado["duplicados"] or 0),
+            "erros": int(acumulado["erros"] or 0),
+        }
+
         self._stats = {"novos": 0, "atualizados": 0, "duplicados": 0, "erros": 0, "paginas": 0}
+        self._consultas_concluidas = 0
         self._tempo_inicio = time.time()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -67,9 +99,14 @@ class Coletor:
         self._stop_event.set()
         self._pause_event.set()  # garante que a thread não fique presa no pause
         self._emitir_log("[CONTROLE] Parada solicitada.")
+        self._persistir_stats()
 
     def esta_rodando(self):
         return self._thread is not None and self._thread.is_alive()
+
+    def persistir(self):
+        """Persiste os totais acumulados da sessão atual na tabela collector_stats."""
+        self._persistir_stats()
 
     # ==========================================
     # HELPERS DE EMISSÃO DE EVENTOS
@@ -83,6 +120,10 @@ class Coletor:
 
     def _emitir_log(self, mensagem: str):
         self._emitir("log", mensagem=mensagem)
+
+    def _emitir_atividade(self, mensagem: str):
+        """Evento granular de atividade, roteado para o painel de detalhes na GUI."""
+        self._emitir("atividade", mensagem=mensagem)
 
     def _emitir_stats(self, conn=None):
         with self._stats_lock:
@@ -107,7 +148,37 @@ class Coletor:
             tempo_execucao=tempo,
             consultas_concluidas=self._consultas_concluidas,
             total_consultas=self._total_consultas,
+            novos_acumulados=self._stats_acumulados["novos"],
+            atualizados_acumulados=self._stats_acumulados["atualizados"],
+            duplicados_acumulados=self._stats_acumulados["duplicados"],
+            erros_acumulados=self._stats_acumulados["erros"],
+            tempo_base_acumulado=self._tempo_base_acumulado,
         )
+
+    def _persistir_stats(self, conn=None):
+        """Salva os totais acumulados na tabela collector_stats (fechar conexão própria)."""
+        with self._stats_lock:
+            stats = dict(self._stats)
+        tempo = 0
+        if self._tempo_inicio:
+            tempo = time.time() - self._tempo_inicio
+
+        novos = self._stats_acumulados["novos"] + stats.get("novos", 0)
+        atualizados = self._stats_acumulados["atualizados"] + stats.get("atualizados", 0)
+        duplicados = self._stats_acumulados["duplicados"] + stats.get("duplicados", 0)
+        erros = self._stats_acumulados["erros"] + stats.get("erros", 0)
+        tempo_total = self._tempo_base_acumulado + tempo
+
+        if conn is None:
+            conn = db.get_connection()
+            fechar = True
+        else:
+            fechar = False
+        try:
+            db.save_collector_stats(conn, novos, atualizados, duplicados, erros, tempo_total)
+        finally:
+            if fechar:
+                conn.close()
 
     def _emitir_progresso(self, label: str, pagina: int, total_paginas: int):
         self._emitir("progresso", consulta=label, pagina=pagina, total_paginas=total_paginas)
@@ -135,6 +206,11 @@ class Coletor:
 
             # Carrega pendentes (status != 'done')
             pendentes = db.get_pending_queries(conn)
+            # Progresso geral real: conta as já concluídas em sessões anteriores
+            concluidas = conn.execute(
+                "SELECT COUNT(*) AS c FROM collection_progress WHERE status = 'done'"
+            ).fetchone()["c"]
+            self._consultas_concluidas = concluidas
             self._emitir_log(f"[INICIO] {len(pendentes)} consultas pendentes de "
                              f"{self._total_consultas} total.")
             self._emitir_stats(conn)
@@ -181,7 +257,11 @@ class Coletor:
         db.upsert_progress(conn, query_id=query_id, label=label, status="done")
         self._consultas_concluidas += 1
         self._emitir_log(f"[CHECKPOINT] Consulta concluída: {label}")
+        # Persiste totais acumulados periodicamente (a cada consulta concluída)
+        self._persistir_stats(conn)
         self._emitir_stats(conn)
+        # Avisa a GUI para atualizar o painel de países/categorias
+        self._emitir("paises_atualizar")
 
     def _processar_consulta(self, conn, consulta: dict, registro):
         """Processa uma consulta inteira (todas as páginas) com checkpoint."""
@@ -195,6 +275,7 @@ class Coletor:
 
         self._emitir_log(f"[CONSULTA] {label} (a partir da página {pagina_inicial})")
         self._emitir_progresso(label, pagina_inicial, total_paginas)
+        self._emitir_atividade(f"Buscando página {pagina_inicial} de {label}")
 
         # Marca como "em andamento"
         db.upsert_progress(
@@ -224,6 +305,8 @@ class Coletor:
 
             self._pause_event.wait()  # bloqueia se pausado
 
+            self._emitir_atividade(f"Buscando página {pagina} de {label}")
+
             try:
                 params_pagina = dict(params)
                 params_pagina["page"] = pagina
@@ -232,6 +315,7 @@ class Coletor:
                 with self._stats_lock:
                     self._stats["erros"] += 1
                 self._emitir_log(f"[ERRO] Consulta '{label}', página {pagina}: {e}")
+                self._emitir_atividade(f"Erro na página {pagina} de {label}: {e}")
                 db.upsert_progress(
                     conn,
                     query_id=query_id,
@@ -246,6 +330,7 @@ class Coletor:
 
             if not pagina_dados:
                 self._emitir_log(f"[ERRO] Resposta vazia na consulta '{label}', página {pagina}.")
+                self._emitir_atividade(f"Resposta vazia na página {pagina} de {label}")
                 with self._stats_lock:
                     self._stats["erros"] += 1
                 return
@@ -287,6 +372,7 @@ class Coletor:
 
     def _salvar_filme(self, conn, item: dict, origem: str):
         """Normaliza, busca complementos e faz UPSERT de um único filme."""
+        titulo = item.get("title") or item.get("original_title") or f"ID {item.get('id')}"
         try:
             # Complementos opcionais (diretor, keywords, runtime, etc.)
             detalhes = None
@@ -294,6 +380,7 @@ class Coletor:
             keywords_resp = None
 
             if self.detalhes_por_filme:
+                self._emitir_atividade(f"Buscando detalhes/créditos/palavras-chave de '{titulo}'")
                 try:
                     detalhes = self.client.get_movie_details(item["id"])
                 except Exception:
@@ -314,11 +401,17 @@ class Coletor:
             with self._stats_lock:
                 if resultado == "new":
                     self._stats["novos"] += 1
+                    self._emitir_atividade(f"Filme '{titulo}' salvo (novo)")
                 elif resultado == "updated":
                     self._stats["atualizados"] += 1
+                    self._emitir_atividade(f"Filme '{titulo}' atualizado")
                 else:
                     self._stats["duplicados"] += 1
+                    self._emitir_atividade(
+                        f"Filme '{titulo}' ignorado (já existente, sem mudanças)"
+                    )
         except Exception as e:
             with self._stats_lock:
                 self._stats["erros"] += 1
             self._emitir_log(f"[ERRO] Falha ao salvar filme ID {item.get('id')}: {e}")
+            self._emitir_atividade(f"Erro ao salvar filme '{titulo}': {e}")
