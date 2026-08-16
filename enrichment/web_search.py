@@ -48,8 +48,14 @@ USER_AGENT = (
 )
 
 
-def _consultar_ddgs(consulta: str) -> list:
-    """Executa uma consulta no DuckDuckGo, retornando lista de dicts de resultados."""
+def _consultar_ddgs(consulta: str) -> tuple:
+    """Executa uma consulta no DuckDuckGo.
+
+    Retorna (resultados, aviso) onde `resultados` é a lista de dicts e
+    `aviso` é uma string com o motivo real da falha (rate limit, timeout,
+    bloqueio, etc.) ou None se a busca funcionou. O aviso é útil para
+    diagnosticar por que a busca retornou vazio.
+    """
     try:
         # Suprime o warning de pacote renomeado (duckduckgo_search -> ddgs)
         with warnings.catch_warnings():
@@ -57,10 +63,72 @@ def _consultar_ddgs(consulta: str) -> list:
             from duckduckgo_search import DDGS
 
             with DDGS() as ddgs:
-                return list(ddgs.text(consulta, max_results=MAX_RESULTADOS_BUSCA))
+                resultados = list(ddgs.text(consulta, max_results=MAX_RESULTADOS_BUSCA))
+                return resultados, None
     except Exception as e:
         logger.warning("Falha na busca DuckDuckGo para '%s': %s", consulta, e)
-        return []
+        return [], f"Falha na busca DuckDuckGo: {e}"
+
+
+def _buscar_wikipedia(titulo: str, ano: int = None) -> tuple:
+    """Busca o resumo do filme na Wikipedia (API oficial, sem bloqueio).
+
+    Tenta primeiro a Wikipedia em português; se não achar, faz fallback
+    para a inglesa. Retorna (texto, aviso) onde `texto` é o resumo do
+    artigo (ou "" se não houver) e `aviso` é uma string com o motivo da
+    falha ou None.
+    """
+    consulta = f"{titulo}"
+    if ano:
+        consulta += f" {ano}"
+
+    for idioma, base in (("pt", "https://pt.wikipedia.org/w/api.php"),
+                         ("en", "https://en.wikipedia.org/w/api.php")):
+        try:
+            # Passo 1: busca o título do artigo
+            params_busca = {
+                "action": "query",
+                "list": "search",
+                "srsearch": consulta,
+                "srlimit": 1,
+                "format": "json",
+            }
+            resp = requests.get(base, params=params_busca, timeout=TIMEOUT_HTTP,
+                                headers={"User-Agent": USER_AGENT})
+            resp.raise_for_status()
+            dados = resp.json()
+            resultados = dados.get("query", {}).get("search", [])
+            if not resultados:
+                continue
+
+            titulo_artigo = resultados[0].get("title", "")
+            if not titulo_artigo:
+                continue
+
+            # Passo 2: pega o resumo (intro) do artigo
+            params_extract = {
+                "action": "query",
+                "prop": "extracts",
+                "exintro": 1,
+                "explaintext": 1,
+                "titles": titulo_artigo,
+                "format": "json",
+            }
+            resp2 = requests.get(base, params=params_extract, timeout=TIMEOUT_HTTP,
+                                 headers={"User-Agent": USER_AGENT})
+            resp2.raise_for_status()
+            dados2 = resp2.json()
+            paginas = dados2.get("query", {}).get("pages", {})
+            for pagina in paginas.values():
+                texto = pagina.get("extract", "")
+                if texto:
+                    return texto[:MAX_CARACTERES_POR_PAGINA], None
+
+        except requests.RequestException as e:
+            logger.warning("Falha na Wikipedia %s para '%s': %s", idioma, titulo, e)
+            return "", f"Falha na Wikipedia {idioma}: {e}"
+
+    return "", None
 
 
 def _filtrar_relevantes(resultados: list, titulo: str) -> list:
@@ -97,12 +165,15 @@ def _filtrar_relevantes(resultados: list, titulo: str) -> list:
     return urls
 
 
-def _buscar_urls(titulo: str, ano: int = None) -> list:
+def _buscar_urls(titulo: str, ano: int = None) -> tuple:
     """Busca URLs de resenhas/críticas para o filme via DuckDuckGo.
 
     Tenta primeiro a consulta em português; se não encontrar resultados
     relevantes, faz fallback para inglês (que tende a retornar resenhas
     melhores: IMDb, Rotten Tomatoes, Metacritic, Wikipedia).
+
+    Retorna (urls, avisos) onde `avisos` é uma lista de strings com os
+    motivos reais de falha (rate limit, timeout, etc.) para diagnóstico.
     """
     sufixo_pt = " filme resenha critica tom atmosfera"
     sufixo_en = " movie review"
@@ -120,13 +191,16 @@ def _buscar_urls(titulo: str, ano: int = None) -> list:
     consulta_en += sufixo_en
     consultas.append(consulta_en)
 
+    avisos = []
     for consulta in consultas:
-        resultados = _consultar_ddgs(consulta)
+        resultados, aviso = _consultar_ddgs(consulta)
+        if aviso:
+            avisos.append(aviso)
         if not resultados:
             continue
         urls = _filtrar_relevantes(resultados, titulo)
         if urls:
-            return urls
+            return urls, avisos
         # Fallback: se o filtro de relevância descartou tudo (DuckDuckGo é
         # não-determinístico), usa os primeiros resultados mesmo assim — a
         # consulta já é específica (título + ano + resenha).
@@ -138,9 +212,9 @@ def _buscar_urls(titulo: str, ano: int = None) -> list:
             if len(urls_fallback) >= MAX_PAGINAS_BAIXAR:
                 break
         if urls_fallback:
-            return urls_fallback
+            return urls_fallback, avisos
 
-    return []
+    return [], avisos
 
 
 def _baixar_texto_pagina(url: str) -> str:
@@ -181,18 +255,34 @@ def _baixar_texto_pagina(url: str) -> str:
     return texto[:MAX_CARACTERES_POR_PAGINA]
 
 
-def buscar_contexto_web(titulo: str, ano: int = None) -> str:
+def buscar_contexto_web(titulo: str, ano: int = None) -> dict:
     """Busca contexto web para um filme com pouca informação.
 
-    Retorna uma string com trechos do texto real das páginas encontradas,
-    pronta para ser incluída no prompt do modelo. Retorna string vazia se
-    nada for encontrado ou baixado com sucesso.
+    Tenta primeiro a Wikipedia (API oficial, sem bloqueio de scraping);
+    se não houver página do filme, cai para o DuckDuckGo + download de
+    páginas de resenhas.
+
+    Retorna um dict:
+      - "contexto": string com trechos do texto real (pronta para o prompt)
+      - "avisos": lista de strings com motivos reais de falha (rate limit,
+        timeout, bloqueio de site) para diagnóstico no log de atividade
 
     O texto NÃO é armazenado permanentemente — é contexto passageiro.
     """
-    urls = _buscar_urls(titulo, ano)
+    avisos = []
+
+    # 1) Wikipedia primeiro (API oficial, gratuita, sem bloqueio)
+    texto_wiki, aviso_wiki = _buscar_wikipedia(titulo, ano)
+    if aviso_wiki:
+        avisos.append(aviso_wiki)
+    if texto_wiki:
+        return {"contexto": f"[Fonte: Wikipedia]\n{texto_wiki}", "avisos": avisos}
+
+    # 2) Fallback: DuckDuckGo + download de páginas de resenhas
+    urls, avisos_ddgs = _buscar_urls(titulo, ano)
+    avisos.extend(avisos_ddgs)
     if not urls:
-        return ""
+        return {"contexto": "", "avisos": avisos}
 
     trechos = []
     total_caracteres = 0
@@ -213,8 +303,8 @@ def buscar_contexto_web(titulo: str, ano: int = None) -> str:
             break
 
     if not trechos:
-        return ""
+        return {"contexto": "", "avisos": avisos}
 
     contexto = "\n\n".join(trechos)
     # Garante o limite total mesmo com múltiplas páginas
-    return contexto[:MAX_CARACTERES_TOTAL]
+    return {"contexto": contexto[:MAX_CARACTERES_TOTAL], "avisos": avisos}

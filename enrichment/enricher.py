@@ -240,10 +240,16 @@ class Enricher:
             precisa_busca = self._precisa_busca_web(filme)
 
             contexto = self._montar_contexto(filme)
+            contexto_web = ""
 
             if precisa_busca:
                 self._emitir_atividade(f"Buscando contexto na web para '{titulo}'")
-                contexto_web = buscar_contexto_web(titulo, ano)
+                resultado_busca = buscar_contexto_web(titulo, ano)
+                contexto_web = resultado_busca.get("contexto", "")
+                # Emite os motivos reais de falha (rate limit, timeout, etc.)
+                # no log de atividade detalhado para diagnóstico
+                for aviso in resultado_busca.get("avisos", []):
+                    self._emitir_atividade(f"[AVISO] {aviso}")
                 if contexto_web:
                     contexto += "\n\n--- Contexto adicional da web (resenhas/criticas) ---\n"
                     contexto += contexto_web
@@ -255,7 +261,21 @@ class Enricher:
                     )
 
             self._emitir_atividade(f"Chamando modelo local para '{titulo}'")
-            estilo = gerar_estilo(contexto)
+
+            def _log_ia(prompt, resposta):
+                """Registra o prompt enviado e a resposta bruta do modelo."""
+                self._emitir_atividade(
+                    f"[IA] Prompt enviado para '{titulo}': {prompt[:300]}"
+                )
+                self._emitir_atividade(
+                    f"[IA] Resposta do modelo para '{titulo}': {resposta[:500]}"
+                )
+
+            estilo = gerar_estilo(contexto, on_log=_log_ia)
+
+            # Confidence é calculado em Python puro (regra objetiva), não pelo
+            # modelo — ele não calibra isso direito.
+            estilo["confidence"] = self._calcular_confidence(filme, contexto_web)
 
             db.salvar_estilo(conn, tmdb_id, estilo)
             db.registrar_checkpoint(conn, tmdb_id, "done")
@@ -289,6 +309,36 @@ class Enricher:
         if len(overview) < MIN_OVERVIEW_PARA_BUSCA:
             return True
         return False
+
+    def _calcular_confidence(self, filme, contexto_web: str) -> str:
+        """Calcula o nível de confiança em Python puro, com regra objetiva.
+
+        - high: 8+ keywords E overview com 200+ caracteres
+        - medium: 3-7 keywords OU overview com 100-199 caracteres
+        - low: menos que isso
+
+        Se a busca web trouxe contexto extra, conta a favor de subir o nível.
+        """
+        keywords = self._parse_lista(filme["keywords"])
+        overview = filme["overview"] or ""
+        n_keywords = len(keywords)
+        len_overview = len(overview)
+
+        if n_keywords >= 8 and len_overview >= 200:
+            nivel = "high"
+        elif (3 <= n_keywords <= 7) or (100 <= len_overview <= 199):
+            nivel = "medium"
+        else:
+            nivel = "low"
+
+        # Busca web com contexto extra sobe o nível
+        if contexto_web:
+            if nivel == "low":
+                nivel = "medium"
+            elif nivel == "medium":
+                nivel = "high"
+
+        return nivel
 
     def _montar_contexto(self, filme) -> str:
         """Monta o texto de contexto do filme para enviar ao modelo."""
