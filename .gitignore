@@ -8,6 +8,11 @@ test_moovibe.py
 # Variáveis de ambiente
 .env
 
+# Banco de dados local da biblioteca de filmes
+moovibe_library.db
+moovibe_library.db-wal
+moovibe_library.db-shm
+
 # Configurações do VS Code
 .vscode/
 

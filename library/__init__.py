@@ -1,0 +1,1 @@
+"""Moovibe Library - Coletor de biblioteca cinematográfica via TMDB."""
