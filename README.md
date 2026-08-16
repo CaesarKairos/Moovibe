@@ -39,33 +39,33 @@ O Moovibe possui **duas formas de execução**:
 
 ```
 📁 Moovibe/
-├── index.html              # Frontend SPA (HTML)
+├── index.html               # Frontend SPA (HTML)
 ├── css/
-│   └── style.css          # Estilos (brutalismo/cinema)
+│   └── style.css            # Estilos (brutalismo/cinema)
 ├── js/
-│   └── script.js          # Lógica SPA (navegação, autocomplete, DOM injection)
+│   └── script.js            # Lógica SPA (navegação, autocomplete, DOM injection)
 ├── functions/
 │   ├── _lib/
-│   │   └── lrclib.js      # Módulo compartilhado LRCLIB (headers, throttle, URLs)
-│   ├── recommend.js        # API principal POST /recommend + GET (history/share lookup)
-│   ├── lrclib-search.js    # Autocomplete de música (GET /lrclib-search)
+│   │   └── lrclib.js        # Módulo compartilhado LRCLIB (headers, throttle, URLs)
+│   ├── recommend.js         # API principal POST /recommend + GET (history/share lookup)
+│   ├── lrclib-search.js     # Autocomplete de música (GET /lrclib-search)
 │   └── share/
-│       └── [slug].js       # Open Graph dinâmico (GET /share/{slug})
-├── _redirects              # SPA fallback (/* /index.html 200)
-├── robots.txt              # SEO
-├── sitemap.xml             # SEO
+│       └── [slug].js        # Open Graph dinâmico (GET /share/{slug})
+├── _redirects               # SPA fallback (/* /index.html 200)
+├── robots.txt               # SEO
+├── sitemap.xml              # SEO
 ├── images/
-│   ├── icon.svg            # Ícone do site
-│   ├── og-image.png        # Imagem padrão Open Graph (1200x630)
-│   ├── plus.svg            # Ícone "adicionar música"
-│   └── x.svg               # Ícone "remover música"
-├── env.example             # Template de variáveis de ambiente
-├── requirements.txt        # Dependências Python (versão terminal)
-├── app.py                  # Versão Python (terminal)
+│   ├── icon.svg             # Ícone do site
+│   ├── og-image.png         # Imagem padrão Open Graph (1200x630)
+│   ├── plus.svg             # Ícone "adicionar música"
+│   └── x.svg                # Ícone "remover música"
+├── env.example              # Template de variáveis de ambiente
+├── requirements.txt         # Dependências Python (versão terminal)
+├── app.py                   # Versão Python (terminal)
 ├── tests/
-│   ├── test_style.py       # Teste de pipeline (CI — "Style" - Taylor Swift)
+│   ├── test_style.py        # Teste de pipeline (CI — "Style" - Taylor Swift)
 │   └── test_genius_layer.py # Teste isolado da camada Genius
-└── README.md               # Documentação pública
+└── README.md                # Documentação pública
 ```
 
 O frontend envia uma requisição `POST /recommend` com `{ nome_musica, artista, lrclib_id, musicas_extras, lang }`. A Pages Function orquestra todo o pipeline (letra → contexto → IA → TMDb → citações → dados da música) e retorna um JSON consolidado.
