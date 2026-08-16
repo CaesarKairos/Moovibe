@@ -268,7 +268,12 @@ class EnrichmentGUI(ctk.CTk):
             self.lbl_erros.configure(text=f"Erros: {erros}")
             self.lbl_pendentes.configure(text=f"Filmes pendentes: {evento.get('pendentes', 0)}")
 
-            processados_total = evento.get("processados", 0) + evento.get("processados_acumulados", 0)
+            # Total de filmes com estilo = processados na sessão + acumulados + já no banco
+            processados_total = (
+                evento.get("processados", 0)
+                + evento.get("processados_acumulados", 0)
+                + evento.get("processados_no_banco", 0)
+            )
             pendentes = evento.get("pendentes", 0)
             self._atualizar_progresso_geral(processados_total, pendentes)
 

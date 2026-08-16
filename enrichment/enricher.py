@@ -140,7 +140,7 @@ class Enricher:
             fechar = False
         try:
             pendentes = db.count_pendentes(conn)
-            processados = db.count_processados(conn)
+            processados_no_banco = db.count_processados(conn)
         finally:
             if fechar:
                 conn.close()
@@ -148,7 +148,7 @@ class Enricher:
             "stats",
             **stats,
             pendentes=pendentes,
-            processados=processados,
+            processados_no_banco=processados_no_banco,
             tempo_execucao=tempo,
             processados_acumulados=self._stats_acumulados["processados"],
             com_busca_web_acumulados=self._stats_acumulados["com_busca_web"],
