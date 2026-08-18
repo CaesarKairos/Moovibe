@@ -235,9 +235,15 @@ class Coletor:
                     self._emitir_log(f"[AVISO] Consulta desconhecida no código: "
                                      f"{registro['label']}. Usando params vazios.")
 
-                self._processar_consulta(conn, consulta, registro)
+                status = self._processar_consulta(conn, consulta, registro)
 
-                self._consulta_concluida(conn, consulta["query_id"])
+                if status == "concluida":
+                    self._consulta_concluida(conn, consulta["query_id"])
+                elif status == "interrompida":
+                    break
+                # se status == "erro", não marca como concluída e não para o
+                # laço — segue para a próxima consulta pendente (essa fica com
+                # status="error" salvo e será retomada numa execução futura).
 
             # Concluído
             total_filmes = db.count_movies(conn)
@@ -301,7 +307,7 @@ class Coletor:
                     error_message="interrompido pelo usuário",
                 )
                 conn.commit()
-                return
+                return "interrompida"
 
             self._pause_event.wait()  # bloqueia se pausado
 
@@ -326,14 +332,24 @@ class Coletor:
                     error_message=str(e),
                 )
                 conn.commit()
-                return
+                return "erro"
 
             if not pagina_dados:
                 self._emitir_log(f"[ERRO] Resposta vazia na consulta '{label}', página {pagina}.")
                 self._emitir_atividade(f"Resposta vazia na página {pagina} de {label}")
                 with self._stats_lock:
                     self._stats["erros"] += 1
-                return
+                db.upsert_progress(
+                    conn,
+                    query_id=query_id,
+                    label=label,
+                    last_page=pagina - 1,
+                    total_pages=total_paginas,
+                    status="error",
+                    error_message="resposta vazia do TMDB",
+                )
+                conn.commit()
+                return "erro"
 
             total_paginas = max(1, pagina_dados.get("total_pages") or 1)
             resultados = pagina_dados.get("results") or []
@@ -369,6 +385,7 @@ class Coletor:
 
         self._emitir_log(f"[CONCLUIDA] Consulta '{label}' finalizada "
                          f"({pagina} páginas, {len(resultados)} filmes na última).")
+        return "concluida"
 
     def _salvar_filme(self, conn, item: dict, origem: str):
         """Normaliza, busca complementos e faz UPSERT de um único filme."""

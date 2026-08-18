@@ -1,9 +1,9 @@
 """Orquestrador do enriquecimento de estilo: seleciona filmes, busca contexto
-web quando necessário, chama o modelo local e salva o resultado no banco.
+web para TODO filme, chama o modelo local e salva o resultado no banco.
 
 Roda em uma thread separada (iniciada pela GUI) e comunica o progresso
 através de uma fila thread-safe. Suporta pausar, parar e retomar
-(processa apenas filmes onde `estilo IS NULL`).
+(processa apenas filmes onde `estilo IS NULL OR TRIM(estilo) = ''`).
 """
 
 import json
@@ -14,11 +14,6 @@ import time
 from . import db
 from .ollama_client import gerar_estilo
 from .web_search import buscar_contexto_web
-
-# Limiar para decidir se um filme tem "pouca informação" e merece busca web.
-# Um filme com menos de 3 keywords e/ou overview curto (menos de 200 chars).
-MIN_KEYWORDS_PARA_BUSCA = 3
-MIN_OVERVIEW_PARA_BUSCA = 200
 
 # Tamanho do lote de filmes carregados por vez do banco.
 # Pequeno para não segurar transação longa enquanto o coletor escreve.
@@ -157,7 +152,12 @@ class Enricher:
         )
 
     def _persistir_stats(self, conn=None):
-        """Salva os totais acumulados na tabela enrichment_stats."""
+        """Salva os totais acumulados na tabela enrichment_stats.
+
+        Após persistir, os contadores da sessão são incorporados aos
+        acumulados e zerados, evitando contagem dupla em persistências
+        subsequentes (pausar/parar/fechar) — cada filme conta uma única vez.
+        """
         with self._stats_lock:
             stats = dict(self._stats)
         tempo = 0
@@ -179,6 +179,15 @@ class Enricher:
         finally:
             if fechar:
                 conn.close()
+
+        # Incorpora os contadores da sessão nos acumulados e zera a sessão
+        with self._stats_lock:
+            self._stats_acumulados["processados"] += stats.get("processados", 0)
+            self._stats_acumulados["com_busca_web"] += stats.get("com_busca_web", 0)
+            self._stats_acumulados["erros"] += stats.get("erros", 0)
+            self._stats = {"processados": 0, "com_busca_web": 0, "erros": 0}
+        self._tempo_base_acumulado = tempo_total
+        self._tempo_inicio = time.time()
 
     # ==========================================
     # LOOP PRINCIPAL
@@ -203,13 +212,27 @@ class Enricher:
                 if not filmes:
                     break
 
+                processados_no_lote = 0
                 for filme in filmes:
                     if self._stop_event.is_set():
                         break
                     self._pause_event.wait()
-                    self._processar_filme(conn, filme)
+                    if self._processar_filme(conn, filme):
+                        processados_no_lote += 1
 
                 conn.commit()
+
+                # Se nenhum filme do lote foi processado com sucesso (todos
+                # deram erro), encerra para não entrar em loop infinito
+                # tentando os mesmos filmes repetidamente. Os filmes com erro
+                # ficam com checkpoint "error" e serão retomados numa próxima
+                # execução (continuam pendentes porque estilo IS NULL).
+                if processados_no_lote == 0:
+                    self._emitir_log(
+                        "[FIM] Nenhum filme processado neste lote (todos com erro). "
+                        "Encerrando para evitar repetição infinita."
+                    )
+                    break
 
             # Concluído
             pendentes = db.count_pendentes(conn)
@@ -228,7 +251,16 @@ class Enricher:
     # PROCESSAMENTO DE UM FILME
     # ==========================================
     def _processar_filme(self, conn, filme):
-        """Gera e salva o estilo de um único filme."""
+        """Gera e salva o estilo de um único filme.
+
+        Fluxo para CADA filme:
+          1. Marca como `running` no enrichment_progress.
+          2. Monta o contexto base (dados do TMDB no banco).
+          3. Busca contexto na web (obrigatória para TODO filme).
+          4. Combina TMDB + contexto web e envia para a IA.
+          5. Valida a resposta.
+          6. Salva estilo e marca `done` em uma única transação.
+        """
         tmdb_id = filme["tmdb_id"]
         titulo = filme["title"] or f"ID {tmdb_id}"
         ano = filme["release_year"]
@@ -236,30 +268,29 @@ class Enricher:
         self._emitir("filme_atual", titulo=titulo)
 
         try:
-            # Decide se precisa de busca web (pouca informação)
-            precisa_busca = self._precisa_busca_web(filme)
+            # Marca como em processamento (checkpoint para retomada)
+            db.registrar_running(conn, tmdb_id)
 
+            # Passo 1: contexto base do TMDB (do banco)
             contexto = self._montar_contexto(filme)
-            contexto_web = ""
 
-            if precisa_busca:
-                self._emitir_atividade(f"Buscando contexto na web para '{titulo}'")
-                resultado_busca = buscar_contexto_web(titulo, ano)
-                contexto_web = resultado_busca.get("contexto", "")
-                # Emite os motivos reais de falha (rate limit, timeout, etc.)
-                # no log de atividade detalhado para diagnóstico
-                for aviso in resultado_busca.get("avisos", []):
-                    self._emitir_atividade(f"[AVISO] {aviso}")
-                if contexto_web:
-                    contexto += "\n\n--- Contexto adicional da web (resenhas/criticas) ---\n"
-                    contexto += contexto_web
-                    with self._stats_lock:
-                        self._stats["com_busca_web"] += 1
-                else:
-                    self._emitir_atividade(
-                        f"Busca web para '{titulo}' não retornou conteúdo aproveitável"
-                    )
+            # Passo 2: busca web obrigatória para TODO filme
+            self._emitir_atividade(f"Buscando contexto na web para '{titulo}'")
+            resultado_busca = buscar_contexto_web(titulo, ano)
+            contexto_web = resultado_busca.get("contexto", "")
+            for aviso in resultado_busca.get("avisos", []):
+                self._emitir_atividade(f"[AVISO] {aviso}")
+            if contexto_web:
+                contexto += "\n\n--- Contexto adicional da web (resenhas/criticas) ---\n"
+                contexto += contexto_web
+                with self._stats_lock:
+                    self._stats["com_busca_web"] += 1
+            else:
+                self._emitir_atividade(
+                    f"Busca web para '{titulo}' não retornou conteúdo aproveitável"
+                )
 
+            # Passo 3: chama a IA com contexto específico do filme atual
             self._emitir_atividade(f"Chamando modelo local para '{titulo}'")
 
             def _log_ia(prompt, resposta):
@@ -271,14 +302,14 @@ class Enricher:
                     f"[IA] Resposta do modelo para '{titulo}': {resposta[:500]}"
                 )
 
-            estilo = gerar_estilo(contexto, on_log=_log_ia)
+            estilo = gerar_estilo(contexto, tmdb_id=tmdb_id, titulo=titulo, on_log=_log_ia)
 
             # Confidence é calculado em Python puro (regra objetiva), não pelo
             # modelo — ele não calibra isso direito.
             estilo["confidence"] = self._calcular_confidence(filme, contexto_web)
 
-            db.salvar_estilo(conn, tmdb_id, estilo)
-            db.registrar_checkpoint(conn, tmdb_id, "done")
+            # Passo 4: salva estilo + marca done em uma única transação
+            db.salvar_estilo_e_done(conn, tmdb_id, estilo)
 
             with self._stats_lock:
                 self._stats["processados"] += 1
@@ -288,6 +319,8 @@ class Enricher:
             self._emitir_atividade(f"Estilo salvo para '{titulo}'")
             self._emitir_stats(conn)
 
+            return True
+
         except Exception as e:
             with self._stats_lock:
                 self._stats["erros"] += 1
@@ -295,20 +328,7 @@ class Enricher:
             self._emitir_log(f"[ERRO] Falha ao processar '{titulo}': {e}")
             self._emitir_atividade(f"Erro ao processar '{titulo}': {e}")
             self._emitir_stats(conn)
-
-    def _precisa_busca_web(self, filme) -> bool:
-        """Decide se o filme tem pouca informação e merece busca web.
-
-        Critério: menos de 3 keywords e/ou overview curto (menos de 200 chars).
-        """
-        keywords = self._parse_lista(filme["keywords"])
-        overview = filme["overview"] or ""
-
-        if len(keywords) < MIN_KEYWORDS_PARA_BUSCA:
-            return True
-        if len(overview) < MIN_OVERVIEW_PARA_BUSCA:
-            return True
-        return False
+            return False
 
     def _calcular_confidence(self, filme, contexto_web: str) -> str:
         """Calcula o nível de confiança em Python puro, com regra objetiva.

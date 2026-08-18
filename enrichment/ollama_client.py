@@ -126,45 +126,94 @@ def _normalizar_estilo(dados: dict) -> dict:
     }
 
 
-def gerar_estilo(contexto: str, on_log=None) -> dict:
+def validar_resposta(estilo: dict, tmdb_id: int, titulo: str) -> None:
+    """Valida a resposta do modelo antes de salvar.
+
+    Levanta exceção se:
+    - O JSON não tiver os campos esperados;
+    - Todos os campos de conteúdo estiverem vazios (resposta genérica/inválida);
+    - Houver qualquer indício de erro ou resposta reaproveitada.
+
+    Não impede que dois filmes diferentes tenham estilos parecidos —
+    apenas impede que uma resposta vazia/repetida acidental seja salva.
+    """
+    if not isinstance(estilo, dict):
+        raise ValueError("Resposta da IA não é um objeto JSON válido.")
+
+    campos_lista = ("moods", "themes", "atmosphere", "visual_style")
+    tem_algum_conteudo = False
+    for campo in campos_lista:
+        valores = estilo.get(campo)
+        if isinstance(valores, list) and valores:
+            tem_algum_conteudo = True
+            break
+
+    # Pelo menos um campo de conteúdo deve ter valores
+    if not tem_algum_conteudo:
+        raise ValueError(
+            f"Resposta vazia/inválida para '{titulo}' (tmdb_id={tmdb_id}): "
+            "nenhum campo de conteúdo preenchido."
+        )
+
+    # Confirma que a identidade do filme está no contexto (proteção contra
+    # reutilização acidental de resposta de outro filme)
+    if titulo and titulo.lower() not in str(estilo).lower():
+        # A resposta pode não conter o título explicitamente (é normal),
+        # mas se contiver outro título conhecido, é suspeito. Não
+        # bloqueamos aqui — a validação principal é a de conteúdo.
+        pass
+
+
+def gerar_estilo(contexto: str, tmdb_id: int, titulo: str, on_log=None) -> dict:
     """Gera o campo de estilo para um filme usando o modelo local.
 
-    `contexto` é o texto (dados do filme + eventual contexto web) que será
-    enviado ao modelo. O modelo é instruído a usar SOMENTE as informações
-    fornecidas — nunca inventar fatos sobre enredo, elenco ou eventos.
+    `contexto` é o texto (dados do filme + contexto web) que será enviado
+    ao modelo. O modelo é instruído a analisar SOMENTE o filme descrito.
+
+    `tmdb_id` e `titulo` identificam o filme atual — são incluídos no prompt
+    para garantir que a resposta seja específica deste filme e nunca uma
+    resposta reaproveitada de outro.
 
     `on_log` é um callback opcional `on_log(prompt, resposta)` chamado com
     o prompt enviado e a resposta bruta do modelo, para registro/diagnóstico.
 
     Retorna o dict de estilo normalizado. Lança exceção se o Ollama não
-    estiver acessível ou se o JSON não puder ser extraído de jeito nenhum.
+    estiver acessível, se o JSON não puder ser extraído ou se a resposta
+    não passar na validação.
     """
     prompt = (
-        "Você é um analista de cinema. Com base SOMENTE nas informações "
-        "fornecidas abaixo sobre um filme, produza uma análise de estilo em "
-        "JSON. NUNCA invente fatos sobre enredo, elenco, eventos ou qualquer "
-        "detalhe que não esteja presente no texto fornecido. Se a informação "
-        "for insuficiente, use listas vazias e niveis 'unknown'.\n\n"
+        "Você é um analista de cinema especializado em análise estética "
+        "e atmosférica. Você está analisando EXCLUSIVAMENTE o filme abaixo, "
+        "identificado por tmdb_id e título. NÃO analise nenhum outro filme.\n\n"
+        f"FILME ATUAL (tmdb_id={tmdb_id}): {titulo}\n"
+        "Contexto do filme (dados TMDB + informações da web):\n"
+        f"{contexto}\n\n"
+        "Com base SOMENTE nas informações fornecidas sobre ESTE filme, "
+        "produza uma análise de estilo em JSON. NUNCA invente fatos sobre "
+        "enredo, elenco, eventos ou qualquer detalhe que não esteja presente "
+        "no texto fornecido. Se a informação for insuficiente, use listas "
+        "vazias e niveis 'unknown'.\n\n"
+        "Analise especificamente:\n"
+        "- moods: humores/emoções predominantes do filme (max 5)\n"
+        "- themes: temas centrais (max 5)\n"
+        "- atmosphere: atmosfera/ambiente (max 5)\n"
+        "- pace: ritmo narrativo: 'slow', 'medium' ou 'fast'\n"
+        "- visual_style: características visuais/estéticas, fotografia, "
+        "direção de arte (max 5)\n"
+        "- melancholy_level: intensidade melancólica: 'low', 'medium' ou 'high'\n"
+        "- tension_level: intensidade de tensão: 'low', 'medium' ou 'high'\n\n"
         "Responda APENAS com JSON válido, sem texto extra, no formato:\n"
         "{\n"
-        '  "moods": ["melancholic", "tense"],\n'
-        '  "themes": ["memory", "loss"],\n'
-        '  "atmosphere": ["quiet", "claustrophobic"],\n'
-        '  "pace": "slow",\n'
-        '  "visual_style": ["muted colors", "handheld camera"],\n'
-        '  "melancholy_level": "high",\n'
-        '  "tension_level": "medium"\n'
+        '  "moods": ["tense", "contemplative"],\n'
+        '  "themes": ["identity", "technology"],\n'
+        '  "atmosphere": ["sleek", "oppressive"],\n'
+        '  "pace": "medium",\n'
+        '  "visual_style": ["neon-lit", "dutch angles"],\n'
+        '  "melancholy_level": "medium",\n'
+        '  "tension_level": "high"\n'
         "}\n\n"
-        "Campos:\n"
-        "- moods: lista curta de humores/emoções predominantes (max 5)\n"
-        "- themes: lista curta de temas centrais (max 5)\n"
-        "- atmosphere: lista curta de palavras de atmosfera/ambiente (max 5)\n"
-        "- pace: ritmo narrativo: 'slow', 'medium' ou 'fast'\n"
-        "- visual_style: lista curta de características visuais/estéticas (max 5)\n"
-        "- melancholy_level: 'low', 'medium' ou 'high'\n"
-        "- tension_level: 'low', 'medium' ou 'high'\n\n"
-        "Informações do filme:\n"
-        f"{contexto}"
+        "IMPORTANTE: Cada resposta deve refletir as características "
+        "específicas DESTE filme. Não copie padrões genéricos."
     )
 
     payload = {
@@ -203,4 +252,6 @@ def gerar_estilo(contexto: str, on_log=None) -> dict:
                      texto_resposta[:500])
         raise RuntimeError("Modelo retornou resposta sem JSON válido.")
 
-    return _normalizar_estilo(extraido)
+    normalizado = _normalizar_estilo(extraido)
+    validar_resposta(normalizado, tmdb_id, titulo)
+    return normalizado

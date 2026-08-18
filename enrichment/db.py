@@ -132,22 +132,24 @@ def get_pendentes(conn, limite: int = 10):
     """
     return conn.execute(
         "SELECT tmdb_id, title, release_year, overview, genres, keywords, director "
-        "FROM movies WHERE estilo IS NULL ORDER BY tmdb_id LIMIT ?",
+        "FROM movies WHERE estilo IS NULL OR TRIM(estilo) = '' ORDER BY tmdb_id LIMIT ?",
         (limite,),
     ).fetchall()
 
 
 def count_pendentes(conn) -> int:
-    """Total de filmes ainda sem estilo."""
+    """Total de filmes ainda sem estilo preenchido."""
     return conn.execute(
-        "SELECT COUNT(*) AS c FROM movies WHERE estilo IS NULL"
+        "SELECT COUNT(*) AS c FROM movies "
+        "WHERE estilo IS NULL OR TRIM(estilo) = ''"
     ).fetchone()["c"]
 
 
 def count_processados(conn) -> int:
     """Total de filmes com estilo preenchido."""
     return conn.execute(
-        "SELECT COUNT(*) AS c FROM movies WHERE estilo IS NOT NULL"
+        "SELECT COUNT(*) AS c FROM movies "
+        "WHERE estilo IS NOT NULL AND TRIM(estilo) <> ''"
     ).fetchone()["c"]
 
 
@@ -160,6 +162,77 @@ def salvar_estilo(conn, tmdb_id: int, estilo: dict):
         (payload, _now(), tmdb_id),
     )
     conn.commit()
+
+
+def salvar_estilo_e_done(conn, tmdb_id: int, estilo: dict):
+    """Salva o estilo e marca o checkpoint como done em uma única transação.
+
+    Garante que `done` só é registrado depois que o estilo foi realmente
+    persistido na tabela movies.
+    """
+    payload = json.dumps(estilo, ensure_ascii=False)
+    agora = _now()
+    _executar_com_retry(
+        conn,
+        "UPDATE movies SET estilo = ?, updated_at = ? WHERE tmdb_id = ?",
+        (payload, agora, tmdb_id),
+    )
+    _executar_com_retry(
+        conn,
+        """
+        INSERT INTO enrichment_progress (tmdb_id, status, error_message, created_at, updated_at)
+        VALUES (?, 'done', NULL, ?, ?)
+        ON CONFLICT(tmdb_id) DO UPDATE SET
+            status = 'done',
+            error_message = NULL,
+            updated_at = excluded.updated_at
+        """,
+        (tmdb_id, agora, agora),
+    )
+    conn.commit()
+
+
+def registrar_running(conn, tmdb_id: int):
+    """Marca o filme como em processamento na tabela enrichment_progress."""
+    agora = _now()
+    _executar_com_retry(
+        conn,
+        """
+        INSERT INTO enrichment_progress (tmdb_id, status, error_message, created_at, updated_at)
+        VALUES (?, 'running', NULL, ?, ?)
+        ON CONFLICT(tmdb_id) DO UPDATE SET
+            status = 'running',
+            error_message = NULL,
+            updated_at = excluded.updated_at
+        """,
+        (tmdb_id, agora, agora),
+    )
+    conn.commit()
+
+
+def reset_enriquecimento(conn=None):
+    """Reseta completamente o enriquecimento: limpa estilos, progresso e stats.
+
+    Ação explícita de migração/reinicialização — NÃO é chamada automaticamente
+    na abertura do programa.
+    """
+    fechar = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        _executar_com_retry(conn, "UPDATE movies SET estilo = NULL")
+        _executar_com_retry(conn, "DELETE FROM enrichment_progress")
+        _executar_com_retry(conn, "DELETE FROM enrichment_stats")
+        _executar_com_retry(
+            conn,
+            "INSERT INTO enrichment_stats "
+            "(id, processados, com_busca_web, erros, tempo_total_segundos) "
+            "VALUES (1, 0, 0, 0, 0)"
+        )
+        conn.commit()
+    finally:
+        if fechar:
+            conn.close()
 
 
 def registrar_checkpoint(conn, tmdb_id: int, status: str, error_message: str = None):

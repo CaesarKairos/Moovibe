@@ -13,6 +13,9 @@ moovibe_library.db
 moovibe_library.db-wal
 moovibe_library.db-shm
 
+# Backups do banco (gerados pelo reset_enriquecimento.py)
+backups/
+
 # Configurações do VS Code
 .vscode/
 
