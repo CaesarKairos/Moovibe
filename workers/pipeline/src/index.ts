@@ -1,6 +1,7 @@
 import { GeminiClient, RetryableError } from '../../../functions/_lib/gemini.js';
 import { buildMovieDocument, EMBEDDING_SCHEMA_VERSION } from '../../../functions/_lib/recommender.js';
 import { discoveryQueries } from './queries';
+import { DISCOVERY_BUDGET,DISCOVERY_DUE_SQL,MOVIE_BACKLOG_SQL,PIPELINE_BUDGET,STALE_JOBS_SQL,STALE_JOB_MINUTES,retryDelaySeconds,shouldRetry,stableDiscoveryKey } from './job-policy';
 
 type JobType='DISCOVER_QUERY'|'FETCH_MOVIE'|'ENRICH_MOVIE'|'EMBED_MOVIE'|'REFRESH_MOVIE'|'REEMBED_MOVIE';
 type Job={ type:JobType; key:string; payload:Record<string,unknown> };
@@ -23,33 +24,55 @@ async function tmdb(env:Env,path:string,params:Record<string,unknown>={}) {
 }
 
 async function enqueue(env:Env,job:Job) {
-  const result=await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES(?,?,?,'queued') ON CONFLICT(job_key) DO UPDATE SET status='queued',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE pipeline_jobs.status='error' AND pipeline_jobs.available_at<=CURRENT_TIMESTAMP`).bind(job.key,job.type,JSON.stringify(job.payload)).run();
+  const result=await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,available_at) VALUES(?,?,?,'queued',CURRENT_TIMESTAMP) ON CONFLICT(job_key) DO UPDATE SET type=excluded.type,payload_json=excluded.payload_json,status='queued',attempts=0,last_error=NULL,available_at=CURRENT_TIMESTAMP,started_at=NULL,completed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE pipeline_jobs.status IN ('done','error') AND (pipeline_jobs.available_at IS NULL OR pipeline_jobs.available_at<=CURRENT_TIMESTAMP)`).bind(job.key,job.type,JSON.stringify(job.payload)).run();
   if(result.meta.changes) await env.PIPELINE_QUEUE.send(job);
   return Boolean(result.meta.changes);
 }
 
 async function seedQueries(env:Env) {
-  const statements=discoveryQueries().map(q=>env.MOOVIBE_LIBRARY.prepare(`INSERT INTO collection_queries(query_id,label,params_json,next_run_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(query_id) DO NOTHING`).bind(q.id,q.label,JSON.stringify(q.params)));
+  const statements=discoveryQueries().map(q=>env.MOOVIBE_LIBRARY.prepare(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,next_run_at) VALUES(?,?,?,1,'pending',CURRENT_TIMESTAMP) ON CONFLICT(query_id) DO UPDATE SET label=excluded.label,params_json=excluded.params_json,is_executable=1 WHERE collection_queries.query_id NOT LIKE 'legacy-%'`).bind(q.id,q.label,JSON.stringify(q.params)));
   for(let i=0;i<statements.length;i+=80) await env.MOOVIBE_LIBRARY.batch(statements.slice(i,i+80));
+}
+
+async function recoverJobs(env:Env) {
+  const stale=await env.MOOVIBE_LIBRARY.prepare(STALE_JOBS_SQL).bind(`-${STALE_JOB_MINUTES} minutes`,100).all<Job&{job_key:string;payload_json:string;attempts:number}>();
+  let recovered=0;
+  for(const row of stale.results) {
+    const error=`stale lease recovered after ${STALE_JOB_MINUTES} minutes`;
+    const changed=await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='queued',last_error=?,available_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='running' AND updated_at < datetime('now',?)`).bind(error,row.job_key,`-${STALE_JOB_MINUTES} minutes`).run();
+    if(changed.meta.changes){
+      const payload=JSON.parse(row.payload_json);
+      if(row.type==='DISCOVER_QUERY')await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET status='pending',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE query_id=? AND is_executable=1 AND status='running'`).bind(error,String(payload.query_id)).run();
+      await env.PIPELINE_QUEUE.send({type:row.type as JobType,key:row.job_key,payload});recovered++;log('job_retry',{job_key:row.job_key,type:row.type,attempt:row.attempts,error});
+    }
+  }
+  // Outbox repair: a crash between the D1 insert and Queue.send must not strand work.
+  const stranded=await env.MOOVIBE_LIBRARY.prepare(`SELECT job_key,type,payload_json FROM pipeline_jobs WHERE status='queued' AND updated_at<datetime('now','-5 minutes') AND (available_at IS NULL OR available_at<=CURRENT_TIMESTAMP) ORDER BY updated_at LIMIT 100`).all<any>();
+  for(const row of stranded.results){await env.PIPELINE_QUEUE.send({type:row.type,key:row.job_key,payload:JSON.parse(row.payload_json)});await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='queued'`).bind(row.job_key).run();}
+  return {stale:recovered,stranded:stranded.results.length};
 }
 
 async function schedule(env:Env) {
   await seedQueries(env);
-  const due=await env.MOOVIBE_LIBRARY.prepare(`SELECT query_id FROM collection_queries WHERE status!='running' AND (next_run_at IS NULL OR next_run_at<=CURRENT_TIMESTAMP) ORDER BY COALESCE(last_run_at,'') LIMIT 12`).all<{query_id:string}>();
-  let queued=0; for(const q of due.results) if(await enqueue(env,{type:'DISCOVER_QUERY',key:`discover:${q.query_id}:${new Date().toISOString().slice(0,13)}`,payload:{query_id:q.query_id}})) queued++;
-  const pending=await env.MOOVIBE_LIBRARY.prepare(`SELECT tmdb_id,enrichment_status,embedding_status FROM movies WHERE collection_status='complete' AND (enrichment_status IN ('pending','error') OR embedding_status IN ('pending','error')) ORDER BY updated_at LIMIT 50`).all<any>();
+  const recovery=await recoverJobs(env);
+  // Existing library work is enqueued first and receives almost all of each cron budget.
+  const pending=await env.MOOVIBE_LIBRARY.prepare(MOVIE_BACKLOG_SQL).bind(PIPELINE_BUDGET).all<any>();
+  let pipelineQueued=0;
   for(const movie of pending.results) {
-    if(movie.enrichment_status!=='complete') await enqueue(env,{type:'ENRICH_MOVIE',key:`enrich:${movie.tmdb_id}:v2`,payload:{tmdb_id:movie.tmdb_id}});
-    else if(movie.embedding_status!=='complete') await enqueue(env,{type:'EMBED_MOVIE',key:`embed:${movie.tmdb_id}:${EMBEDDING_SCHEMA_VERSION}`,payload:{tmdb_id:movie.tmdb_id}});
+    if(movie.enrichment_status!=='complete') pipelineQueued+=Number(await enqueue(env,{type:'ENRICH_MOVIE',key:`enrich:${movie.tmdb_id}:v2`,payload:{tmdb_id:movie.tmdb_id}}));
+    else if(movie.embedding_status!=='complete') pipelineQueued+=Number(await enqueue(env,{type:'EMBED_MOVIE',key:`embed:${movie.tmdb_id}:${EMBEDDING_SCHEMA_VERSION}`,payload:{tmdb_id:movie.tmdb_id}}));
   }
+  const due=await env.MOOVIBE_LIBRARY.prepare(DISCOVERY_DUE_SQL).bind(DISCOVERY_BUDGET).all<{query_id:string}>();
+  let discoveryQueued=0; for(const q of due.results) if(await enqueue(env,{type:'DISCOVER_QUERY',key:stableDiscoveryKey(q.query_id),payload:{query_id:q.query_id}})) discoveryQueued++;
   await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO system_state(key,value) VALUES('last_cron_at',CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP`).run();
-  log('cron_complete',{discovery_jobs:queued,pipeline_candidates:pending.results.length});
+  log('cron_complete',{pipeline_jobs:pipelineQueued,discovery_jobs:discoveryQueued,pipeline_candidates:pending.results.length,recovered_stale:recovery.stale,recovered_stranded:recovery.stranded});
 }
 
 async function discover(env:Env,job:Job) {
-  const id=String(job.payload.query_id); const row=await env.MOOVIBE_LIBRARY.prepare(`SELECT * FROM collection_queries WHERE query_id=?`).bind(id).first<any>();
+  const id=String(job.payload.query_id); const row=await env.MOOVIBE_LIBRARY.prepare(`SELECT * FROM collection_queries WHERE query_id=? AND is_executable=1 AND status='pending'`).bind(id).first<any>();
   if(!row) return; const page=Math.max(1,Number(row.next_page)||1); const params={...JSON.parse(row.params_json),page,include_adult:false,include_video:false};
-  await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET status='running',last_run_at=CURRENT_TIMESTAMP,run_count=run_count+1 WHERE query_id=?`).bind(id).run();
+  const claimed=await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET status='running',last_run_at=CURRENT_TIMESTAMP,run_count=run_count+1,updated_at=CURRENT_TIMESTAMP WHERE query_id=? AND is_executable=1 AND status='pending'`).bind(id).run();
+  if(!claimed.meta.changes)return;
   const data=await tmdb(env,'/discover/movie',params);
   let discovered=0;
   for(const item of data.results||[]) {
@@ -121,14 +144,23 @@ async function embed(env:Env,job:Job) {
   await env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET embedding_status='complete',embedding_model=?,embedding_dimensions=?,embedding_schema_version=?,semantic_document_hash=?,embedded_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(model,dimensions,env.EMBEDDING_SCHEMA_VERSION||EMBEDDING_SCHEMA_VERSION,digest,movie.id).run(); log('movie_embedded',{tmdb_id:id,model,dimensions});
 }
 
-async function processJob(env:Env,job:Job) {
-  await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='running',attempts=attempts+1,started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(job.key).run();
+type JobOutcome={retry:boolean;delaySeconds?:number};
+async function processJob(env:Env,job:Job):Promise<JobOutcome> {
+  const claim=await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='running',attempts=attempts+1,started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='queued' AND (available_at IS NULL OR available_at<=CURRENT_TIMESTAMP)`).bind(job.key).run();
+  if(!claim.meta.changes)return {retry:false};
+  const state=await env.MOOVIBE_LIBRARY.prepare(`SELECT attempts FROM pipeline_jobs WHERE job_key=?`).bind(job.key).first<{attempts:number}>();
+  const attempt=Number(state?.attempts||1); log('job_started',{job_key:job.key,type:job.type,attempt});
   try {
     if(job.type==='DISCOVER_QUERY') await discover(env,job); else if(job.type==='FETCH_MOVIE'||job.type==='REFRESH_MOVIE') await fetchMovie(env,job); else if(job.type==='ENRICH_MOVIE') await enrich(env,job); else await embed(env,job);
     await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='done',completed_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(job.key).run();
+    log('job_completed',{job_key:job.key,type:job.type,attempt}); return {retry:false};
   } catch(error:any) {
-    await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='error',last_error=?,available_at=datetime('now','+1 hour'),updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(String(error?.message||error).slice(0,1000),job.key).run();
-    log('job_error',{job_key:job.key,type:job.type,error:String(error?.message||error).slice(0,300)}); throw error;
+    const message=String(error?.message||error).slice(0,1000); const retry=shouldRetry(attempt);
+    const delay=retryDelaySeconds(attempt,error instanceof RetryableError?error.retryAfter:0);
+    await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status=?,last_error=?,available_at=datetime('now',?),updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(retry?'queued':'error',message,`+${delay} seconds`,job.key).run();
+    if(job.type==='DISCOVER_QUERY')await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET status='pending',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE query_id=? AND is_executable=1`).bind(message,String(job.payload.query_id)).run();
+    log(retry?'job_retry':'job_error',{job_key:job.key,type:job.type,attempt,error:message.slice(0,300)});
+    return retry?{retry:true,delaySeconds:delay}:{retry:false};
   }
 }
 
@@ -140,6 +172,8 @@ async function health(env:Env) {
 
 export default {
   async scheduled(_controller:ScheduledController,env:Env,ctx:ExecutionContext){ctx.waitUntil(schedule(env));},
-  async queue(batch:MessageBatch<Job>,env:Env){for(const message of batch.messages){try{await processJob(env,message.body);message.ack();}catch(error:any){const delay=error instanceof RetryableError&&error.retryAfter?Math.min(43200,Math.max(60,error.retryAfter)):300;message.retry({delaySeconds:delay});}}},
+  async queue(batch:MessageBatch<Job>,env:Env){for(const message of batch.messages){const outcome=await processJob(env,message.body);if(outcome.retry)message.retry({delaySeconds:outcome.delaySeconds});else message.ack();}},
   async fetch(request:Request,env:Env){const url=new URL(request.url);if(url.pathname==='/health')return json(await health(env));if(url.pathname==='/admin/run'){if(!env.ADMIN_TOKEN||request.headers.get('authorization')!==`Bearer ${env.ADMIN_TOKEN}`)return json({error:'unauthorized'},401);await schedule(env);return json({ok:true});}return json({service:'moovibe-pipeline',ok:true});}
 };
+
+export { enqueue,processJob,schedule };

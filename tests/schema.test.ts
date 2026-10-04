@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { movieToLegacy } from '../functions/_lib/catalog.js';
 
 let db:Database.Database;
-beforeEach(()=>{db=new Database(':memory:');db.exec(fs.readFileSync('migrations/0001_library.sql','utf8'));});
+beforeEach(()=>{db=new Database(':memory:');for(const file of fs.readdirSync('migrations').filter(x=>x.endsWith('.sql')).sort())db.exec(fs.readFileSync(`migrations/${file}`,'utf8'));});
 afterEach(()=>db.close());
 
 describe('D1 schema idempotency',()=>{
