@@ -1,0 +1,27 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "moovibe-pipeline",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "vars": {
+    "EMBEDDING_MODEL": "gemini-embedding-2",
+    "EMBEDDING_DIMENSIONS": "768",
+    "EMBEDDING_SCHEMA_VERSION": "movie-v1"
+  },
+  "d1_databases": [{
+    "binding": "MOOVIBE_LIBRARY",
+    "database_name": "moovibe-library",
+    "database_id": "REPLACE_AFTER_PROVISIONING",
+    "migrations_dir": "../../migrations"
+  }],
+  "vectorize": [{ "binding": "MOVIE_VECTORS", "index_name": "moovibe-movies-v1" }],
+  "queues": {
+    "producers": [{ "binding": "PIPELINE_QUEUE", "queue": "moovibe-pipeline" }],
+    "consumers": [{
+      "queue": "moovibe-pipeline", "max_batch_size": 5, "max_batch_timeout": 10,
+      "max_retries": 5, "dead_letter_queue": "moovibe-pipeline-dlq", "max_concurrency": 3, "retry_delay": 120
+    }]
+  }
+}

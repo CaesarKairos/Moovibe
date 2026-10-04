@@ -7,6 +7,7 @@ test_moovibe.py
 
 # Variáveis de ambiente
 .env
+.dev.vars
 
 # Banco de dados local da biblioteca de filmes
 moovibe_library.db
@@ -28,6 +29,7 @@ __pycache__/
 .venv/
 venv/
 env/
+node_modules/
 
 # Arquivos de distribuição
 build/

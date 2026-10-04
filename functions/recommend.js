@@ -4,6 +4,8 @@
  */
 
 import { LRCLIB_URL, LRCLIB_GET_URL, LRCLIB_SEARCH_URL, lrclibHeaders, lrclibThrottle } from './_lib/lrclib.js';
+import { recommendFromCatalog, movieToLegacy } from './_lib/catalog.js';
+import { recommendationCacheKey, RECOMMENDER_VERSION } from './_lib/recommender.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
@@ -1140,8 +1142,9 @@ export async function onRequest(context) {
     const body = await request.json();
     const { nome_musica, artista, lrclib_id, musicas_extras } = body;
     const lang = body.lang === 'pt' ? 'pt' : 'en';
-    if (!nome_musica) return jsonResponse({ error: { message: 'Nome da música é obrigatório.' } }, 400);
-    const musicasExtras = Array.isArray(musicas_extras) ? musicas_extras.filter(m => typeof m === 'string' && m.trim().length > 0) : [];
+    if (!nome_musica || typeof nome_musica !== 'string' || nome_musica.trim().length > 200) return jsonResponse({ error: { message: 'Nome da música inválido.' } }, 400);
+    if (artista != null && (typeof artista !== 'string' || artista.length > 200)) return jsonResponse({ error: { message: 'Artista inválido.' } }, 400);
+    const musicasExtras = Array.isArray(musicas_extras) ? musicas_extras.filter(m => typeof m === 'string' && m.trim().length > 0 && m.length <= 200).slice(0, 2) : [];
     if (musicasExtras.length > 0) console.log(`[MULTI-SONGS] ${musicasExtras.length} música(s) extra(s): ${musicasExtras.join(', ')}`);
 
     console.log('\n=== INICIANDO PIPELINE ===');
@@ -1163,82 +1166,28 @@ export async function onRequest(context) {
       return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: 'SONG_NOT_FOUND' } }, 404);
     }
 
-    const historico = await listHistory(env);
-    const filmesExcluidosGlobais = [];
-    const filmesExcluidosMusica = [];
-    if (Array.isArray(historico)) {
-      for (const item of historico) {
-        const movieTitle = item?.movie?.title;
-        if (!movieTitle || typeof movieTitle !== 'string') continue;
-        if (!filmesExcluidosGlobais.includes(movieTitle) && filmesExcluidosGlobais.length < 20) filmesExcluidosGlobais.push(movieTitle);
-        const mesmaMusica =
-          item?.song?.toLowerCase() === nome_musica.toLowerCase() &&
-          (!artista || item?.artist?.toLowerCase() === artista.toLowerCase());
-        if (mesmaMusica && !filmesExcluidosMusica.includes(movieTitle) && filmesExcluidosMusica.length < 5) filmesExcluidosMusica.push(movieTitle);
-      }
-    }
-    if (filmesExcluidosGlobais.length > 0) console.log(`[ANTI-REPETICAO] Globais excluidos: ${filmesExcluidosGlobais.join(', ')}`);
-    if (filmesExcluidosMusica.length > 0) console.log(`[ANTI-REPETICAO] Especificos da musica excluidos: ${filmesExcluidosMusica.join(', ')}`);
+    const songInputs = [{ title: nome_musica, artist: artista || '', lrclib_id: lrclib_id || null }, ...musicasExtras.map(title => ({ title, artist: '' }))];
+    const finalCacheKey = recommendationCacheKey(songInputs, lang, env.RECOMMENDER_VERSION || RECOMMENDER_VERSION);
+    const cachedRecommendation = env.MOOVIBE_DB ? await env.MOOVIBE_DB.get(finalCacheKey, 'json') : null;
+    if (cachedRecommendation) return jsonResponse(cachedRecommendation, 200);
 
-    const recomendacaoIA = await obterRecomendacaoIA(
-      nome_musica, artista, letra, contextoExtra, env.OPENROUTER_API_KEY,
-      filmesExcluidosGlobais, filmesExcluidosMusica, lang, musicasExtras
-    );
-    if (!recomendacaoIA) {
-      console.error('FALHA CRÍTICA: IA não retornou recomendação válida');
-      return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: 'AI_UNAVAILABLE' } }, 503);
-    }
-    if (recomendacaoIA._errorCode === 'RATE_LIMITED') {
-      console.error('FALHA CRÍTICA: Rate limit no OpenRouter');
-      return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: 'RATE_LIMITED' } }, 429);
-    }
-    if (recomendacaoIA._errorCode === 'AI_UNAVAILABLE') {
-      console.error('FALHA CRÍTICA: IA indisponível');
-      return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: 'AI_UNAVAILABLE' } }, 503);
-    }
-    const nomeFilme = sanitizarTituloFilme(recomendacaoIA.filme || recomendacaoIA.filme_sugerido || '');
-    const anoFilme = recomendacaoIA.ano || recomendacaoIA.ano_filme || '';
-    const justificativa = recomendacaoIA.justificativa || recomendacaoIA.justificativa_vibe || '';
-    const vibeTitle = recomendacaoIA.vibe_title || 'VIBE CINEMATICA';
-    const tags = recomendacaoIA.tags || ['UNICO', 'ESSENCIAL'];
-    if (!nomeFilme) {
-      console.error('FALHA CRÍTICA: IA não retornou nome de filme válido');
-      return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.' } }, 500);
-    }
-
-    let dadosFilme = null;
-    if (env.TMDB_API_KEY) dadosFilme = await obterDetalhesTMDB(nomeFilme, env.TMDB_API_KEY, anoFilme, lang);
-    if (!dadosFilme || !dadosFilme.sinopse || dadosFilme.sinopse === 'Sem sinopse disponivel.') {
-      console.log('[FALLBACK ATIVADO: TMDb falhou, usando fallback]');
-      const fallback = await buscarDadosFilmeFallback(nomeFilme, anoFilme, env, lang);
-      if (fallback) {
-        dadosFilme = {
-          id_tmdb: null,
-          tmdb_url: null,
-          titulo_pt: nomeFilme,
-          titulo_original: nomeFilme,
-          ano: anoFilme || 'Nao informado',
-          sinopse: fallback.sinopse || 'Sinopse indisponivel.',
-          poster: fallback.poster || null,
-          diretor: fallback.diretor || 'Nao encontrado',
-          imdb_id: null,
-          cenas: [],
-        };
-      } else {
-        dadosFilme = {
-          id_tmdb: null,
-          tmdb_url: null,
-          titulo_pt: nomeFilme,
-          titulo_original: nomeFilme,
-          ano: anoFilme || 'Nao informado',
-          sinopse: 'Sinopse indisponivel.',
-          poster: null,
-          diretor: 'Nao encontrado',
-          imdb_id: null,
-          cenas: [],
-        };
-      }
-    }
+    const catalog = await recommendFromCatalog({ env, songs: songInputs, lyrics: letra, context: contextoExtra, lang });
+    const dadosFilme = movieToLegacy(catalog.primary);
+    const nomeFilme = dadosFilme.titulo_pt;
+    const anoFilme = dadosFilme.ano;
+    const justificativa = catalog.curation.justification;
+    const vibeTitle = catalog.curation.vibe_title || 'VIBE CINEMATICA';
+    const tags = catalog.curation.tags || ['UNICO', 'ESSENCIAL'];
+    const recomendacaoIA = {
+      citacoes: extrairQuotesDaLetra(letra, 3),
+      alternativas: catalog.alternatives.map((movie, index) => ({
+        chamada: catalog.curation.alternative_calls?.[index] || '',
+        titulo: movie.title,
+        ano: movie.release_year || '',
+        diretor: movie.director || '',
+        _catalog: movie,
+      })),
+    };
 
     let quotes = recomendacaoIA.citacoes || [];
     const QUOTES_PADRAO = ['Cinema is magic.', 'Every film is a journey.', 'Lights, camera, action!'];
@@ -1290,14 +1239,14 @@ export async function onRequest(context) {
       ? `https://letterboxd.com/tmdb/${dadosFilme.id_tmdb}`
       : `https://letterboxd.com/search/${encodeURIComponent(nomeFilme)}/`;
 
-    // Busca pôsteres para as alternativas no TMDb
+    // Alternativas já foram validadas contra o candidate set e vêm do D1.
     const alternativas = Array.isArray(recomendacaoIA.alternativas) ? recomendacaoIA.alternativas : [];
     const alternativasComPoster = [];
-    if (alternativas.length > 0 && env.TMDB_API_KEY) {
+    if (alternativas.length > 0) {
       for (const alt of alternativas) {
         const altTitulo = sanitizarTituloFilme(alt?.titulo || '');
         if (!altTitulo) continue;
-        const altDetalhes = await obterDetalhesTMDB(altTitulo, env.TMDB_API_KEY, alt?.ano || '', lang);
+        const altDetalhes = alt._catalog ? movieToLegacy(alt._catalog) : null;
         const altAno = alt?.ano || (altDetalhes?.ano || '');
         alternativasComPoster.push({
           chamada: alt?.chamada || '',
@@ -1311,20 +1260,6 @@ export async function onRequest(context) {
           letterboxd_url: altDetalhes?.id_tmdb
             ? `https://letterboxd.com/tmdb/${altDetalhes.id_tmdb}`
             : `https://letterboxd.com/search/${encodeURIComponent(altTitulo + (altAno ? ' ' + altAno : ''))}/`,
-        });
-      }
-    } else if (alternativas.length > 0) {
-      for (const alt of alternativas) {
-        const altTitulo = sanitizarTituloFilme(alt?.titulo || '');
-        const altAno = alt?.ano || '';
-        alternativasComPoster.push({
-          chamada: alt?.chamada || '',
-          titulo: altTitulo,
-          ano: altAno,
-          diretor: alt?.diretor || '',
-          poster_url: '',
-          imdb_url: `https://www.imdb.com/find?q=${encodeURIComponent(altTitulo + (altAno ? ' ' + altAno : ''))}`,
-          letterboxd_url: `https://letterboxd.com/search/${encodeURIComponent(altTitulo + (altAno ? ' ' + altAno : ''))}/`,
         });
       }
     }
@@ -1361,6 +1296,7 @@ export async function onRequest(context) {
     };
     await storeHistory({ song: nome_musica, artist: artista, movie: resposta.movie }, env);
     await storeShare(slug, resposta, env);
+    if (env.MOOVIBE_DB) await env.MOOVIBE_DB.put(finalCacheKey, JSON.stringify(resposta), { expirationTtl: 60 * 60 * 24 });
     console.log('\n=== PIPELINE CONCLUÍDA COM SUCESSO ===');
     console.log(`[SHARE] Slug gerado: ${slug}`);
     return jsonResponse(resposta, 200);
