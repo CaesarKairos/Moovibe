@@ -1,0 +1,27 @@
+# Generated from the existing Moovibe Cloudflare Pages configuration.
+name = "moovibe"
+pages_build_output_dir = "."
+compatibility_date = "2026-07-18"
+
+# Variáveis públicas/não sensíveis usadas pelo recomendador.
+[env.production.vars]
+EMBEDDING_MODEL = "gemini-embedding-2"
+EMBEDDING_DIMENSIONS = "768"
+RECOMMENDER_VERSION = "catalog-v2"
+
+# KV já existente do Moovibe.
+# Continua responsável por cache, histórico e compartilhamentos.
+[[env.production.kv_namespaces]]
+binding = "MOOVIBE_DB"
+id = "e182a1f6c4f64650b5b7e7970627d78c"
+
+# Nova biblioteca cinematográfica no Cloudflare D1.
+[[env.production.d1_databases]]
+binding = "MOOVIBE_LIBRARY"
+database_name = "moovibe-library"
+database_id = "20b1139e-409f-4127-867d-6cb7ad9bda25"
+
+# Índice semântico dos filmes.
+[[env.production.vectorize]]
+binding = "MOVIE_VECTORS"
+index_name = "moovibe-movies-v1"

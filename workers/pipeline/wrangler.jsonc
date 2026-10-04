@@ -13,7 +13,7 @@
   "d1_databases": [{
     "binding": "MOOVIBE_LIBRARY",
     "database_name": "moovibe-library",
-    "database_id": "REPLACE_AFTER_PROVISIONING",
+    "database_id": "20b1139e-409f-4127-867d-6cb7ad9bda25",
     "migrations_dir": "../../migrations"
   }],
   "vectorize": [{ "binding": "MOVIE_VECTORS", "index_name": "moovibe-movies-v1" }],
