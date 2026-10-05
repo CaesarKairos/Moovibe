@@ -9,7 +9,7 @@ vi.mock('../functions/_lib/gemini.js',()=>({
 
 import {processJob,schedule,seedQueries,discover,replaceRelations,requeueKnownFailures} from '../workers/pipeline/src/index.js';
 import {discoveryQueries} from '../workers/pipeline/src/queries.js';
-import {DISCOVERY_DUE_SQL,MOVIE_BACKLOG_SQL,stableDiscoveryKey} from '../workers/pipeline/src/job-policy.js';
+import {HISTORICAL_DISCOVERY_BUDGET,HISTORICAL_DISCOVERY_DUE_SQL,MOVIE_BACKLOG_SQL,RECENT_DISCOVERY_BUDGET,RECENT_DISCOVERY_DUE_SQL,stableDiscoveryKey} from '../workers/pipeline/src/job-policy.js';
 
 class Statement {
   values:any[]=[];
@@ -67,12 +67,20 @@ describe('pipeline scheduling',()=>{
     db.exec(`INSERT INTO movies(tmdb_id,title,collection_status) VALUES(99,'Backlog','complete')`);
     const {env,sent}=makeEnv(db);await schedule(env);
     expect(sent[0]).toMatchObject({type:'ENRICH_MOVIE',key:'enrich:99:v2'});
-    expect(sent.filter(x=>x.type==='DISCOVER_QUERY')).toHaveLength(2);
+    expect(sent.filter(x=>x.type==='DISCOVER_QUERY')).toHaveLength(RECENT_DISCOVERY_BUDGET+HISTORICAL_DISCOVERY_BUDGET);
     expect(db.prepare(MOVIE_BACKLOG_SQL).all(50)).toHaveLength(1);
+  });
+  it('gives both lanes their own budget so recent work cannot monopolize historical work',async()=>{
+    const {env,sent}=makeEnv(db);await schedule(env);
+    const jobs=sent.filter(x=>x.type==='DISCOVER_QUERY');
+    const recentIds=new Set(['recent-global-120','recent-global-30','upcoming-global-60','recent-popular-30','newest-global']);
+    expect(jobs.filter(x=>recentIds.has(x.payload.query_id))).toHaveLength(RECENT_DISCOVERY_BUDGET);
+    expect(jobs.filter(x=>!recentIds.has(x.payload.query_id))).toHaveLength(HISTORICAL_DISCOVERY_BUDGET);
   });
   it('eligibility SQL excludes imported rows',()=>{
     db.exec(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status) VALUES('legacy','L','{}',0,'imported'),('real','R','{}',1,'pending')`);
-    expect(db.prepare(DISCOVERY_DUE_SQL).all(10)).toEqual([{query_id:'real'}]);
+    expect(db.prepare(HISTORICAL_DISCOVERY_DUE_SQL).all(10)).toEqual([{query_id:'real'}]);
+    expect(db.prepare(RECENT_DISCOVERY_DUE_SQL).all(10)).toEqual([]);
     expect(stableDiscoveryKey('real')).toBe('discover:real:v1');
   });
   it('recovers a stale running job and ignores its obsolete delivery until requeued',async()=>{
@@ -288,6 +296,61 @@ describe('known failure recovery',()=>{
 });
 
 describe('recent releases discovery',()=>{
+  const result=(id:number)=>({id,title:`Film ${id}`,original_title:`Film ${id}`,overview:'Story',release_date:'2020-01-01',original_language:'en',popularity:1,vote_average:1,vote_count:1,poster_path:null,backdrop_path:null,adult:false,video:false});
+  const pagedFetch=(requested:number[],totalPages:number,failAt?:number)=>vi.fn((input:any)=>{
+    const page=Number(new URL(String(input)).searchParams.get('page'));requested.push(page);
+    if(page===failAt)return Promise.resolve(new Response('busy',{status:503}));
+    return Promise.resolve(new Response(JSON.stringify({results:[result(1000+page)],total_pages:totalPages}),{status:200,headers:{'content-type':'application/json'}}));
+  });
+
+  it('processes five historical pages in one job and advances next_page',async()=>{
+    db.prepare(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,next_page,next_run_at) VALUES('history','History','{}',1,'pending',7,CURRENT_TIMESTAMP)`).run();
+    const requested:number[]=[];vi.stubGlobal('fetch',pagedFetch(requested,20));
+    const {env}=makeEnv(db);await discover(env,{type:'DISCOVER_QUERY',key:'discover:history:v1',payload:{query_id:'history'}});
+    expect(requested).toEqual([7,8,9,10,11]);
+    expect(db.prepare(`SELECT next_page,status FROM collection_queries WHERE query_id='history'`).get()).toEqual({next_page:12,status:'pending'});
+    vi.unstubAllGlobals();
+  });
+  it('processes three recent pages in one job',async()=>{
+    db.prepare(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,next_run_at) VALUES('recent-global-30','Recent','{"lane":"recent"}',1,'pending',CURRENT_TIMESTAMP)`).run();
+    const requested:number[]=[];vi.stubGlobal('fetch',pagedFetch(requested,20));
+    const {env}=makeEnv(db);await discover(env,{type:'DISCOVER_QUERY',key:'discover:recent-global-30:v1',payload:{query_id:'recent-global-30'}});
+    expect(requested).toEqual([1,2,3]);
+    expect(db.prepare(`SELECT next_page FROM collection_queries WHERE query_id='recent-global-30'`).get()).toEqual({next_page:4});
+    vi.unstubAllGlobals();
+  });
+  it('wraps to page 1 when total_pages is reached',async()=>{
+    db.prepare(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,next_run_at) VALUES('short-history','Short','{}',1,'pending',CURRENT_TIMESTAMP)`).run();
+    const requested:number[]=[];vi.stubGlobal('fetch',pagedFetch(requested,2));
+    const {env}=makeEnv(db);await discover(env,{type:'DISCOVER_QUERY',key:'discover:short-history:v1',payload:{query_id:'short-history'}});
+    expect(requested).toEqual([1,2]);
+    expect(db.prepare(`SELECT next_page FROM collection_queries WHERE query_id='short-history'`).get()).toEqual({next_page:1});
+    vi.unstubAllGlobals();
+  });
+  it('caps newest-global at five pages per cycle instead of following hundreds of pages',async()=>{
+    db.prepare(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,next_page,next_run_at) VALUES('newest-global','Newest','{"lane":"recent"}',1,'pending',4,CURRENT_TIMESTAMP)`).run();
+    const requested:number[]=[];vi.stubGlobal('fetch',pagedFetch(requested,500));
+    const {env}=makeEnv(db);await discover(env,{type:'DISCOVER_QUERY',key:'discover:newest-global:v1',payload:{query_id:'newest-global'}});
+    expect(requested).toEqual([4,5]);
+    expect(db.prepare(`SELECT next_page FROM collection_queries WHERE query_id='newest-global'`).get()).toEqual({next_page:1});
+    vi.unstubAllGlobals();
+  });
+  it('keeps the failing page as next_page when an error interrupts a block',async()=>{
+    db.prepare(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,next_run_at) VALUES('error-history','Error','{}',1,'pending',CURRENT_TIMESTAMP)`).run();
+    const requested:number[]=[];vi.stubGlobal('fetch',pagedFetch(requested,20,2));
+    const {env}=makeEnv(db);
+    await expect(discover(env,{type:'DISCOVER_QUERY',key:'discover:error-history:v1',payload:{query_id:'error-history'}})).rejects.toThrow('503');
+    expect(requested).toEqual([1,2]);
+    expect(db.prepare(`SELECT next_page FROM collection_queries WHERE query_id='error-history'`).get()).toEqual({next_page:2});
+    vi.unstubAllGlobals();
+  });
+  it('queues FETCH_MOVIE for a genuinely new discovery',async()=>{
+    db.prepare(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,next_run_at) VALUES('new-history','New','{}',1,'pending',CURRENT_TIMESTAMP)`).run();
+    const requested:number[]=[];vi.stubGlobal('fetch',pagedFetch(requested,1));
+    const {env,sent}=makeEnv(db);await discover(env,{type:'DISCOVER_QUERY',key:'discover:new-history:v1',payload:{query_id:'new-history'}});
+    expect(sent).toContainEqual({type:'FETCH_MOVIE',key:'fetch:1001:v1',payload:{tmdb_id:1001}});
+    vi.unstubAllGlobals();
+  });
   it('computes the date window at runtime while ids and stored params stay date-free',async()=>{
     db.prepare(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,next_run_at) VALUES('recent-global-120','RECENT 120d',?,1,'pending',CURRENT_TIMESTAMP)`).run(JSON.stringify({lane:'recent',lookback_days:120,sort_by:'primary_release_date.desc'}));
     const requested:string[]=[];
@@ -309,13 +372,15 @@ describe('recent releases discovery',()=>{
     expect(hours).toBeLessThan(4.5);
     vi.unstubAllGlobals();
   });
-  it('prioritizes due recent queries over the historical scan',()=>{
+  it('selects recent and historical due queries independently',()=>{
     db.exec(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,last_run_at) VALUES
       ('old-scan','Old','{}',1,'pending',datetime('now','-1 day')),
       ('recent-global-30','Recent','{"lane":"recent","lookback_days":30}',1,'pending',datetime('now')),
       ('upcoming-global-60','Soon','{"lane":"recent","upcoming_days":60}',1,'pending',datetime('now'))`);
-    const due=db.prepare(DISCOVERY_DUE_SQL).all(10) as any[];
-    expect(due.map(r=>r.query_id)).toEqual(['recent-global-30','upcoming-global-60','old-scan']);
+    const recentDue=db.prepare(RECENT_DISCOVERY_DUE_SQL).all(10) as any[];
+    const historicalDue=db.prepare(HISTORICAL_DISCOVERY_DUE_SQL).all(10) as any[];
+    expect(recentDue.map(r=>r.query_id)).toEqual(['recent-global-30','upcoming-global-60']);
+    expect(historicalDue.map(r=>r.query_id)).toEqual(['old-scan']);
   });
   it('does not re-enqueue or rewrite a rediscovered completed movie',async()=>{
     db.prepare(`INSERT INTO movies(tmdb_id,title,overview,release_date,release_year,original_language,popularity,vote_average,vote_count,poster_path,backdrop_path,collection_status,enrichment_status,updated_at) VALUES(42,'Existing','Story','2001-02-03',2001,'en',7.5,7.1,100,'/p.jpg','/b.jpg','complete','complete',datetime('now','-2 days'))`).run();

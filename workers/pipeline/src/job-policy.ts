@@ -1,17 +1,21 @@
 export const MAX_JOB_ATTEMPTS=5;
 export const STALE_JOB_MINUTES=30;
-export const DISCOVERY_BUDGET=2;
+export const RECENT_DISCOVERY_BUDGET=2;
+export const HISTORICAL_DISCOVERY_BUDGET=4;
 export const PIPELINE_BUDGET=50;
 
-// Due discovery queries with the recent-release lane prioritized over the
-// historical scan. Priority cannot monopolize the queue: the recent lane pushes
-// its own next_run_at forward by hours after each run, and DISCOVERY_BUDGET
-// still bounds total discovery jobs per cron.
-export const DISCOVERY_DUE_SQL=`SELECT query_id FROM collection_queries
+const DISCOVERY_DUE_BASE=`SELECT query_id FROM collection_queries
   WHERE is_executable=1 AND status='pending'
-    AND (next_run_at IS NULL OR next_run_at<=CURRENT_TIMESTAMP)
-  ORDER BY CASE WHEN query_id LIKE 'recent-%' OR query_id LIKE 'upcoming-%' OR query_id LIKE 'newest-%' THEN 0 ELSE 1 END,
-    COALESCE(last_run_at,''),query_id LIMIT ?`;
+    AND (next_run_at IS NULL OR next_run_at<=CURRENT_TIMESTAMP)`;
+
+// Separate lane queries guarantee that a permanently-due recent lane cannot
+// consume the historical allocation (or vice versa).
+export const RECENT_DISCOVERY_DUE_SQL=`${DISCOVERY_DUE_BASE}
+    AND params_json LIKE '%"lane":"recent"%'
+  ORDER BY COALESCE(last_run_at,''),query_id LIMIT ?`;
+export const HISTORICAL_DISCOVERY_DUE_SQL=`${DISCOVERY_DUE_BASE}
+    AND params_json NOT LIKE '%"lane":"recent"%'
+  ORDER BY COALESCE(last_run_at,''),query_id LIMIT ?`;
 
 export const STALE_JOBS_SQL=`SELECT job_key,type,payload_json,attempts FROM pipeline_jobs
   WHERE status='running' AND updated_at < datetime('now', ?)

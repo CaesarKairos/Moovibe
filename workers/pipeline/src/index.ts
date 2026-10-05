@@ -1,7 +1,7 @@
 import { GeminiClient, RetryableError } from '../../../functions/_lib/gemini.js';
 import { buildMovieDocument, EMBEDDING_SCHEMA_VERSION } from '../../../functions/_lib/recommender.js';
 import { discoveryQueries } from './queries';
-import { DISCOVERY_BUDGET,DISCOVERY_DUE_SQL,MOVIE_BACKLOG_SQL,PIPELINE_BUDGET,STALE_JOBS_SQL,STALE_JOB_MINUTES,retryDelaySeconds,shouldRetry,stableDiscoveryKey } from './job-policy';
+import { HISTORICAL_DISCOVERY_BUDGET,HISTORICAL_DISCOVERY_DUE_SQL,MOVIE_BACKLOG_SQL,PIPELINE_BUDGET,RECENT_DISCOVERY_BUDGET,RECENT_DISCOVERY_DUE_SQL,STALE_JOBS_SQL,STALE_JOB_MINUTES,retryDelaySeconds,shouldRetry,stableDiscoveryKey } from './job-policy';
 
 type JobType='DISCOVER_QUERY'|'FETCH_MOVIE'|'ENRICH_MOVIE'|'EMBED_MOVIE'|'REFRESH_MOVIE'|'REEMBED_MOVIE';
 type Job={ type:JobType; key:string; payload:Record<string,unknown> };
@@ -143,10 +143,16 @@ async function schedule(env:Env) {
     if(movie.enrichment_status!=='complete') pipelineQueued+=Number(await enqueue(env,{type:'ENRICH_MOVIE',key:`enrich:${movie.tmdb_id}:v2`,payload:{tmdb_id:movie.tmdb_id}}));
     else if(movie.embedding_status!=='complete') pipelineQueued+=Number(await enqueue(env,{type:'EMBED_MOVIE',key:`embed:${movie.tmdb_id}:${EMBEDDING_SCHEMA_VERSION}`,payload:{tmdb_id:movie.tmdb_id}}));
   }
-  const due=await env.MOOVIBE_LIBRARY.prepare(DISCOVERY_DUE_SQL).bind(DISCOVERY_BUDGET).all<{query_id:string}>();
-  let discoveryQueued=0; for(const q of due.results) if(await enqueue(env,{type:'DISCOVER_QUERY',key:stableDiscoveryKey(q.query_id),payload:{query_id:q.query_id}})) discoveryQueued++;
+  const [recentDue,historicalDue]=await Promise.all([
+    env.MOOVIBE_LIBRARY.prepare(RECENT_DISCOVERY_DUE_SQL).bind(RECENT_DISCOVERY_BUDGET).all<{query_id:string}>(),
+    env.MOOVIBE_LIBRARY.prepare(HISTORICAL_DISCOVERY_DUE_SQL).bind(HISTORICAL_DISCOVERY_BUDGET).all<{query_id:string}>()
+  ]);
+  let recentDiscoveryQueued=0,historicalDiscoveryQueued=0;
+  for(const q of recentDue.results) if(await enqueue(env,{type:'DISCOVER_QUERY',key:stableDiscoveryKey(q.query_id),payload:{query_id:q.query_id}})) recentDiscoveryQueued++;
+  for(const q of historicalDue.results) if(await enqueue(env,{type:'DISCOVER_QUERY',key:stableDiscoveryKey(q.query_id),payload:{query_id:q.query_id}})) historicalDiscoveryQueued++;
+  const discoveryQueued=recentDiscoveryQueued+historicalDiscoveryQueued;
   await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO system_state(key,value) VALUES('last_cron_at',CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP`).run();
-  log('cron_complete',{pipeline_jobs:pipelineQueued,discovery_jobs:discoveryQueued,pipeline_candidates:pending.results.length,recovered_stale:recovery.stale,recovered_stranded:recovery.stranded});
+  log('cron_complete',{pipeline_jobs:pipelineQueued,discovery_jobs:discoveryQueued,recent_discovery_jobs:recentDiscoveryQueued,historical_discovery_jobs:historicalDiscoveryQueued,pipeline_candidates:pending.results.length,recovered_stale:recovery.stale,recovered_stranded:recovery.stranded});
 }
 
 // Reserved static keys describe a RUNTIME window: concrete dates are computed
@@ -154,12 +160,22 @@ async function schedule(env:Env) {
 // version stay stable regardless of the day.
 const RESERVED_DISCOVERY_KEYS=['lane','lookback_days','upcoming_days'];
 const isoDay=(d:Date)=>d.toISOString().slice(0,10);
+const HISTORICAL_PAGES_PER_JOB=5;
+const RECENT_PAGES_PER_JOB=3;
+const DISCOVERY_JOB_TIME_LIMIT_MS=25_000;
+const RECENT_MAX_PAGES_PER_CYCLE:Record<string,number>={
+  'recent-global-30':10,
+  'recent-global-120':20,
+  'recent-popular-30':10,
+  'upcoming-global-60':10,
+  'newest-global':5
+};
 
 async function discover(env:Env,job:Job) {
   const id=String(job.payload.query_id);
   const row=await env.MOOVIBE_LIBRARY.prepare(`SELECT * FROM collection_queries WHERE query_id=? AND is_executable=1 AND status='pending'`).bind(id).first<any>();
   if(!row) return;
-  const page=Math.max(1,Number(row.next_page)||1);
+  const startPage=Math.max(1,Number(row.next_page)||1);
   const stored=JSON.parse(row.params_json);
   const params:{[k:string]:unknown}={...stored};
   const lane=String(params.lane||'');
@@ -174,28 +190,44 @@ async function discover(env:Env,job:Job) {
     params['primary_release_date.gte']=isoDay(new Date(now.getTime()-lookbackDays*86400000));
     params['primary_release_date.lte']=isoDay(now);
   }
-  params.page=page; params.include_adult=false; params.include_video=false;
+  params.include_adult=false; params.include_video=false;
   const claimed=await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET status='running',last_run_at=CURRENT_TIMESTAMP,run_count=run_count+1,updated_at=CURRENT_TIMESTAMP WHERE query_id=? AND is_executable=1 AND status='pending'`).bind(id).run();
   if(!claimed.meta.changes)return;
-  const data=await tmdb(env,'/discover/movie',params);
-  let discovered=0;
-  for(const item of data.results||[]) {
-    if(!item.id || !item.title || (!item.overview && !item.release_date)) continue;
-    // The upsert only writes when a tracked value would actually change, so
-    // re-running a query over unchanged rows costs zero row writes.
-    await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO movies(tmdb_id,title,original_title,overview,release_date,release_year,original_language,popularity,vote_average,vote_count,poster_path,backdrop_path,adult,video) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tmdb_id) DO UPDATE SET title=excluded.title,overview=CASE WHEN movies.overview IS NULL OR movies.overview='' THEN excluded.overview ELSE movies.overview END,release_date=excluded.release_date,release_year=excluded.release_year,original_language=excluded.original_language,popularity=excluded.popularity,vote_average=excluded.vote_average,vote_count=excluded.vote_count,poster_path=excluded.poster_path,backdrop_path=excluded.backdrop_path,updated_at=CURRENT_TIMESTAMP WHERE movies.title IS NOT excluded.title OR ((movies.overview IS NULL OR movies.overview='') AND IFNULL(excluded.overview,'')<>'') OR movies.release_date IS NOT excluded.release_date OR movies.release_year IS NOT excluded.release_year OR movies.original_language IS NOT excluded.original_language OR movies.popularity IS NOT excluded.popularity OR movies.vote_average IS NOT excluded.vote_average OR movies.vote_count IS NOT excluded.vote_count OR movies.poster_path IS NOT excluded.poster_path OR movies.backdrop_path IS NOT excluded.backdrop_path`).bind(item.id,item.title,item.original_title,item.overview,item.release_date,Number(String(item.release_date||'').slice(0,4))||null,item.original_language,item.popularity,item.vote_average,item.vote_count,item.poster_path,item.backdrop_path,item.adult?1:0,item.video?1:0).run();
-    const movie=await env.MOOVIBE_LIBRARY.prepare(`SELECT id,collection_status FROM movies WHERE tmdb_id=?`).bind(item.id).first<any>();
-    // Membership refresh is throttled to at most one write per week per row.
-    await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO movie_discovery_sources(movie_id,query_id) VALUES(?,?) ON CONFLICT(movie_id,query_id) DO UPDATE SET last_seen_at=CURRENT_TIMESTAMP WHERE movie_discovery_sources.last_seen_at IS NULL OR movie_discovery_sources.last_seen_at<datetime('now','-7 days')`).bind(movie.id,id).run();
-    if(movie.collection_status==='discovered') { if(await enqueue(env,{type:'FETCH_MOVIE',key:`fetch:${item.id}:v1`,payload:{tmdb_id:item.id}})) discovered++; }
+  const recent=lane==='recent';
+  const pagesPerJob=recent?RECENT_PAGES_PER_JOB:HISTORICAL_PAGES_PER_JOB;
+  const cyclePageLimit=recent?(RECENT_MAX_PAGES_PER_CYCLE[id]??10):500;
+  const startedAt=Date.now();
+  let nextPage=startPage,totalPages=Math.max(1,Number(row.total_pages)||1),pagesProcessed=0,resultsSeen=0,newMovies=0,newFetchJobs=0,cycleComplete=false;
+  try {
+    while(pagesProcessed<pagesPerJob&&nextPage<=500&&nextPage<=cyclePageLimit) {
+      if(pagesProcessed>0&&Date.now()-startedAt>=DISCOVERY_JOB_TIME_LIMIT_MS) break;
+      const page=nextPage;
+      const data=await tmdb(env,'/discover/movie',{...params,page});
+      const results=Array.isArray(data.results)?data.results:[];
+      totalPages=Math.min(Math.max(1,Number(data.total_pages)||1),500);
+      for(const item of results) {
+        if(!item.id || !item.title || (!item.overview && !item.release_date)) continue;
+        const existing=await env.MOOVIBE_LIBRARY.prepare(`SELECT id,collection_status FROM movies WHERE tmdb_id=?`).bind(item.id).first<any>();
+        // The upsert only writes when a tracked value would actually change, so
+        // re-running a query over unchanged rows costs zero row writes.
+        await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO movies(tmdb_id,title,original_title,overview,release_date,release_year,original_language,popularity,vote_average,vote_count,poster_path,backdrop_path,adult,video) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tmdb_id) DO UPDATE SET title=excluded.title,overview=CASE WHEN movies.overview IS NULL OR movies.overview='' THEN excluded.overview ELSE movies.overview END,release_date=excluded.release_date,release_year=excluded.release_year,original_language=excluded.original_language,popularity=excluded.popularity,vote_average=excluded.vote_average,vote_count=excluded.vote_count,poster_path=excluded.poster_path,backdrop_path=excluded.backdrop_path,updated_at=CURRENT_TIMESTAMP WHERE movies.title IS NOT excluded.title OR ((movies.overview IS NULL OR movies.overview='') AND IFNULL(excluded.overview,'')<>'') OR movies.release_date IS NOT excluded.release_date OR movies.release_year IS NOT excluded.release_year OR movies.original_language IS NOT excluded.original_language OR movies.popularity IS NOT excluded.popularity OR movies.vote_average IS NOT excluded.vote_average OR movies.vote_count IS NOT excluded.vote_count OR movies.poster_path IS NOT excluded.poster_path OR movies.backdrop_path IS NOT excluded.backdrop_path`).bind(item.id,item.title,item.original_title,item.overview,item.release_date,Number(String(item.release_date||'').slice(0,4))||null,item.original_language,item.popularity,item.vote_average,item.vote_count,item.poster_path,item.backdrop_path,item.adult?1:0,item.video?1:0).run();
+        const movie=existing||await env.MOOVIBE_LIBRARY.prepare(`SELECT id,collection_status FROM movies WHERE tmdb_id=?`).bind(item.id).first<any>();
+        if(!existing)newMovies++;
+        // Membership refresh is throttled to at most one write per week per row.
+        await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO movie_discovery_sources(movie_id,query_id) VALUES(?,?) ON CONFLICT(movie_id,query_id) DO UPDATE SET last_seen_at=CURRENT_TIMESTAMP WHERE movie_discovery_sources.last_seen_at IS NULL OR movie_discovery_sources.last_seen_at<datetime('now','-7 days')`).bind(movie.id,id).run();
+        if(movie.collection_status==='discovered'&&await enqueue(env,{type:'FETCH_MOVIE',key:`fetch:${item.id}:v1`,payload:{tmdb_id:item.id}})) newFetchJobs++;
+      }
+      pagesProcessed++; resultsSeen+=results.length; nextPage=page+1;
+      if(results.length===0||page>=totalPages||page>=500||page>=cyclePageLimit) {cycleComplete=true;nextPage=1;break;}
+    }
+  } catch(error) {
+    // Persist only fully completed pages. The failing page remains next.
+    await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET next_page=?,total_pages=?,updated_at=CURRENT_TIMESTAMP WHERE query_id=?`).bind(nextPage,totalPages,id).run();
+    throw error;
   }
-  const next=page>=Math.min(Number(data.total_pages)||1,500)?1:page+1;
-  // While paging stays on the 2-hour cadence; when a query completes its cycle,
-  // recent lanes come back within hours instead of waiting 30 days and the
-  // historical scan keeps its long cycle to stay inside the D1 budget.
-  const wrapDelay=next===1?(lane==='recent'?'+4 hours':'+30 days'):'+2 hours';
-  await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET next_page=?,total_pages=?,status='pending',next_run_at=datetime('now',?),last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE query_id=?`).bind(next,data.total_pages||1,wrapDelay,id).run();
-  log('discovery_complete',{query_id:id,page,results:(data.results||[]).length,new_fetch_jobs:discovered,lane:lane||'historical'});
+  const delay=cycleComplete?(recent?'+4 hours':'+30 days'):'+15 minutes';
+  await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET next_page=?,total_pages=?,status='pending',next_run_at=datetime('now',?),last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE query_id=?`).bind(nextPage,totalPages,delay,id).run();
+  log('discovery_complete',{query_id:id,lane:recent?'recent':'historical',start_page:startPage,end_page:pagesProcessed?nextPage===1?Math.min(startPage+pagesProcessed-1,cyclePageLimit):nextPage-1:startPage,pages_processed:pagesProcessed,results_seen:resultsSeen,new_movies:newMovies,new_fetch_jobs:newFetchJobs,next_page:nextPage,cycle_complete:cycleComplete});
 }
 
 // Genre identity resolution. genres.name is UNIQUE while ids come from TMDb and
