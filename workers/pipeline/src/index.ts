@@ -9,13 +9,12 @@ type Job={ type:JobType; key:string; payload:Record<string,unknown> };
 interface Env {
   MOOVIBE_LIBRARY:D1Database; MOVIE_VECTORS:VectorizeIndex; PIPELINE_QUEUE:Queue<Job>;
   GEMINI_API_KEY:string; TMDB_API_KEY:string; ADMIN_TOKEN?:string;
-  AI_AUDIT_LOGS?:R2Bucket;
   EMBEDDING_MODEL:string; EMBEDDING_DIMENSIONS:string; EMBEDDING_SCHEMA_VERSION:string;
 }
 const TMDB='https://api.themoviedb.org/3';
 const json=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json'}});
 const log=(event:string,data:Record<string,unknown>={})=>console.log(JSON.stringify({service:'moovibe-pipeline',event,at:new Date().toISOString(),...data}));
-const audit=async(env:Env,trace:Record<string,unknown>)=>{try{await writeAudit(env,trace);}catch(error:any){log('audit_write_failed',{stage:trace.stage,error:String(error?.message||error).slice(0,300)});}};
+const audit=async(env:Env,trace:Record<string,unknown>)=>{try{await writeAudit(env,trace);}catch(error:any){log('audit_log_failed',{stage:trace.stage,error:String(error?.message||error).slice(0,300)});}};
 
 async function tmdb(env:Env,path:string,params:Record<string,unknown>={}) {
   const url=new URL(TMDB+path); url.searchParams.set('api_key',env.TMDB_API_KEY);

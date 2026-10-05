@@ -1,9 +1,10 @@
-import {describe,expect,it} from 'vitest';
+import {describe,expect,it,vi} from 'vitest';
+import fs from 'node:fs';
 import {detectLanguage,LANGUAGES,normalizeLanguage} from '../functions/_lib/languages.js';
 import {LOCALE_KEYS,localeKeysMatch,translations} from '../js/i18n/locales.js';
 import {normalizeMusicText,selectBestTrack} from '../functions/_lib/music-match.js';
 import {createAdminSession,safeEqual,verifyAdminSession} from '../functions/_lib/admin-auth.js';
-import {sanitizeAudit} from '../functions/_lib/audit.js';
+import {sanitizeAudit,writeAudit} from '../functions/_lib/audit.js';
 import {canonicalSongKey,validateUserLyrics} from '../functions/_lib/song-library.js';
 
 describe('internationalization',()=>{
@@ -20,6 +21,8 @@ describe('track identity',()=>{
 describe('admin security',()=>{
   it('creates valid, expiring signed sessions and rejects tampering',async()=>{const token=await createAdminSession('long-admin-key',10);expect(await verifyAdminSession('long-admin-key',token)).toBe(true);expect(await verifyAdminSession('other-key',token)).toBe(false);expect(await verifyAdminSession('long-admin-key',await createAdminSession('long-admin-key',-1))).toBe(false);expect(safeEqual('a','b')).toBe(false);});
  it('redacts secret-shaped audit fields and values',()=>{const safe:any=sanitizeAudit({Authorization:'Bearer abcdefghijklmnop',nested:{api_key:'secret'},text:'sk-abcdefghijklmnop'});expect(JSON.stringify(safe)).not.toContain('abcdefghijklmnop');expect(safe.Authorization).toBe('[REDACTED]');});
+ it('emits sanitized structured AI traces without storage bindings',async()=>{const lines:string[]=[];const spy=vi.spyOn(console,'log').mockImplementation(value=>lines.push(String(value)));await writeAudit({}, {stage:'song_profile',Authorization:'Bearer abcdefghijklmnop',success:true});spy.mockRestore();const trace=JSON.parse(lines[0]);expect(trace).toMatchObject({service:'moovibe',event:'ai_trace',stage:'song_profile',success:true,Authorization:'[REDACTED]'});expect(lines[0]).not.toContain('abcdefghijklmnop');});
+ it('requires no R2 binding in either deployment',()=>{const config=fs.readFileSync('wrangler.toml','utf8')+fs.readFileSync('workers/pipeline/wrangler.jsonc','utf8');expect(config).not.toMatch(/AI_AUDIT_LOGS|r2_buckets|moovibe-ai-audit/i);});
 });
 describe('song persistence invariants',()=>{
  it('uses LRCLIB identity first and canonicalizes text fallback',()=>{expect(canonicalSongKey({title:'x',artist:'y',lrclib_id:'42'})).toBe('lrclib:42');expect(canonicalSongKey({title:' The One ',artist:'LIMP BIZKIT'})).toBe(canonicalSongKey({title:'the one',artist:'limp bizkit'}));});
