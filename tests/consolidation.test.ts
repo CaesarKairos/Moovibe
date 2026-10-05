@@ -1,13 +1,14 @@
 import {describe,expect,it} from 'vitest';
 import {detectLanguage,LANGUAGES,normalizeLanguage} from '../functions/_lib/languages.js';
-import {localeKeysMatch,translations} from '../js/i18n/locales.js';
+import {LOCALE_KEYS,localeKeysMatch,translations} from '../js/i18n/locales.js';
 import {normalizeMusicText,selectBestTrack} from '../functions/_lib/music-match.js';
 import {createAdminSession,safeEqual,verifyAdminSession} from '../functions/_lib/admin-auth.js';
 import {sanitizeAudit} from '../functions/_lib/audit.js';
 import {canonicalSongKey,validateUserLyrics} from '../functions/_lib/song-library.js';
 
 describe('internationalization',()=>{
-  it('defines eight complete locales',()=>{expect(Object.keys(LANGUAGES)).toHaveLength(8);expect(Object.keys(translations).sort()).toEqual(Object.keys(LANGUAGES).sort());expect(localeKeysMatch()).toBe(true);});
+  it('defines every base key explicitly in all eight locales',()=>{expect(Object.keys(LANGUAGES)).toHaveLength(8);expect(Object.keys(translations).sort()).toEqual(Object.keys(LANGUAGES).sort());expect(localeKeysMatch()).toBe(true);for(const value of Object.values(translations))expect(Object.keys(value).sort()).toEqual([...LOCALE_KEYS].sort());});
+  it('fails completeness before any unsupported-language fallback can apply',()=>{const incomplete:any={en:translations.en,es:Object.fromEntries(Object.entries(translations.es).slice(1))};expect(localeKeysMatch(incomplete)).toBe(false);});
   it('detects supported browser languages and falls back to English',()=>{expect(detectLanguage(['pt-PT'])).toBe('pt-BR');expect(detectLanguage(['zh-SG'])).toBe('zh-CN');expect(normalizeLanguage('ko')).toBe('en');});
 });
 describe('track identity',()=>{

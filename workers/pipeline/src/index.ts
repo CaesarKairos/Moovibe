@@ -1,5 +1,6 @@
 import { GeminiClient, RetryableError } from '../../../functions/_lib/gemini.js';
 import { buildMovieDocument, EMBEDDING_SCHEMA_VERSION } from '../../../functions/_lib/recommender.js';
+import { writeAudit } from '../../../functions/_lib/audit.js';
 import { discoveryQueries } from './queries';
 import { HISTORICAL_DISCOVERY_BUDGET,HISTORICAL_DISCOVERY_DUE_SQL,MOVIE_BACKLOG_SQL,PIPELINE_BUDGET,RECENT_DISCOVERY_BUDGET,RECENT_DISCOVERY_DUE_SQL,STALE_JOBS_SQL,STALE_JOB_MINUTES,retryDelaySeconds,shouldRetry,stableDiscoveryKey } from './job-policy';
 
@@ -8,11 +9,13 @@ type Job={ type:JobType; key:string; payload:Record<string,unknown> };
 interface Env {
   MOOVIBE_LIBRARY:D1Database; MOVIE_VECTORS:VectorizeIndex; PIPELINE_QUEUE:Queue<Job>;
   GEMINI_API_KEY:string; TMDB_API_KEY:string; ADMIN_TOKEN?:string;
+  AI_AUDIT_LOGS?:R2Bucket;
   EMBEDDING_MODEL:string; EMBEDDING_DIMENSIONS:string; EMBEDDING_SCHEMA_VERSION:string;
 }
 const TMDB='https://api.themoviedb.org/3';
 const json=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json'}});
 const log=(event:string,data:Record<string,unknown>={})=>console.log(JSON.stringify({service:'moovibe-pipeline',event,at:new Date().toISOString(),...data}));
+const audit=async(env:Env,trace:Record<string,unknown>)=>{try{await writeAudit(env,trace);}catch(error:any){log('audit_write_failed',{stage:trace.stage,error:String(error?.message||error).slice(0,300)});}};
 
 async function tmdb(env:Env,path:string,params:Record<string,unknown>={}) {
   const url=new URL(TMDB+path); url.searchParams.set('api_key',env.TMDB_API_KEY);
@@ -321,23 +324,25 @@ async function wikipediaFallback(title:string,year:number|null) {
 
 const enrichmentSchema={type:'object',properties:{moods:{type:'array',items:{type:'string'}},themes:{type:'array',items:{type:'string'}},atmosphere:{type:'array',items:{type:'string'}},pace:{type:'string',enum:['very_slow','slow','medium','fast','very_fast']},visual_style:{type:'array',items:{type:'string'}},emotional_valence:{type:'number'},energy:{type:'number'},intimacy:{type:'number'},surrealism:{type:'number'},darkness:{type:'number'},humor:{type:'number'},romanticism:{type:'number'},narrative_density:{type:'number'},melancholy_level:{type:'number'},tension_level:{type:'number'},confidence:{type:'number'}},required:['moods','themes','atmosphere','pace','visual_style','emotional_valence','energy','intimacy','surrealism','darkness','humor','romanticism','narrative_density','melancholy_level','tension_level','confidence']};
 async function enrich(env:Env,job:Job) {
-  const id=Number(job.payload.tmdb_id); const movie=await movieRecord(env,id); if(!movie)return;
+  const id=Number(job.payload.tmdb_id),traceId=crypto.randomUUID(); const movie=await movieRecord(env,id); if(!movie)return;
   const client=new GeminiClient(env.GEMINI_API_KEY);
   const sparse=String(movie.overview||'').length<120||JSON.parse(movie.keywords||'[]').length<3;
   const wiki=sparse?await wikipediaFallback(movie.title,movie.release_year):null;
   const context=`Title: ${movie.title}\nYear: ${movie.release_year}\nDirector: ${movie.director||'unknown'}\nCountries: ${movie.countries}\nGenres: ${movie.genres}\nKeywords: ${movie.keywords}\nOverview: ${movie.overview||''}\nTagline: ${movie.tagline||''}${wiki?`\nVerified Wikipedia fallback: ${wiki.text}`:''}`;
-  const result=await client.generateJson({system:'Analyze cinematic aesthetics from supplied facts. Never create factual claims. Return concise English concepts and all numeric dimensions from 0 to 1.',prompt:context,schema:enrichmentSchema}); const e=result.data as any;
+  const system='Analyze cinematic aesthetics from supplied facts. Never create factual claims. Return concise English concepts and all numeric dimensions from 0 to 1.',started=Date.now(); let result;
+  try{result=await client.generateJson({system,prompt:context,schema:enrichmentSchema});await audit(env,{request_id:traceId,timestamp:new Date().toISOString(),stage:'movie_enrichment',model:result.model,input:context,system_prompt:system,output:result.data,duration_ms:Date.now()-started,success:true,status:'complete'});}catch(error:any){await audit(env,{request_id:traceId,timestamp:new Date().toISOString(),stage:'movie_enrichment',input:context,system_prompt:system,duration_ms:Date.now()-started,success:false,status:'error',error:String(error?.message||error)});throw error;} const e=result.data as any;
   await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO movie_enrichments(movie_id,moods_json,themes_json,atmosphere_json,visual_style_json,pace,emotional_valence,energy,intimacy,surrealism,darkness,humor,romanticism,narrative_density,melancholy_level,tension_level,confidence,model,schema_version,source_context,provenance_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(movie_id) DO UPDATE SET moods_json=excluded.moods_json,themes_json=excluded.themes_json,atmosphere_json=excluded.atmosphere_json,visual_style_json=excluded.visual_style_json,pace=excluded.pace,emotional_valence=excluded.emotional_valence,energy=excluded.energy,intimacy=excluded.intimacy,surrealism=excluded.surrealism,darkness=excluded.darkness,humor=excluded.humor,romanticism=excluded.romanticism,narrative_density=excluded.narrative_density,melancholy_level=excluded.melancholy_level,tension_level=excluded.tension_level,confidence=excluded.confidence,model=excluded.model,source_context=excluded.source_context,provenance_json=excluded.provenance_json,updated_at=CURRENT_TIMESTAMP`).bind(movie.id,JSON.stringify(e.moods),JSON.stringify(e.themes),JSON.stringify(e.atmosphere),JSON.stringify(e.visual_style),e.pace,e.emotional_valence,e.energy,e.intimacy,e.surrealism,e.darkness,e.humor,e.romanticism,e.narrative_density,e.melancholy_level,e.tension_level,e.confidence,result.model,'style-v2',context,JSON.stringify(wiki?['tmdb',{source:'wikipedia',url:wiki.url}]:['tmdb'])).run();
   await env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET enrichment_status='complete',enriched_at=CURRENT_TIMESTAMP,embedding_status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(movie.id).run();
   await enqueue(env,{type:'EMBED_MOVIE',key:`embed:${id}:${EMBEDDING_SCHEMA_VERSION}`,payload:{tmdb_id:id}}); log('movie_enriched',{tmdb_id:id,model:result.model});
 }
 
 async function embed(env:Env,job:Job) {
-  const id=Number(job.payload.tmdb_id); const movie=await movieRecord(env,id); if(!movie)return;
+  const id=Number(job.payload.tmdb_id),traceId=crypto.randomUUID(); const movie=await movieRecord(env,id); if(!movie)return;
   const er=await env.MOOVIBE_LIBRARY.prepare(`SELECT * FROM movie_enrichments WHERE movie_id=?`).bind(movie.id).first<any>(); if(!er) throw new Error('Movie has no enrichment');
   movie.enrichment={moods:er.moods_json,themes:er.themes_json,atmosphere:er.atmosphere_json,visual_style:er.visual_style_json,...er}; const document=buildMovieDocument(movie);
   const bytes=new TextEncoder().encode(document); const digest=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(b=>b.toString(16).padStart(2,'0')).join('');
-  const model=env.EMBEDDING_MODEL||'gemini-embedding-2',dimensions=Number(env.EMBEDDING_DIMENSIONS||768); const values=await new GeminiClient(env.GEMINI_API_KEY).embed(document,{model,dimensions});
+  const model=env.EMBEDDING_MODEL||'gemini-embedding-2',dimensions=Number(env.EMBEDDING_DIMENSIONS||768),started=Date.now(); let values:number[];
+  try{values=await new GeminiClient(env.GEMINI_API_KEY).embed(document,{model,dimensions});await audit(env,{request_id:traceId,timestamp:new Date().toISOString(),stage:'movie_embedding',model,input:document,input_hash:digest,dimensions,duration_ms:Date.now()-started,success:true,status:'complete'});}catch(error:any){await audit(env,{request_id:traceId,timestamp:new Date().toISOString(),stage:'movie_embedding',model,input:document,input_hash:digest,dimensions,duration_ms:Date.now()-started,success:false,status:'error',error:String(error?.message||error)});throw error;}
   await env.MOVIE_VECTORS.upsert([{id:String(id),values,metadata:{year:movie.release_year||0,language:movie.original_language||'',schema:env.EMBEDDING_SCHEMA_VERSION||EMBEDDING_SCHEMA_VERSION}}]);
   await env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET embedding_status='complete',embedding_model=?,embedding_dimensions=?,embedding_schema_version=?,semantic_document_hash=?,embedded_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(model,dimensions,env.EMBEDDING_SCHEMA_VERSION||EMBEDDING_SCHEMA_VERSION,digest,movie.id).run(); log('movie_embedded',{tmdb_id:id,model,dimensions});
 }

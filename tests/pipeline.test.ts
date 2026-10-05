@@ -153,13 +153,18 @@ describe('job state machine',()=>{
     const movieId=(db.prepare(`SELECT id FROM movies WHERE tmdb_id=1`).get() as any).id;
     for(const [id,name] of [[1,'one'],[2,'two'],[3,'three']] as const){db.prepare(`INSERT INTO keywords(id,name) VALUES(?,?)`).run(id,name);db.prepare(`INSERT INTO movie_keywords(movie_id,keyword_id) VALUES(?,?)`).run(movieId,id);}
     db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json) VALUES('enrich:1:v2','ENRICH_MOVIE','{"tmdb_id":1}')`);
-    const {env,sent}=makeEnv(db);expect((await processJob(env,{type:'ENRICH_MOVIE',key:'enrich:1:v2',payload:{tmdb_id:1}})).retry).toBe(false);
+    const {env,sent}=makeEnv(db);const auditObjects:any[]=[];env.AI_AUDIT_LOGS={put:vi.fn(async(_key:string,value:string)=>auditObjects.push(JSON.parse(value)))};expect((await processJob(env,{type:'ENRICH_MOVIE',key:'enrich:1:v2',payload:{tmdb_id:1}})).retry).toBe(false);
     expect(sent).toContainEqual({type:'EMBED_MOVIE',key:'embed:1:movie-v1',payload:{tmdb_id:1}});
     expect((db.prepare('SELECT COUNT(*) n FROM movie_enrichments').get() as any).n).toBe(1);
     db.exec(`UPDATE pipeline_jobs SET status='queued' WHERE job_key='enrich:1:v2'`);
     await processJob(env,{type:'ENRICH_MOVIE',key:'enrich:1:v2',payload:{tmdb_id:1}});
     expect((db.prepare('SELECT COUNT(*) n FROM movie_enrichments').get() as any).n).toBe(1);
     expect((db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE job_key='embed:1:movie-v1'`).get() as any).n).toBe(1);
+    await processJob(env,{type:'EMBED_MOVIE',key:'embed:1:movie-v1',payload:{tmdb_id:1}});
+    expect(auditObjects.filter(x=>x.stage==='movie_enrichment')).toHaveLength(2);
+    const embedding=auditObjects.find(x=>x.stage==='movie_embedding');
+    expect(embedding).toMatchObject({model:'gemini-embedding-2',dimensions:768,success:true,status:'complete'});
+    expect(embedding.input).toContain('Film');expect(embedding.input_hash).toMatch(/^[a-f0-9]{64}$/);expect(embedding).not.toHaveProperty('values');expect(JSON.stringify(embedding)).not.toContain('0.01,0.01');
   });
 });
 
