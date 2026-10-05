@@ -70,6 +70,22 @@ function compactCandidate(movie) {
   };
 }
 
+const normalizedTitle=value=>String(value||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+const mentionsTitle=(text,title)=>{
+  const normalized=normalizedTitle(title);
+  return Boolean(normalized)&&` ${normalizedTitle(text)} `.includes(` ${normalized} `);
+};
+const primaryOnlyJustification=lang=>lang==='pt'
+  ?'A atmosfera, o ritmo e a trajetória emocional deste filme refletem de forma coesa o perfil emocional e estético das músicas analisadas.'
+  :'This film’s atmosphere, rhythm, and emotional arc cohesively reflect the emotional and aesthetic profile of the analyzed songs.';
+
+function keepJustificationPrimaryOnly(curation,slate,lang) {
+  const byId=new Map(slate.map(movie=>[Number(movie.tmdb_id),movie]));
+  const alternatives=curation.alternative_tmdb_ids.map(id=>byId.get(Number(id))).filter(Boolean);
+  if(!alternatives.some(movie=>mentionsTitle(curation.justification,movie.title)))return curation;
+  return {...curation,justification:primaryOnlyJustification(lang)};
+}
+
 export async function recommendFromCatalog({env,songs,lyrics,context,lang='en'}) {
   if(!env.MOOVIBE_LIBRARY) throw new Error('MOOVIBE_LIBRARY D1 binding is missing');
   const gemini=new GeminiClient(env.GEMINI_API_KEY);
@@ -113,8 +129,8 @@ export async function recommendFromCatalog({env,songs,lyrics,context,lang='en'})
   console.log(JSON.stringify({event:'catalog_candidates',lang,semantic_count:diagnostics.semantic_count,numeric_count:diagnostics.numeric_count,union_count:diagnostics.union_count,final_count:diagnostics.final_count,keyword_fallback_count:keywordFallback,ranking:'deterministic',top:diagnostics.top}));
   let curation;
   try {
-    const result=await gemini.generateJson({system:`You are Moovibe's final curator, restricted to the supplied candidate list. Rules: choose ONLY tmdb_id values that appear in "Allowed candidates" — never propose a movie outside that list; pick exactly 1 primary and exactly 2 distinct alternatives; judge by how well the movie fits the music profile; the numeric scores are signals, not an absolute command; never invent cinematic facts that are absent from the payload. Write the justification in ${lang==='pt'?'Brazilian Portuguese':'English'}.`,prompt:`Music profile:\n${JSON.stringify(analysis.data)}\n\nAllowed candidates:\n${JSON.stringify(candidates)}`,schema:curationSchema});
-    curation=validateCuration(result.data,slate);
+    const result=await gemini.generateJson({system:`You are Moovibe's final curator, restricted to the supplied candidate list. Rules: choose ONLY tmdb_id values that appear in "Allowed candidates" — never propose a movie outside that list; pick exactly 1 primary and exactly 2 distinct alternatives; judge by how well the movie fits the music profile; the numeric scores are signals, not an absolute command; never invent cinematic facts that are absent from the payload. The justification must discuss EXCLUSIVELY the connection between the music profile and the primary film: do not name, compare, recommend, or allude to either alternative or any other film, and never write phrases such as "as alternatives". Keep alternative_calls separate: write one short, specific call for each alternative. Write the justification and alternative_calls in ${lang==='pt'?'Brazilian Portuguese':'English'}.`,prompt:`Music profile:\n${JSON.stringify(analysis.data)}\n\nAllowed candidates:\n${JSON.stringify(candidates)}`,schema:curationSchema});
+    curation=keepJustificationPrimaryOnly(validateCuration(result.data,slate),slate,lang);
   } catch(error) {
     // Deterministic fallback: never search externally for a replacement.
     curation={primary_tmdb_id:Number(slate[0].tmdb_id),alternative_tmdb_ids:slate.slice(1,3).map(x=>Number(x.tmdb_id)),justification:lang==='pt'?'A atmosfera, o ritmo e a trajetória emocional deste filme formam a correspondência mais forte encontrada no catálogo do Moovibe.':'Its atmosphere, rhythm, and emotional arc form the strongest match found in the Moovibe catalog.',vibe_title:'CINEMATIC ECHO',tags:[...(analysis.data.moods||[]),...(analysis.data.atmosphere||[])].slice(0,4).map(x=>String(x).toUpperCase()),alternative_calls:lang==='pt'?['Para uma variação próxima','Para outra textura emocional']:['For a close variation','For another emotional texture']};

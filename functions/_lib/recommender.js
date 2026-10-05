@@ -62,10 +62,10 @@ export function numericVibeSimilarity(enrichment, profile) {
 
 // Composite score: components are computed explicitly (and exposed on
 // component_scores for debug/observability) then combined with SCORE_WEIGHTS.
-// When a candidate has no embedding (numeric-only channel) the semantic weight
-// is redistributed over the remaining components instead of counting as zero,
-// so a movie is never punished for missing embeddings while the catalog is
-// still being embedded — and never artificially boosted for lacking data.
+// Missing embeddings use a neutral semantic value for scoring while remaining
+// null in component_scores. Fixed weights prevent absence of data from
+// improving a candidate through renormalization while keeping numeric-only
+// movies eligible during catalog backfill.
 export function scoreCandidate(candidate, profile) {
   const e = candidate.enrichment || {};
   const hasEnrichment = e.confidence !== undefined && e.confidence !== null;
@@ -75,10 +75,8 @@ export function scoreCandidate(candidate, profile) {
   const quality = clamp(0.5 * (hasEnrichment ? clamp(e.confidence) : 0) + 0.5 * dataQuality);
   const semanticPresent = candidate.vector_score !== undefined && candidate.vector_score !== null;
   const semantic = semanticPresent ? clamp(candidate.vector_score) : null;
-  let total = SCORE_WEIGHTS.numericVibe * numeric + SCORE_WEIGHTS.concepts * concepts + SCORE_WEIGHTS.quality * quality;
-  let weightSum = SCORE_WEIGHTS.numericVibe + SCORE_WEIGHTS.concepts + SCORE_WEIGHTS.quality;
-  if (semanticPresent) { total += SCORE_WEIGHTS.semantic * semantic; weightSum += SCORE_WEIGHTS.semantic; }
-  const final = total / weightSum;
+  const semanticForScore = semantic ?? 0.5;
+  const final = SCORE_WEIGHTS.numericVibe * numeric + SCORE_WEIGHTS.semantic * semanticForScore + SCORE_WEIGHTS.concepts * concepts + SCORE_WEIGHTS.quality * quality;
   candidate.component_scores = { numeric, semantic, concepts, quality, final };
   return final;
 }

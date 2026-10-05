@@ -44,12 +44,19 @@ describe('composite score',()=>{
     expect(candidate.component_scores.semantic).toBeCloseTo(.6,6);
     expect(candidate.component_scores.concepts).toBe(1);
   });
-  it('redistributes weight so a numeric-only candidate competes without an embedding',()=>{
+  it('uses a neutral semantic value without rewarding a missing embedding',()=>{
     const candidate=movie(1,{vector_score:undefined});
     const quality=.5*.9+.5*.75;
-    const expected=(SCORE_WEIGHTS.numericVibe*1+SCORE_WEIGHTS.concepts*1+SCORE_WEIGHTS.quality*quality)/(1-SCORE_WEIGHTS.semantic);
+    const expected=SCORE_WEIGHTS.numericVibe*1+SCORE_WEIGHTS.semantic*.5+SCORE_WEIGHTS.concepts*1+SCORE_WEIGHTS.quality*quality;
     expect(scoreCandidate(candidate,profile)).toBeCloseTo(expected,6);
     expect(candidate.component_scores.semantic).toBeNull();
+  });
+  it('cannot improve an otherwise identical candidate by removing its embedding',()=>{
+    const withSemantic=movie(1,{vector_score:.5});
+    const withoutSemantic=movie(2,{vector_score:undefined});
+    expect(scoreCandidate(withoutSemantic,profile)).toBeCloseTo(scoreCandidate(withSemantic,profile),6);
+    expect(withoutSemantic.component_scores.semantic).toBeNull();
+    expect(withSemantic.component_scores.semantic).toBeCloseTo(.5,6);
   });
   it('never lets a candidate without enrichment reach an excellent score',()=>{
     const enriched=movie(1,{vector_score:.95});

@@ -135,6 +135,24 @@ describe('hybrid recommendation flow',()=>{
     expect(prompt.length).toBeLessThan(60000);
     expect(result.diagnostics.semantic_count+result.diagnostics.numeric_count).toBeGreaterThan(0);
   });
+  it('keeps a valid justification that discusses only the primary film',async()=>{
+    const {env}=makeEnv(db);
+    const valid={primary_tmdb_id:1,alternative_tmdb_ids:[2,3],justification:'Film 1 traduz a melancolia e a atmosfera onírica das músicas em uma experiência cinematográfica íntima.',vibe_title:'V',tags:['a','b','c','d'],alternative_calls:['Film 2 para outra textura','Film 3 para outra energia']};
+    generateJson.mockImplementation(async({schema}:any)=>schema?.properties?.primary_tmdb_id?{model:'m',data:valid}:validProfile());
+    const result=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'pt'});
+    expect(result.curation).toMatchObject({primary_tmdb_id:1,alternative_tmdb_ids:[2,3],justification:valid.justification});
+  });
+  it('replaces only a justification that names an alternative and preserves all chosen ids',async()=>{
+    const {env}=makeEnv(db);
+    const contaminated={primary_tmdb_id:1,alternative_tmdb_ids:[2,3],justification:'Film 1 combina com a música; como alternativas, fIlM—2 e Film 3 seguem a mesma vibe.',vibe_title:'V',tags:['a','b','c','d'],alternative_calls:['Film 2 para outra textura','Film 3 para outra energia']};
+    generateJson.mockImplementation(async({schema}:any)=>schema?.properties?.primary_tmdb_id?{model:'m',data:contaminated}:validProfile());
+    const result=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'pt'});
+    expect(result.curation.primary_tmdb_id).toBe(1);
+    expect(result.curation.alternative_tmdb_ids).toEqual([2,3]);
+    expect(result.curation.justification).not.toBe(contaminated.justification);
+    expect(result.curation.justification.toLowerCase()).not.toContain('film 2');
+    expect(result.curation.justification.toLowerCase()).not.toContain('film 3');
+  });
   it('accepts a valid curation whose ids are inside the generated set',async()=>{
     const {env}=makeEnv(db);
     const first=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'en'});
