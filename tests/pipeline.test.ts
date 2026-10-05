@@ -7,7 +7,8 @@ vi.mock('../functions/_lib/gemini.js',()=>({
   GeminiClient:class {async generateJson(){return {model:'test-model',data:{moods:['calm'],themes:['memory'],atmosphere:['warm'],pace:'medium',visual_style:['natural'],emotional_valence:.5,energy:.5,intimacy:.5,surrealism:.1,darkness:.1,humor:.2,romanticism:.2,narrative_density:.5,melancholy_level:.2,tension_level:.2,confidence:.9}};} async embed(){return Array(768).fill(0.01);}}
 }));
 
-import {processJob,schedule} from '../workers/pipeline/src/index.js';
+import {processJob,schedule,seedQueries} from '../workers/pipeline/src/index.js';
+import {discoveryQueries} from '../workers/pipeline/src/queries.js';
 import {DISCOVERY_DUE_SQL,MOVIE_BACKLOG_SQL,stableDiscoveryKey} from '../workers/pipeline/src/job-policy.js';
 
 class Statement {
@@ -22,6 +23,19 @@ const makeEnv=(db:Database.Database)=>{
   const sent:any[]=[];
   const env:any={MOOVIBE_LIBRARY:{prepare:(sql:string)=>new Statement(db,sql),batch:async(xs:Statement[])=>Promise.all(xs.map(x=>x.run()))},PIPELINE_QUEUE:{send:async(j:any)=>{sent.push(j);}},MOVIE_VECTORS:{upsert:vi.fn()},GEMINI_API_KEY:'x',TMDB_API_KEY:'x',EMBEDDING_MODEL:'gemini-embedding-2',EMBEDDING_DIMENSIONS:'768',EMBEDDING_SCHEMA_VERSION:'movie-v1'};
   return {env,sent};
+};
+const trackRowWrites=(env:any,table?:string)=>{
+  const counter={count:0};
+  const prepare=env.MOOVIBE_LIBRARY.prepare;
+  env.MOOVIBE_LIBRARY.prepare=(sql:string)=>{
+    const statement=prepare(sql);
+    if(/^\s*(INSERT|UPDATE|DELETE)\b/i.test(sql)&&(!table||sql.includes(table))){
+      const run=statement.run.bind(statement);
+      statement.run=async()=>{counter.count++;return run();};
+    }
+    return statement;
+  };
+  return counter;
 };
 let db:Database.Database;
 beforeEach(()=>{db=new Database(':memory:');for(const file of fs.readdirSync('migrations').filter(x=>x.endsWith('.sql')).sort())db.exec(fs.readFileSync(`migrations/${file}`,'utf8'));});
@@ -57,6 +71,40 @@ describe('pipeline scheduling',()=>{
     db.exec(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status) VALUES('stale-q','Q','{}',1,'running');INSERT INTO pipeline_jobs(job_key,type,payload_json,status,updated_at) VALUES('discover:stale-q:v1','DISCOVER_QUERY','{"query_id":"stale-q"}','running',datetime('now','-31 minutes'))`);
     const {env}=makeEnv(db);await schedule(env);
     expect((db.prepare(`SELECT status,last_error FROM collection_queries WHERE query_id='stale-q'`).get() as any)).toMatchObject({status:'pending',last_error:expect.stringContaining('stale lease')});
+  });
+  it('second seedQueries run without changes performs zero row writes and keeps legacy untouched',async()=>{
+    db.exec(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status) VALUES('legacy-keep','Legacy','{}',0,'imported');`);
+    const {env}=makeEnv(db);
+    const writes=trackRowWrites(env);
+    const first=await seedQueries(env);
+    expect(first.inserted).toBeGreaterThan(1000);
+    expect(first.updated).toBe(0);
+    const afterFirst=writes.count;
+    expect(afterFirst).toBe(first.inserted);
+    const second=await seedQueries(env);
+    expect(second).toMatchObject({inserted:0,updated:0});
+    expect(writes.count).toBe(afterFirst);
+    expect(db.prepare(`SELECT label,params_json,is_executable,status FROM collection_queries WHERE query_id='legacy-keep'`).get()).toEqual({label:'Legacy',params_json:'{}',is_executable:0,status:'imported'});
+  });
+  it('applies real definition changes as targeted row writes only',async()=>{
+    const {env}=makeEnv(db);
+    await seedQueries(env);
+    const target=discoveryQueries()[0];
+    db.prepare(`UPDATE collection_queries SET label='drifted',params_json='{}' WHERE query_id=?`).run(target.id);
+    const writes=trackRowWrites(env);
+    const result=await seedQueries(env);
+    expect(result).toMatchObject({inserted:0,updated:1});
+    expect(writes.count).toBe(1);
+    expect(db.prepare(`SELECT label,params_json FROM collection_queries WHERE query_id=?`).get(target.id)).toEqual({label:target.label,params_json:JSON.stringify(target.params)});
+  });
+  it('cron reseeds discovery only when the definition version changes',async()=>{
+    const {env}=makeEnv(db);
+    await schedule(env);
+    const state=db.prepare(`SELECT value FROM system_state WHERE key='discovery_seed_version'`).get() as any;
+    expect(state.value).toMatch(/^[0-9a-f]{64}$/);
+    const writes=trackRowWrites(env,'collection_queries');
+    await schedule(env);
+    expect(writes.count).toBe(0);
   });
 });
 
