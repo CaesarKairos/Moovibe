@@ -25,3 +25,11 @@ database_id = "20b1139e-409f-4127-867d-6cb7ad9bda25"
 [[env.production.vectorize]]
 binding = "MOVIE_VECTORS"
 index_name = "moovibe-movies-v1"
+
+[[env.production.r2_buckets]]
+binding = "AI_AUDIT_LOGS"
+bucket_name = "moovibe-ai-audit-logs"
+
+[[env.production.analytics_engine_datasets]]
+binding = "MOOVIBE_ANALYTICS"
+dataset = "moovibe_traffic"
