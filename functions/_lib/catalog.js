@@ -73,7 +73,7 @@ export async function recommendFromCatalog({env,songs,lyrics,context,lang='en'})
 
   // CANAL A — semantic: music-profile embedding against Vectorize (top 100).
   let semanticMatches=[];
-  if(env.MOVIE_VECTORS) { const result=await env.MOVIE_VECTORS.query(vector,{topK:SEMANTIC_TOP_K,returnMetadata:'all'}); semanticMatches=result.matches||[]; }
+  if(env.MOVIE_VECTORS) { const result=await env.MOVIE_VECTORS.query(vector,{topK:SEMANTIC_TOP_K,returnValues:false,returnMetadata:'indexed'}); semanticMatches=result.matches||[]; }
   // CANAL B — numeric vibe: deterministic D1 similarity (top 100), no embedding required.
   const numericRows=await numericCandidates(env.MOOVIBE_LIBRARY,analysis.data);
   // Union + dedupe by tmdb_id: movies in both channels keep both signals.

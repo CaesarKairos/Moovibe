@@ -54,6 +54,15 @@ beforeEach(()=>{
 });
 
 describe('hybrid recommendation flow',()=>{
+  it('queries 100 Vectorize candidates without full metadata or vector values',async()=>{
+    const {env,MOVIE_VECTORS}=makeEnv(db);
+    await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'en'});
+    expect(MOVIE_VECTORS.query).toHaveBeenCalledWith(expect.any(Array),{
+      topK:100,
+      returnValues:false,
+      returnMetadata:'indexed'
+    });
+  });
   it('restricts Gemini to the candidate set and falls back deterministically on an external id',async()=>{
     const {env}=makeEnv(db);
     const result=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'en'});
