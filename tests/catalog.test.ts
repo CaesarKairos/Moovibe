@@ -8,7 +8,7 @@ vi.mock('../functions/_lib/gemini.js',()=>({
   GeminiClient:class{constructor(_key?:string){}async generateJson(...args:any[]){return generateJson(...args);}async embed(...args:any[]){return embed(...args);}}
 }));
 
-import {recommendFromCatalog} from '../functions/_lib/catalog.js';
+import {D1_ID_CHUNK_SIZE,recommendFromCatalog} from '../functions/_lib/catalog.js';
 
 class Statement {
   values:any[]=[];
@@ -29,10 +29,10 @@ const makeEnv=(db:Database.Database)=>{
   return {env,MOVIE_VECTORS};
 };
 
-const seedMovies=(db:Database.Database,count=5)=>{
+const seedMovies=(db:Database.Database,count=5,start=1)=>{
   const movie=db.prepare(`INSERT INTO movies(tmdb_id,title,overview,release_year,original_language,popularity,vote_average,vote_count,poster_path,collection_status) VALUES(?,?,?,?,'en',5,7,50,'/p.jpg','complete')`);
   const enrichment=db.prepare(`INSERT INTO movie_enrichments(movie_id,moods_json,themes_json,atmosphere_json,visual_style_json,pace,emotional_valence,energy,intimacy,surrealism,darkness,humor,romanticism,narrative_density,melancholy_level,tension_level,confidence,model,schema_version) VALUES(?,'["melancholic"]','["memory"]','["dreamlike"]','["natural"]','slow',.3,.4,.8,.4,.5,.1,.4,.6,.8,.3,.9,'m','movie-v1')`);
-  for(let i=1;i<=count;i++){
+  for(let i=start;i<start+count;i++){
     const overview=i===1?'X'.repeat(2000):`Story ${i}`;
     movie.run(i,`Film ${i}`,overview,2000+i);
     const row=db.prepare(`SELECT id FROM movies WHERE tmdb_id=?`).get(i) as any;
@@ -54,6 +54,31 @@ beforeEach(()=>{
 });
 
 describe('hybrid recommendation flow',()=>{
+  it('loads a 200-id hybrid union in D1-safe chunks and keeps a 100-film shortlist',async()=>{
+    seedMovies(db,195,6);
+    const {env,MOVIE_VECTORS}=makeEnv(db);
+    MOVIE_VECTORS.query.mockResolvedValueOnce({matches:Array.from({length:100},(_,i)=>({id:String(101+i),score:1}))});
+    const loadChunkSizes:number[]=[];
+    const prepare=env.MOOVIBE_LIBRARY.prepare;
+    env.MOOVIBE_LIBRARY.prepare=(sql:string)=>{
+      const statement=prepare(sql);
+      if(sql.includes('FROM movies m LEFT JOIN movie_enrichments e')&&sql.includes('WHERE m.tmdb_id IN')) {
+        const bind=statement.bind.bind(statement);
+        statement.bind=(...values:any[])=>{
+          if(values.length>100)throw new Error(`too many SQL variables: ${values.length}`);
+          loadChunkSizes.push(values.length);
+          return bind(...values);
+        };
+      }
+      return statement;
+    };
+    const result=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'en'});
+    expect(result.diagnostics.union_count).toBe(200);
+    expect(loadChunkSizes).toEqual([D1_ID_CHUNK_SIZE,D1_ID_CHUNK_SIZE,20]);
+    expect(result.candidate_count).toBe(100);
+    expect(result.candidate_ids).toContain(101);
+    expect(result.candidate_ids).toContain(200);
+  });
   it('queries 100 Vectorize candidates without full metadata or vector values',async()=>{
     const {env,MOVIE_VECTORS}=makeEnv(db);
     await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'en'});
