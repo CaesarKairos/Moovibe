@@ -81,7 +81,7 @@ npx wrangler secret put ADMIN_TOKEN --config workers/pipeline/wrangler.jsonc
 ```text
 EMBEDDING_MODEL=gemini-embedding-2
 EMBEDDING_DIMENSIONS=768
-RECOMMENDER_VERSION=catalog-v2
+RECOMMENDER_VERSION=catalog-v3-hybrid
 ```
 
 Pages e Worker são serviços diferentes; secrets repetidos precisam ser configurados nos dois.

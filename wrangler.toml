@@ -7,7 +7,7 @@ compatibility_date = "2026-07-18"
 [env.production.vars]
 EMBEDDING_MODEL = "gemini-embedding-2"
 EMBEDDING_DIMENSIONS = "768"
-RECOMMENDER_VERSION = "catalog-v2"
+RECOMMENDER_VERSION = "catalog-v3-hybrid"
 
 # KV já existente do Moovibe.
 # Continua responsável por cache, histórico e compartilhamentos.

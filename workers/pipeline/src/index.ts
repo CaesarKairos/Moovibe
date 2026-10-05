@@ -96,6 +96,41 @@ async function recoverJobs(env:Env) {
   return {stale:recovered,stranded:stranded.results.length};
 }
 
+// Failures caused by bugs that are already fixed in code. Only these exact
+// error fingerprints are requeued, so a general backlog of unrelated terminal
+// errors is never touched.
+const KNOWN_FAILURE_RULES:{type:'ENRICH_MOVIE'|'FETCH_MOVIE';like:string;reason:string}[]=[
+  {type:'ENRICH_MOVIE',like:'%Illegal invocation%',reason:'GeminiClient fetch binding fixed'},
+  {type:'FETCH_MOVIE',like:'%UNIQUE constraint failed: genres.name%',reason:'genre identity resolution fixed'}
+];
+
+// Idempotent, authenticated recovery of known fixed failures: conditional
+// status='error' → 'queued' transition (never duplicates an active job), zeroed
+// attempts, cleared last_error, available_at=now, a Queue message per job and —
+// for FETCH — honest movie state so the film can really be processed again.
+async function requeueKnownFailures(env:Env) {
+  const requeued:{ENRICH_MOVIE:number;FETCH_MOVIE:number}={ENRICH_MOVIE:0,FETCH_MOVIE:0};
+  let moviesReset=0;
+  for(const rule of KNOWN_FAILURE_RULES) {
+    const rows=await env.MOOVIBE_LIBRARY.prepare(`SELECT job_key,payload_json FROM pipeline_jobs WHERE status='error' AND type=? AND last_error LIKE ?`).bind(rule.type,rule.like).all<{job_key:string;payload_json:string}>();
+    for(const row of rows.results) {
+      const changed=await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='queued',attempts=0,last_error=NULL,available_at=CURRENT_TIMESTAMP,started_at=NULL,completed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='error'`).bind(row.job_key).run();
+      if(!changed.meta.changes) continue;
+      const payload=JSON.parse(row.payload_json);
+      if(rule.type==='FETCH_MOVIE') {
+        // The old lifecycle marked the movie complete before relations finished.
+        const reset=await env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET collection_status='discovered',last_error=? WHERE tmdb_id=? AND collection_status='complete'`).bind(`requeued after ${rule.reason}`,Number(payload.tmdb_id)).run();
+        if(reset.meta.changes) moviesReset++;
+      }
+      await env.PIPELINE_QUEUE.send({type:rule.type,key:row.job_key,payload});
+      requeued[rule.type]++;
+    }
+  }
+  const total=requeued.ENRICH_MOVIE+requeued.FETCH_MOVIE;
+  log('requeue_known_failures',{enrich_movie:requeued.ENRICH_MOVIE,fetch_movie:requeued.FETCH_MOVIE,movies_reset:moviesReset});
+  return {requeued,total,movies_reset:moviesReset,known_rules:KNOWN_FAILURE_RULES.map(r=>({type:r.type,reason:r.reason}))};
+}
+
 async function schedule(env:Env) {
   // Version-gated bootstrap/sync: one 1-row read per cron and zero row writes
   // while definitions are unchanged. A seed failure must not stall the cron.
@@ -114,28 +149,96 @@ async function schedule(env:Env) {
   log('cron_complete',{pipeline_jobs:pipelineQueued,discovery_jobs:discoveryQueued,pipeline_candidates:pending.results.length,recovered_stale:recovery.stale,recovered_stranded:recovery.stranded});
 }
 
+// Reserved static keys describe a RUNTIME window: concrete dates are computed
+// on every execution and never persisted, so query ids and the discovery seed
+// version stay stable regardless of the day.
+const RESERVED_DISCOVERY_KEYS=['lane','lookback_days','upcoming_days'];
+const isoDay=(d:Date)=>d.toISOString().slice(0,10);
+
 async function discover(env:Env,job:Job) {
-  const id=String(job.payload.query_id); const row=await env.MOOVIBE_LIBRARY.prepare(`SELECT * FROM collection_queries WHERE query_id=? AND is_executable=1 AND status='pending'`).bind(id).first<any>();
-  if(!row) return; const page=Math.max(1,Number(row.next_page)||1); const params={...JSON.parse(row.params_json),page,include_adult:false,include_video:false};
+  const id=String(job.payload.query_id);
+  const row=await env.MOOVIBE_LIBRARY.prepare(`SELECT * FROM collection_queries WHERE query_id=? AND is_executable=1 AND status='pending'`).bind(id).first<any>();
+  if(!row) return;
+  const page=Math.max(1,Number(row.next_page)||1);
+  const stored=JSON.parse(row.params_json);
+  const params:{[k:string]:unknown}={...stored};
+  const lane=String(params.lane||'');
+  const lookbackDays=Number(params.lookback_days||0);
+  const upcomingDays=Number(params.upcoming_days||0);
+  for(const key of RESERVED_DISCOVERY_KEYS) delete params[key];
+  const now=new Date();
+  if(upcomingDays>0) {
+    params['primary_release_date.gte']=isoDay(now);
+    params['primary_release_date.lte']=isoDay(new Date(now.getTime()+upcomingDays*86400000));
+  } else if(lookbackDays>0) {
+    params['primary_release_date.gte']=isoDay(new Date(now.getTime()-lookbackDays*86400000));
+    params['primary_release_date.lte']=isoDay(now);
+  }
+  params.page=page; params.include_adult=false; params.include_video=false;
   const claimed=await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET status='running',last_run_at=CURRENT_TIMESTAMP,run_count=run_count+1,updated_at=CURRENT_TIMESTAMP WHERE query_id=? AND is_executable=1 AND status='pending'`).bind(id).run();
   if(!claimed.meta.changes)return;
   const data=await tmdb(env,'/discover/movie',params);
   let discovered=0;
   for(const item of data.results||[]) {
     if(!item.id || !item.title || (!item.overview && !item.release_date)) continue;
-    await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO movies(tmdb_id,title,original_title,overview,release_date,release_year,original_language,popularity,vote_average,vote_count,poster_path,backdrop_path,adult,video) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tmdb_id) DO UPDATE SET title=excluded.title,overview=CASE WHEN movies.overview IS NULL OR movies.overview='' THEN excluded.overview ELSE movies.overview END,popularity=excluded.popularity,vote_average=excluded.vote_average,vote_count=excluded.vote_count,updated_at=CURRENT_TIMESTAMP`).bind(item.id,item.title,item.original_title,item.overview,item.release_date,Number(String(item.release_date||'').slice(0,4))||null,item.original_language,item.popularity,item.vote_average,item.vote_count,item.poster_path,item.backdrop_path,item.adult?1:0,item.video?1:0).run();
+    // The upsert only writes when a tracked value would actually change, so
+    // re-running a query over unchanged rows costs zero row writes.
+    await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO movies(tmdb_id,title,original_title,overview,release_date,release_year,original_language,popularity,vote_average,vote_count,poster_path,backdrop_path,adult,video) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tmdb_id) DO UPDATE SET title=excluded.title,overview=CASE WHEN movies.overview IS NULL OR movies.overview='' THEN excluded.overview ELSE movies.overview END,release_date=excluded.release_date,release_year=excluded.release_year,original_language=excluded.original_language,popularity=excluded.popularity,vote_average=excluded.vote_average,vote_count=excluded.vote_count,poster_path=excluded.poster_path,backdrop_path=excluded.backdrop_path,updated_at=CURRENT_TIMESTAMP WHERE movies.title IS NOT excluded.title OR ((movies.overview IS NULL OR movies.overview='') AND IFNULL(excluded.overview,'')<>'') OR movies.release_date IS NOT excluded.release_date OR movies.release_year IS NOT excluded.release_year OR movies.original_language IS NOT excluded.original_language OR movies.popularity IS NOT excluded.popularity OR movies.vote_average IS NOT excluded.vote_average OR movies.vote_count IS NOT excluded.vote_count OR movies.poster_path IS NOT excluded.poster_path OR movies.backdrop_path IS NOT excluded.backdrop_path`).bind(item.id,item.title,item.original_title,item.overview,item.release_date,Number(String(item.release_date||'').slice(0,4))||null,item.original_language,item.popularity,item.vote_average,item.vote_count,item.poster_path,item.backdrop_path,item.adult?1:0,item.video?1:0).run();
     const movie=await env.MOOVIBE_LIBRARY.prepare(`SELECT id,collection_status FROM movies WHERE tmdb_id=?`).bind(item.id).first<any>();
-    await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO movie_discovery_sources(movie_id,query_id) VALUES(?,?) ON CONFLICT(movie_id,query_id) DO UPDATE SET last_seen_at=CURRENT_TIMESTAMP`).bind(movie.id,id).run();
+    // Membership refresh is throttled to at most one write per week per row.
+    await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO movie_discovery_sources(movie_id,query_id) VALUES(?,?) ON CONFLICT(movie_id,query_id) DO UPDATE SET last_seen_at=CURRENT_TIMESTAMP WHERE movie_discovery_sources.last_seen_at IS NULL OR movie_discovery_sources.last_seen_at<datetime('now','-7 days')`).bind(movie.id,id).run();
     if(movie.collection_status==='discovered') { if(await enqueue(env,{type:'FETCH_MOVIE',key:`fetch:${item.id}:v1`,payload:{tmdb_id:item.id}})) discovered++; }
   }
   const next=page>=Math.min(Number(data.total_pages)||1,500)?1:page+1;
-  await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET next_page=?,total_pages=?,status='pending',next_run_at=datetime('now',?),last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE query_id=?`).bind(next,data.total_pages||1,next===1?'+30 days':'+2 hours',id).run();
-  log('discovery_complete',{query_id:id,page,results:(data.results||[]).length,new_fetch_jobs:discovered});
+  // While paging stays on the 2-hour cadence; when a query completes its cycle,
+  // recent lanes come back within hours instead of waiting 30 days and the
+  // historical scan keeps its long cycle to stay inside the D1 budget.
+  const wrapDelay=next===1?(lane==='recent'?'+4 hours':'+30 days'):'+2 hours';
+  await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET next_page=?,total_pages=?,status='pending',next_run_at=datetime('now',?),last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE query_id=?`).bind(next,data.total_pages||1,wrapDelay,id).run();
+  log('discovery_complete',{query_id:id,page,results:(data.results||[]).length,new_fetch_jobs:discovered,lane:lane||'historical'});
+}
+
+// Genre identity resolution. genres.name is UNIQUE while ids come from TMDb and
+// from legacy imports, so a blind upsert can violate UNIQUE(genres.name) when
+// the same name already exists under a different id. The name is treated as the
+// canonical identity: reuse an existing row when the name exists, rename in
+// place only when the name is still free, insert only genuinely new genres and
+// never rewrite a PK that already has FKs pointing at it. Unresolvable
+// inconsistencies are logged instead of being fixed destructively.
+async function resolveGenreStatements(env:Env,movieId:number,details:any):Promise<D1PreparedStatement[]> {
+  const wanted:{id:number;name:string}[]=(details.genres||[]).filter((g:any)=>g&&g.id&&g.name).map((g:any)=>({id:Number(g.id),name:String(g.name)}));
+  if(!wanted.length) return [];
+  const ids=wanted.map(g=>g.id), names=wanted.map(g=>g.name);
+  const existing=await env.MOOVIBE_LIBRARY.prepare(`SELECT id,name FROM genres WHERE id IN (${ids.map(()=>'?').join(',')}) OR name IN (${names.map(()=>'?').join(',')})`).bind(...ids,...names).all<{id:number;name:string}>();
+  const byId=new Map(existing.results.map(r=>[Number(r.id),r.name]));
+  const byName=new Map(existing.results.map(r=>[r.name,Number(r.id)]));
+  const statements:D1PreparedStatement[]=[];
+  const conflicts:{tmdb_id:number;name:string;canonical_id:number}[]=[];
+  for(const g of wanted) {
+    let canonical=g.id;
+    const owner=byName.get(g.name);
+    if(owner!==undefined) {
+      // Same name already exists (possibly under another/legacy id): reuse it.
+      canonical=owner;
+      if(owner!==g.id) conflicts.push({tmdb_id:g.id,name:g.name,canonical_id:owner});
+    } else if(byId.has(g.id)) {
+      // Same id with a stale name and the new name is free: guarded rename.
+      statements.push(env.MOOVIBE_LIBRARY.prepare(`UPDATE genres SET name=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM genres WHERE name=?)`).bind(g.name,g.id,g.name));
+      byName.set(g.name,g.id);
+    } else {
+      // Genuinely new genre. OR IGNORE tolerates concurrent inserts; a rare
+      // FK miss on the relation below fails the batch and retries cleanly.
+      statements.push(env.MOOVIBE_LIBRARY.prepare(`INSERT OR IGNORE INTO genres(id,name) VALUES(?,?)`).bind(g.id,g.name));
+      byName.set(g.name,g.id); byId.set(g.id,g.name);
+    }
+    statements.push(env.MOOVIBE_LIBRARY.prepare(`INSERT OR IGNORE INTO movie_genres(movie_id,genre_id) VALUES(?,?)`).bind(movieId,canonical));
+  }
+  if(conflicts.length) log('genre_identity_conflict',{movie_id:movieId,conflicts});
+  return statements;
 }
 
 async function replaceRelations(env:Env,movieId:number,details:any,credits:any,keywords:any) {
-  const statements:D1PreparedStatement[]=[];
-  for(const g of details.genres||[]) statements.push(env.MOOVIBE_LIBRARY.prepare(`INSERT INTO genres(id,name) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name`).bind(g.id,g.name),env.MOOVIBE_LIBRARY.prepare(`INSERT OR IGNORE INTO movie_genres(movie_id,genre_id) VALUES(?,?)`).bind(movieId,g.id));
+  const statements:D1PreparedStatement[]=await resolveGenreStatements(env,movieId,details);
   for(const c of details.production_countries||[]) statements.push(env.MOOVIBE_LIBRARY.prepare(`INSERT INTO countries(iso_3166_1,name) VALUES(?,?) ON CONFLICT(iso_3166_1) DO UPDATE SET name=excluded.name`).bind(c.iso_3166_1,c.name),env.MOOVIBE_LIBRARY.prepare(`INSERT OR IGNORE INTO movie_countries(movie_id,country_code) VALUES(?,?)`).bind(movieId,c.iso_3166_1));
   for(const l of details.spoken_languages||[]) statements.push(env.MOOVIBE_LIBRARY.prepare(`INSERT INTO languages(iso_639_1,name) VALUES(?,?) ON CONFLICT(iso_639_1) DO UPDATE SET name=excluded.name`).bind(l.iso_639_1,l.english_name||l.name),env.MOOVIBE_LIBRARY.prepare(`INSERT OR IGNORE INTO movie_languages(movie_id,language_code) VALUES(?,?)`).bind(movieId,l.iso_639_1));
   for(const k of keywords.keywords||[]) statements.push(env.MOOVIBE_LIBRARY.prepare(`INSERT INTO keywords(id,name) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name`).bind(k.id,k.name),env.MOOVIBE_LIBRARY.prepare(`INSERT OR IGNORE INTO movie_keywords(movie_id,keyword_id) VALUES(?,?)`).bind(movieId,k.id));
@@ -144,12 +247,29 @@ async function replaceRelations(env:Env,movieId:number,details:any,credits:any,k
 }
 
 async function fetchMovie(env:Env,job:Job) {
-  const id=Number(job.payload.tmdb_id); const details=await tmdb(env,`/movie/${id}`,{language:'en-US',append_to_response:'credits,keywords,external_ids'});
-  const movie=await env.MOOVIBE_LIBRARY.prepare(`SELECT id FROM movies WHERE tmdb_id=?`).bind(id).first<any>(); if(!movie)return;
+  const id=Number(job.payload.tmdb_id);
+  const details=await tmdb(env,`/movie/${id}`,{language:'en-US',append_to_response:'credits,keywords,external_ids'});
+  const movie=await env.MOOVIBE_LIBRARY.prepare(`SELECT id FROM movies WHERE tmdb_id=?`).bind(id).first<any>();
+  if(!movie)return;
   const director=details.credits?.crew?.find((p:any)=>p.job==='Director')?.name||null;
-  await env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET title=?,original_title=?,overview=?,release_date=?,release_year=?,original_language=?,runtime=?,popularity=?,vote_average=?,vote_count=?,poster_path=?,backdrop_path=?,tagline=?,tmdb_status=?,homepage=?,imdb_id=?,collection_status='complete',details_fetched_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(details.title,details.original_title,details.overview,details.release_date,Number(String(details.release_date||'').slice(0,4))||null,details.original_language,details.runtime,details.popularity,details.vote_average,details.vote_count,details.poster_path,details.backdrop_path,details.tagline,details.status,details.homepage,details.imdb_id||details.external_ids?.imdb_id,movie.id).run();
-  await replaceRelations(env,movie.id,details,details.credits||{},details.keywords||{});
-  await enqueue(env,{type:'ENRICH_MOVIE',key:`enrich:${id}:v2`,payload:{tmdb_id:id}}); log('movie_fetched',{tmdb_id:id,director});
+  // 1) Persist details only — collection_status stays 'discovered' until every
+  //    relation below is written, so a mid-flight failure can never look like a
+  //    fully processed movie.
+  await env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET title=?,original_title=?,overview=?,release_date=?,release_year=?,original_language=?,runtime=?,popularity=?,vote_average=?,vote_count=?,poster_path=?,backdrop_path=?,tagline=?,tmdb_status=?,homepage=?,imdb_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(details.title,details.original_title,details.overview,details.release_date,Number(String(details.release_date||'').slice(0,4))||null,details.original_language,details.runtime,details.popularity,details.vote_average,details.vote_count,details.poster_path,details.backdrop_path,details.tagline,details.status,details.homepage,details.imdb_id||details.external_ids?.imdb_id,movie.id).run();
+  // 2) Relations: genres, countries, languages, keywords, credits. Related
+  //    writes go through D1 batch (transactional); HTTP stays outside it.
+  try {
+    await replaceRelations(env,movie.id,details,details.credits||{},details.keywords||{});
+  } catch(error:any) {
+    // Keep the failure observable on the movie; processJob writes the job's
+    // last_error and retry/backoff keeps working. Nothing is marked complete.
+    await env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(String(error?.message||error).slice(0,300),movie.id).run();
+    throw error;
+  }
+  // 3) Only now is the movie genuinely complete.
+  await env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET collection_status='complete',details_fetched_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(movie.id).run();
+  await enqueue(env,{type:'ENRICH_MOVIE',key:`enrich:${id}:v2`,payload:{tmdb_id:id}});
+  log('movie_fetched',{tmdb_id:id,director});
 }
 
 async function movieRecord(env:Env,id:number) {
@@ -219,7 +339,7 @@ async function health(env:Env) {
 export default {
   async scheduled(_controller:ScheduledController,env:Env,ctx:ExecutionContext){ctx.waitUntil(schedule(env));},
   async queue(batch:MessageBatch<Job>,env:Env){for(const message of batch.messages){const outcome=await processJob(env,message.body);if(outcome.retry)message.retry({delaySeconds:outcome.delaySeconds});else message.ack();}},
-  async fetch(request:Request,env:Env){const url=new URL(request.url);if(url.pathname==='/health')return json(await health(env));if(url.pathname==='/admin/run'){if(!env.ADMIN_TOKEN||request.headers.get('authorization')!==`Bearer ${env.ADMIN_TOKEN}`)return json({error:'unauthorized'},401);await schedule(env);return json({ok:true});}if(url.pathname==='/admin/seed'){if(!env.ADMIN_TOKEN||request.headers.get('authorization')!==`Bearer ${env.ADMIN_TOKEN}`)return json({error:'unauthorized'},401);return json(await syncDiscoverySeed(env,true));}return json({service:'moovibe-pipeline',ok:true});}
+  async fetch(request:Request,env:Env){const url=new URL(request.url);if(url.pathname==='/health')return json(await health(env));if(url.pathname==='/admin/run'){if(!env.ADMIN_TOKEN||request.headers.get('authorization')!==`Bearer ${env.ADMIN_TOKEN}`)return json({error:'unauthorized'},401);await schedule(env);return json({ok:true});}if(url.pathname==='/admin/seed'){if(!env.ADMIN_TOKEN||request.headers.get('authorization')!==`Bearer ${env.ADMIN_TOKEN}`)return json({error:'unauthorized'},401);return json(await syncDiscoverySeed(env,true));}if(url.pathname==='/admin/requeue-known-failures'){if(!env.ADMIN_TOKEN||request.headers.get('authorization')!==`Bearer ${env.ADMIN_TOKEN}`)return json({error:'unauthorized'},401);if(request.method!=='POST')return json({error:'method_not_allowed'},405);return json(await requeueKnownFailures(env));}return json({service:'moovibe-pipeline',ok:true});}
 };
 
-export { enqueue,processJob,schedule,seedQueries };
+export { enqueue,processJob,schedule,seedQueries,discover,fetchMovie,replaceRelations,requeueKnownFailures };

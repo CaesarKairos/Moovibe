@@ -1,5 +1,20 @@
-export const RECOMMENDER_VERSION = 'catalog-v2';
+export const RECOMMENDER_VERSION = 'catalog-v3-hybrid';
 export const EMBEDDING_SCHEMA_VERSION = 'movie-v1';
+
+// Candidate generation limits: each channel contributes up to 100 candidates,
+// the deduped union is scored, softly diversified and cut to CANDIDATE_LIMIT.
+export const SEMANTIC_TOP_K = 100;
+export const NUMERIC_TOP_K = 100;
+export const CANDIDATE_LIMIT = 100;
+
+// Composite score weights. Numeric vibe similarity deliberately dominates so a
+// single embedding can never own the ranking. Popularity/vote_count are NOT
+// scoring components: vote_count only breaks ties when ordering the numeric
+// channel, and being obscure is neither rewarded nor punished.
+export const SCORE_WEIGHTS = { numericVibe: 0.5, semantic: 0.35, concepts: 0.1, quality: 0.05 };
+
+// The shared 0..1 vibe dimensions present on both movies and music profiles.
+export const VIBE_DIMENSIONS = ['emotional_valence','energy','intimacy','surrealism','darkness','humor','romanticism','narrative_density','melancholy_level','tension_level'];
 
 const arr = value => { try { return Array.isArray(value) ? value : JSON.parse(value || '[]'); } catch { return []; } };
 const clamp = value => Math.max(0, Math.min(1, Number(value) || 0));
@@ -32,23 +47,50 @@ const overlap = (a,b) => {
   return n / Math.max(aa.size, bb.size);
 };
 
+// similarity = 1 - |movie - song| for a single dimension.
+export function dimensionSimilarity(movieValue, songValue) {
+  return 1 - Math.abs(clamp(movieValue) - clamp(songValue));
+}
+
+// Mean of dimension similarities across the shared vibe dimensions.
+export function numericVibeSimilarity(enrichment, profile) {
+  const e = enrichment || {};
+  let sum = 0;
+  for (const dim of VIBE_DIMENSIONS) sum += dimensionSimilarity(e[dim], profile[dim]);
+  return sum / VIBE_DIMENSIONS.length;
+}
+
+// Composite score: components are computed explicitly (and exposed on
+// component_scores for debug/observability) then combined with SCORE_WEIGHTS.
+// When a candidate has no embedding (numeric-only channel) the semantic weight
+// is redistributed over the remaining components instead of counting as zero,
+// so a movie is never punished for missing embeddings while the catalog is
+// still being embedded — and never artificially boosted for lacking data.
 export function scoreCandidate(candidate, profile) {
   const e = candidate.enrichment || {};
-  const dims = ['emotional_valence','energy','intimacy','surrealism','darkness','humor','romanticism','narrative_density','melancholy_level','tension_level'];
-  const dimensionScore = dims.reduce((sum,k) => sum + (1 - Math.abs(clamp(e[k]) - clamp(profile[k]))), 0) / dims.length;
-  const semantic = clamp(candidate.vector_score);
-  const concepts = (overlap(e.moods,profile.moods)+overlap(e.themes,profile.themes)+overlap(e.atmosphere,profile.atmosphere))/3;
-  const confidence = clamp(e.confidence || 0.5);
+  const hasEnrichment = e.confidence !== undefined && e.confidence !== null;
+  const numeric = numericVibeSimilarity(e, profile);
+  const concepts = (overlap(e.moods, profile.moods) + overlap(e.themes, profile.themes) + overlap(e.atmosphere, profile.atmosphere)) / 3;
   const dataQuality = [candidate.overview, candidate.poster_path, candidate.release_year, candidate.director].filter(Boolean).length / 4;
-  const obscurityBonus = candidate.popularity != null ? Math.max(0, 1 - Math.log10(1 + candidate.popularity) / 3) : .5;
-  return semantic*.58 + dimensionScore*.20 + concepts*.12 + confidence*.05 + dataQuality*.04 + obscurityBonus*.01;
+  const quality = clamp(0.5 * (hasEnrichment ? clamp(e.confidence) : 0) + 0.5 * dataQuality);
+  const semanticPresent = candidate.vector_score !== undefined && candidate.vector_score !== null;
+  const semantic = semanticPresent ? clamp(candidate.vector_score) : null;
+  let total = SCORE_WEIGHTS.numericVibe * numeric + SCORE_WEIGHTS.concepts * concepts + SCORE_WEIGHTS.quality * quality;
+  let weightSum = SCORE_WEIGHTS.numericVibe + SCORE_WEIGHTS.concepts + SCORE_WEIGHTS.quality;
+  if (semanticPresent) { total += SCORE_WEIGHTS.semantic * semantic; weightSum += SCORE_WEIGHTS.semantic; }
+  const final = total / weightSum;
+  candidate.component_scores = { numeric, semantic, concepts, quality, final };
+  return final;
 }
 
 export function rerank(candidates, profile) {
-  return candidates.map(c => ({...c, deterministic_score: scoreCandidate(c,profile)})).sort((a,b)=>b.deterministic_score-a.deterministic_score);
+  // Fully deterministic: score descending, tmdb_id ascending as tie-break.
+  // Score first so component_scores is captured by the copy below.
+  return candidates.map(c => { const deterministic_score = scoreCandidate(c, profile); return { ...c, deterministic_score }; })
+    .sort((a,b) => (b.deterministic_score - a.deterministic_score) || (Number(a.tmdb_id) - Number(b.tmdb_id)));
 }
 
-export function diversify(ranked, limit = 12) {
+export function diversify(ranked, limit = CANDIDATE_LIMIT) {
   const selected=[];
   for (const candidate of ranked) {
     if (!selected.length) { selected.push(candidate); continue; }
@@ -69,12 +111,58 @@ export function diversify(ranked, limit = 12) {
   return selected;
 }
 
+// Gemini is a curator, never a search engine: every selected id must exist in
+// the supplied candidate set, there must be exactly 2 distinct alternatives and
+// all ids must be integers. Any violation throws and triggers the
+// deterministic fallback in catalog.js.
 export function validateCuration(curation, candidates) {
   const allowed = new Set(candidates.map(c => Number(c.tmdb_id)));
   const primary = Number(curation?.primary_tmdb_id);
-  const alternatives = (curation?.alternative_tmdb_ids || []).map(Number);
-  if (!allowed.has(primary) || alternatives.some(id => !allowed.has(id)) || new Set([primary,...alternatives]).size !== 1+alternatives.length) throw new Error('Gemini selected a movie outside candidate set');
-  return { ...curation, primary_tmdb_id: primary, alternative_tmdb_ids: alternatives.slice(0,2) };
+  const alternatives = Array.isArray(curation?.alternative_tmdb_ids) ? curation.alternative_tmdb_ids.map(Number) : [];
+  if (!Number.isInteger(primary) || alternatives.length !== 2 || alternatives.some(a => !Number.isInteger(a)))
+    throw new Error('Gemini curation rejected: expected 1 primary and 2 alternative integer ids');
+  if (!allowed.has(primary) || alternatives.some(id => !allowed.has(id)))
+    throw new Error('Gemini selected a movie outside candidate set');
+  if (new Set([primary, ...alternatives]).size !== 3)
+    throw new Error('Gemini curation rejected: primary and alternatives must be distinct');
+  return { ...curation, primary_tmdb_id: primary, alternative_tmdb_ids: alternatives };
+}
+
+// Hybrid candidate union: semantic (Vectorize) matches carry vector_score and
+// numeric (D1 vibe scan) matches carry numeric_score; a movie present in both
+// channels keeps both signals on a single deduped entry.
+export function mergeCandidateChannels(semanticMatches = [], numericRows = []) {
+  const byId = new Map();
+  for (const match of semanticMatches) {
+    const id = Number(match.id ?? match.tmdb_id);
+    if (!id) continue;
+    byId.set(id, { tmdb_id: id, vector_score: match.score == null ? undefined : clamp(match.score), numeric_score: undefined, channels: ['semantic'] });
+  }
+  for (const row of numericRows) {
+    const id = Number(row.tmdb_id);
+    if (!id) continue;
+    const current = byId.get(id);
+    if (current) {
+      current.numeric_score = Number(row.numeric_score);
+      if (!current.channels.includes('numeric')) current.channels.push('numeric');
+    } else {
+      byId.set(id, { tmdb_id: id, vector_score: undefined, numeric_score: Number(row.numeric_score), channels: ['numeric'] });
+    }
+  }
+  return [...byId.values()];
+}
+
+// Deterministic numeric channel: pure SQL over movie_enrichments, no embedding
+// required. Ordering breaks ties by vote_count then tmdb_id (never random).
+export function numericCandidateSql(profile, limit = NUMERIC_TOP_K) {
+  const abs = VIBE_DIMENSIONS.map(dim => `ABS(COALESCE(e.${dim},0)-?)`).join('+');
+  const sql = `SELECT m.tmdb_id, ROUND(1-(${abs})/${VIBE_DIMENSIONS.length},6) AS numeric_score
+    FROM movie_enrichments e JOIN movies m ON m.id=e.movie_id
+    WHERE m.collection_status='complete'
+    ORDER BY numeric_score DESC, COALESCE(m.vote_count,0) DESC, m.tmdb_id ASC
+    LIMIT ?`;
+  const binds = [...VIBE_DIMENSIONS.map(dim => clamp(profile[dim])), limit];
+  return { sql, binds };
 }
 
 export function recommendationCacheKey(songs, lang='en', version=RECOMMENDER_VERSION) {
