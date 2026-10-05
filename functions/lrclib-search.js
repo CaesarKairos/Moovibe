@@ -53,6 +53,8 @@ export async function onRequestGet(context) {
         id: comLetra.id,
         trackName: comLetra.trackName || comLetra.track_name || '',
         artistName: comLetra.artistName || comLetra.artist_name || '',
+        albumName: comLetra.albumName || comLetra.album_name || '',
+        duration: comLetra.duration || null,
       });
       if (itens.length >= 8) break;
     }

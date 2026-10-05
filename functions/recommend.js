@@ -6,6 +6,9 @@
 import { LRCLIB_URL, LRCLIB_GET_URL, LRCLIB_SEARCH_URL, lrclibHeaders, lrclibThrottle } from './_lib/lrclib.js';
 import { recommendFromCatalog, movieToLegacy } from './_lib/catalog.js';
 import { recommendationCacheKey, RECOMMENDER_VERSION } from './_lib/recommender.js';
+import { selectBestTrack } from './_lib/music-match.js';
+import { findSong, persistLyrics, validateUserLyrics } from './_lib/song-library.js';
+import { getLanguageConfig, normalizeLanguage } from './_lib/languages.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
@@ -261,7 +264,7 @@ async function buscarLetraMusica(nomeMusica, artista, env, lrclibId = null) {
   // uma sugestão do autocomplete — é uma busca exata, sem ambiguidade).
   if (lrclibId) {
     const letraPorId = await buscarLetraPorIdLrclib(lrclibId);
-    if (letraPorId) return letraPorId;
+    if (letraPorId) return {lyrics:letraPorId,source:'lrclib'};
     console.log('[LETRA] CAMADA 0 falhou, seguindo para as demais camadas...');
   }
 
@@ -279,14 +282,14 @@ async function buscarLetraMusica(nomeMusica, artista, env, lrclibId = null) {
         const data = await retryResp.json();
         if (data?.plainLyrics) {
           console.log('[LETRA] LRCLIB /api/get: Letra encontrada (apos retry)!');
-          return data.plainLyrics.substring(0, 5000);
+          return {lyrics:data.plainLyrics.substring(0, 5000),source:'lrclib'};
         }
       }
     } else if (resp.ok) {
       const data = await resp.json();
       if (data?.plainLyrics) {
         console.log('[LETRA] LRCLIB /api/get: Letra encontrada!');
-        return data.plainLyrics.substring(0, 5000);
+        return {lyrics:data.plainLyrics.substring(0, 5000),source:'lrclib'};
       }
     }
   } catch (err) {
@@ -310,7 +313,7 @@ async function buscarLetraMusica(nomeMusica, artista, env, lrclibId = null) {
         const comLetra = Array.isArray(dados) ? dados.find(item => item?.plainLyrics && item.plainLyrics.trim().length > 0) : null;
         if (comLetra) {
           console.log('[LETRA] LRCLIB /api/search: Letra encontrada (apos retry)!');
-          return comLetra.plainLyrics.substring(0, 5000);
+          return {lyrics:comLetra.plainLyrics.substring(0, 5000),source:'lrclib'};
         }
       }
     } else if (respSearch.ok) {
@@ -318,7 +321,7 @@ async function buscarLetraMusica(nomeMusica, artista, env, lrclibId = null) {
       const comLetra = Array.isArray(dados) ? dados.find(item => item?.plainLyrics && item.plainLyrics.trim().length > 0) : null;
       if (comLetra) {
         console.log('[LETRA] LRCLIB /api/search: Letra encontrada!');
-        return comLetra.plainLyrics.substring(0, 5000);
+        return {lyrics:comLetra.plainLyrics.substring(0, 5000),source:'lrclib'};
       }
     }
   } catch (err) {
@@ -355,13 +358,13 @@ async function buscarLetraMusica(nomeMusica, artista, env, lrclibId = null) {
         if (containersLyrics.length > 0) {
           const letraGeniusConcatenada = containersLyrics.join(' ');
           console.log(`[LETRA] Genius: Letra encontrada (${containersLyrics.length} container(s))!`);
-          return limparHTML(letraGeniusConcatenada).substring(0, 5000);
+          return {lyrics:limparHTML(letraGeniusConcatenada).substring(0, 5000),source:'genius'};
         }
         // Fallback: se o seletor novo não casar, tenta o antigo antes de desistir
         const lyricsMatch = html.match(/<div[^>]*class="lyrics"[^>]*>([\s\S]*?)<\/div>/i);
         if (lyricsMatch) {
           console.log('[LETRA] Genius: Letra encontrada (seletor legado class="lyrics")!');
-          return limparHTML(lyricsMatch[1]).substring(0, 5000);
+          return {lyrics:limparHTML(lyricsMatch[1]).substring(0, 5000),source:'genius'};
         }
       }
     } catch (err) {
@@ -369,15 +372,8 @@ async function buscarLetraMusica(nomeMusica, artista, env, lrclibId = null) {
     }
   }
 
-  console.log('[LETRA] CAMADA 3: Brave Search...');
-  const letraBrave = await buscarBrave(`${nomeLimpo} ${artistaLimpo} lyrics`, 'LETRA');
-  if (letraBrave) {
-    console.log('[LETRA] Brave Search: Letra encontrada!');
-    return letraBrave.substring(0, 5000);
-  }
-
   console.log('[LETRA] Todas as camadas falharam.');
-  return "";
+  return null;
 }
 
 function extrairTextoGeniusDOM(no) {
@@ -475,7 +471,7 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
   }
 
   console.log('[CONTEXTO] CAMADA 3: Wikipedia...');
-  const wikiApiCtx = lang === 'pt' ? WIKIPEDIA_PT_API : WIKIPEDIA_EN_API;
+  const wikiApiCtx = lang === 'pt-BR' ? WIKIPEDIA_PT_API : WIKIPEDIA_EN_API;
   try {
     const url = `${wikiApiCtx}${encodeURIComponent(termoBusca)}`;
     const resp = await fetch(url, { headers: { 'User-Agent': MOOVIBE_USER_AGENT } });
@@ -505,7 +501,7 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
   console.log('[CONTEXTO] CAMADA 5: OpenRouter (mini-IA)...');
   if (env.OPENROUTER_API_KEY) {
     try {
-      const idiomaPrompt = lang === 'pt' ? 'em português' : 'in English';
+      const idiomaPrompt = `in ${getLanguageConfig(lang).aiName}`;
       const prompt = `Pesquise na web a história real, inspiração e o significado da música '${nomeLimpo}' de '${artistaLimpo}'. Retorne apenas um parágrafo curto ${idiomaPrompt} explicando o contexto.`;
       const payload = {
         model: OPENROUTER_MODEL,
@@ -563,7 +559,8 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
  * Capa e preview são independentes: se a Apple retornar capa mas não preview,
  * tenta-se o preview do Deezer sem descartar a capa da Apple.
  */
-async function buscarCapaMusica(nomeMusica, artista) {
+export async function buscarCapaMusica(nomeMusica, artista, canonical = {}) {
+  const wanted={title:canonical.trackName||nomeMusica,artist:canonical.artistName||artista,album:canonical.albumName||'',duration:canonical.duration||null};
   let coverUrl = null;
   let previewUrl = null;
   let coverSource = null;
@@ -572,13 +569,13 @@ async function buscarCapaMusica(nomeMusica, artista) {
   // --- Tenta Apple/iTunes ---
   try {
     const query = encodeURIComponent(`${nomeMusica} ${artista}`);
-    const url = `https://itunes.apple.com/search?term=${query}&entity=song&limit=1`;
+    const url = `https://itunes.apple.com/search?term=${query}&entity=song&limit=20`;
     const resp = await fetch(url, {
       headers: { 'User-Agent': MOOVIBE_USER_AGENT },
     });
     if (resp.ok) {
       const dados = await resp.json();
-      const track = dados?.results?.[0];
+      const track = selectBestTrack(wanted,(dados?.results||[]).map(item=>({...item,title:item.trackName,artist:item.artistName,album:item.collectionName,duration:item.trackTimeMillis?item.trackTimeMillis/1000:null})));
       if (track?.artworkUrl100) {
         coverUrl = track.artworkUrl100.replace('100x100bb', '1000x1000bb');
         coverSource = 'apple';
@@ -596,12 +593,12 @@ async function buscarCapaMusica(nomeMusica, artista) {
   if (!coverUrl) {
     try {
       const query = encodeURIComponent(`${artista} ${nomeMusica}`);
-      const deezerResp = await fetch(`https://api.deezer.com/search?q=${query}&limit=1`, {
+      const deezerResp = await fetch(`https://api.deezer.com/search?q=${query}&limit=20`, {
         headers: { 'User-Agent': MOOVIBE_USER_AGENT },
       });
       if (deezerResp.ok) {
         const deezerData = await deezerResp.json();
-        const deezerTrack = deezerData?.data?.[0];
+        const deezerTrack = selectBestTrack(wanted,(deezerData?.data||[]).map(item=>({...item,title:item.title,artist:item.artist?.name,album:item.album?.title,duration:item.duration})));
         if (deezerTrack) {
           if (deezerTrack.album?.cover_big) {
             coverUrl = deezerTrack.album.cover_big;
@@ -622,12 +619,12 @@ async function buscarCapaMusica(nomeMusica, artista) {
   if (!previewUrl) {
     try {
       const query = encodeURIComponent(`${artista} ${nomeMusica}`);
-      const deezerResp = await fetch(`https://api.deezer.com/search?q=${query}&limit=1`, {
+      const deezerResp = await fetch(`https://api.deezer.com/search?q=${query}&limit=20`, {
         headers: { 'User-Agent': MOOVIBE_USER_AGENT },
       });
       if (deezerResp.ok) {
         const deezerData = await deezerResp.json();
-        const deezerTrack = deezerData?.data?.[0];
+        const deezerTrack = selectBestTrack(wanted,(deezerData?.data||[]).map(item=>({...item,title:item.title,artist:item.artist?.name,album:item.album?.title,duration:item.duration})));
         if (deezerTrack?.preview) {
           previewUrl = deezerTrack.preview;
           previewSource = 'deezer';
@@ -643,7 +640,7 @@ async function buscarCapaMusica(nomeMusica, artista) {
     try {
       const query = encodeURIComponent(`${artista} ${nomeMusica}`);
       const mbResp = await fetch(
-        `https://musicbrainz.org/ws/2/record/?query=${query}&fmt=json&limit=1`,
+        `https://musicbrainz.org/ws/2/recording/?query=${query}&fmt=json&limit=20`,
         {
           headers: {
             'User-Agent': `${MOOVIBE_USER_AGENT}`,
@@ -652,7 +649,8 @@ async function buscarCapaMusica(nomeMusica, artista) {
       );
       if (mbResp.ok) {
         const mbData = await mbResp.json();
-        const releaseId = mbData?.recordings?.[0]?.releases?.[0]?.id;
+        const recording=selectBestTrack(wanted,(mbData?.recordings||[]).map(item=>({...item,title:item.title,artist:item['artist-credit']?.map(x=>x.name).join(' '),album:item.releases?.[0]?.title,duration:item.length?item.length/1000:null})));
+        const releaseId = recording?.releases?.[0]?.id;
         if (releaseId) {
           const caaResp = await fetch(
             `https://coverartarchive.org/release/${releaseId}`,
@@ -732,7 +730,7 @@ async function obterRecomendacaoIA(nomeMusica, artista, letra, contextoExtra, ap
     regraEspecifica = `REGRA ESPECÍFICA DA MÚSICA: Para esta música específica, os seguintes filmes já foram recomendados recentemente e estão PROIBIDOS de serem repetidos: ${filmesExcluidosMusica.join(', ')}. Escolha algo novo.\n\n`;
   }
 
-  const idiomaJustificativa = lang === 'pt' ? 'em português, até 4 frases' : 'in English, up to 4 sentences';
+  const idiomaJustificativa = `in ${getLanguageConfig(lang).aiName}, up to 4 sentences`;
   const promptSistema = `Voce e um curador de cinema genial. O usuario vai te passar de 1 a 3 musicas e voce deve sugerir EXATAMENTE UM filme que compartilhe exatamente da mesma atmosfera emocional, paleta de cores subtendida, ritmo psicologico ou alma lirica dessas musicas. Nao se limite a conexoes obvias. Pense na vibe.\n\n${regraGlobal}${regraEspecifica}REGRA DE PROFUNDIDADE: Quanto mais musicas forem fornecidas, mais detalhada e profunda deve ser a justificativa/analise do filme principal. Com 1 musica, escreva normalmente. Com 2 musicas, escreva uma analise mais rica. Com 3 musicas, escreva uma analise extensa e detalhada conectando todas as vibes.\n\nCRITICO: Voce DEVE sugerir um filme REAL existente no banco de dados do TMDb. PROIBIDO inventar titulos de filmes. Use APENAS o titulo original ou oficial em ingles/portugues. NAO use caracteres asiaticos (como chines, japones, coreano) a menos que seja um filme autenticamente asiatico com titulo original nesses caracteres. Se nao tiver certeza, escolha um filme classico e bem conhecido.\n\nREGRA ABSOLUTA: No campo 'filme', retorne APENAS o nome comercial puro do filme (em ingles ou portugues). E terminantemente PROIBIDO embutir o ano ao lado do nome do filme nesse campo. Por exemplo, retorne 'The Great Gatsby' e NUNCA 'The Great Gatsby 2013'. O ano de lancamento deve habitar estritamente e apenas o campo 'ano' do JSON.\n\nTAREFA EXTRA: Usando a letra da musica fornecida, extraia 3 trechos curtos (cada um entre 15 e 80 caracteres) que melhor capturem a vibe e a conexao emocional com o filme sugerido. Retorne esses trechos no campo 'citacoes' como um array de 3 strings.\n\nSUGESTOES ALTERNATIVAS: Alem do filme principal, sugira EXATAMENTE 2 filmes alternativos que tambem combinem com a vibe das musicas, mas que sejam diferentes do filme principal. Cada alternativa deve ter: 'chamada' (uma frase curta e convidativa, ex: "Se voce quer algo mais divertido"), 'titulo' (nome do filme SEM ano), 'ano' (4 digitos), 'diretor' (nome do diretor). Nao inclua sinopses longas.\n\nSua resposta DEVE ser estritamente um formato JSON valido (sem qualquer tipo de formatacao markdown, apenas as chaves brutas). O JSON deve conter as seguintes chaves exatas:\n{\n  "filme": "Nome exato do filme (de preferencia o titulo original em ingles ou o mais conhecido, SEM o ano)",\n  "ano": "Ano de lancamento do filme sugerido (Apenas os 4 digitos numericos, ex: 2002)",\n  "justificativa": "Uma explicacao poetica, profunda e envolvente (${idiomaJustificativa}) conectando sentimentos da musica/letra com o filme.",\n  "citacoes": ["Trecho 1 da letra que conecta com o filme", "Trecho 2 da letra que conecta com o filme", "Trecho 3 da letra que conecta com o filme"],\n  "vibe_title": "Um titulo CURTO e impactante em MAIUSCULAS (2-3 palavras) que capture a vibe, ex: 'OPERATIC CHAOS' ou 'MELANCHOLIC DREAM'",\n  "tags": ["Array de 4 tags em MAIUSCULAS descrevendo a vibe, ex: GRANDIOSE, TRAGICOMIC, CATHARTIC, MOSAIC"],\n  "alternativas": [\n    {"chamada": "Frase curta convidativa", "titulo": "Nome do filme alternativo SEM ano", "ano": "2020", "diretor": "Nome do diretor"},\n    {"chamada": "Frase curta convidativa", "titulo": "Nome do filme alternativo SEM ano", "ano": "2018", "diretor": "Nome do diretor"}\n  ]\n}`;
 
   let conteudoUsuario = `Musica principal: '${nomeMusica}' do artista '${artista}'.\n`;
@@ -912,7 +910,7 @@ function selecionarMelhorImagem(imagens, idiomaPreferido = 'en') {
 async function obterDetalhesTMDB(nomeFilme, apiKey, ano, lang = 'en') {
   if (!apiKey) return null;
   try {
-    const tmdbLang = lang === 'pt' ? 'pt-BR' : 'en-US';
+    const tmdbLang = lang === 'pt-BR' ? 'pt-BR' : 'en-US';
     const paramsBusca = new URLSearchParams({ api_key: apiKey, query: nomeFilme, language: tmdbLang });
     if (ano) paramsBusca.set('primary_release_year', ano);
     const respBusca = await fetch(`${TMDB_BUSCA_URL}?${paramsBusca}`, { headers: { 'User-Agent': MOOVIBE_USER_AGENT } });
@@ -989,8 +987,8 @@ async function obterDetalhesTMDB(nomeFilme, apiKey, ano, lang = 'en') {
 }
 
 async function buscarDadosFilmeFallback(nomeFilme, ano, env, lang = 'en') {
-  const wikiApi = lang === 'pt' ? WIKIPEDIA_PT_API : WIKIPEDIA_EN_API;
-  const wikiLabel = lang === 'pt' ? 'Wikipedia PT' : 'Wikipedia EN';
+  const wikiApi = lang === 'pt-BR' ? WIKIPEDIA_PT_API : WIKIPEDIA_EN_API;
+  const wikiLabel = lang === 'pt-BR' ? 'Wikipedia PT' : 'Wikipedia EN';
   console.log(`[FILME FALLBACK] CAMADA 1: ${wikiLabel}...`);
   try {
     const termos = [];
@@ -1024,8 +1022,8 @@ async function buscarDadosFilmeFallback(nomeFilme, ano, env, lang = 'en') {
   }
   console.log('[FILME FALLBACK] CAMADA 2: Brave Search...');
   try {
-    let query = lang === 'pt' ? `${nomeFilme} filme enredo sinopse` : `${nomeFilme} movie plot synopsis`;
-    if (ano) query = `${nomeFilme} ${ano} ${lang === 'pt' ? 'filme enredo' : 'movie plot synopsis'}`;
+    let query = lang === 'pt-BR' ? `${nomeFilme} filme enredo sinopse` : `${nomeFilme} movie plot synopsis`;
+    if (ano) query = `${nomeFilme} ${ano} ${lang === 'pt-BR' ? 'filme enredo' : 'movie plot synopsis'}`;
     const resultado = await buscarBrave(query);
     if (resultado) {
       console.log('[FILME FALLBACK] Brave Search: Dados encontrados!');
@@ -1037,7 +1035,7 @@ async function buscarDadosFilmeFallback(nomeFilme, ano, env, lang = 'en') {
   console.log('[FILME FALLBACK] CAMADA 3: OpenRouter (fallback final)...');
   if (env.OPENROUTER_API_KEY) {
     try {
-      const idiomaPrompt = lang === 'pt' ? 'em português' : 'in English';
+      const idiomaPrompt = `in ${getLanguageConfig(lang).aiName}`;
       const prompt = `Generate a brief movie synopsis based on the search context. Return strictly JSON with: 'sinopse' (${idiomaPrompt}), 'diretor', 'poster' (URL or null).`;
       const payload = {
         model: OPENROUTER_MODEL,
@@ -1138,40 +1136,39 @@ export async function onRequest(context) {
   }
   if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
 
+  const startedAt=Date.now();
+  let failureEvent={request_id:crypto.randomUUID(),language:'en',songs:[]};
   try {
     const body = await request.json();
     const { nome_musica, artista, lrclib_id, musicas_extras } = body;
-    const lang = body.lang === 'pt' ? 'pt' : 'en';
+    const lang = normalizeLanguage(body.lang);
+    failureEvent.language=lang;
     if (!nome_musica || typeof nome_musica !== 'string' || nome_musica.trim().length > 200) return jsonResponse({ error: { message: 'Nome da música inválido.' } }, 400);
     if (artista != null && (typeof artista !== 'string' || artista.length > 200)) return jsonResponse({ error: { message: 'Artista inválido.' } }, 400);
-    const musicasExtras = Array.isArray(musicas_extras) ? musicas_extras.filter(m => typeof m === 'string' && m.trim().length > 0 && m.length <= 200).slice(0, 2) : [];
-    if (musicasExtras.length > 0) console.log(`[MULTI-SONGS] ${musicasExtras.length} música(s) extra(s): ${musicasExtras.join(', ')}`);
+    const musicasExtras = Array.isArray(musicas_extras) ? musicas_extras.map(m=>typeof m==='string'?{title:m,artist:''}:m).filter(m => m&&typeof m.title === 'string' && m.title.trim().length > 0 && m.title.length <= 200).slice(0, 2) : [];
 
     console.log('\n=== INICIANDO PIPELINE ===');
-    let letra = '';
-    let contextoExtra = null;
-    const cacheMusica = await obterCacheMusica(nome_musica, artista, env);
-    if (cacheMusica) {
-      letra = cacheMusica.letra || '';
-      contextoExtra = cacheMusica.contexto || null;
-      console.log('[CACHE] Usando letra e contexto do cache.');
-    } else {
-      letra = await buscarLetraMusica(nome_musica, artista, env, lrclib_id || null);
-      contextoExtra = await buscarContextoMusica(nome_musica, artista, env, letra, lang);
-      if (!validarContexto(contextoExtra, letra)) contextoExtra = null;
-      await gravarCacheMusica(nome_musica, artista, letra, contextoExtra, env);
+    const supplied=body.user_lyrics&&typeof body.user_lyrics==='object'?body.user_lyrics:{};
+    const songInputs = [{ title: nome_musica, artist: artista || '', lrclib_id: lrclib_id || null, album:body.album||null,duration:body.duration||null }, ...musicasExtras.map(m => ({ title:m.title, artist:m.artist||'',lrclib_id:m.lrclib_id||null,album:m.album||null,duration:m.duration||null }))];
+    failureEvent.songs=songInputs;
+    const songData=[]; const missing=[];
+    for(const song of songInputs) {
+      let stored=await findSong(env.MOOVIBE_LIBRARY,song); let lyrics=stored?.lyrics||''; let source=stored?.lyrics_source||null;
+      const userValue=supplied[stored?.canonical_key||`${song.title}|${song.artist}`]||song.user_lyrics;
+      if(!lyrics&&userValue){ try { lyrics=validateUserLyrics(userValue); source='user'; stored=await persistLyrics(env.MOOVIBE_LIBRARY,song,lyrics,source); } catch { return jsonResponse({error:{code:'INVALID_LYRICS',message:'Lyrics must be between 80 and 20000 characters.'}},422); } }
+      if(!lyrics){ const found=await buscarLetraMusica(song.title,song.artist,env,song.lrclib_id); if(found?.lyrics){lyrics=found.lyrics;source=found.source;stored=await persistLyrics(env.MOOVIBE_LIBRARY,song,lyrics,source,song.lrclib_id||null);} }
+      if(!lyrics){missing.push({song_key:stored?.canonical_key||`${song.title}|${song.artist}`,title:song.title,artist:song.artist,lrclib_id:song.lrclib_id});continue;}
+      let context=null; const cached=await obterCacheMusica(song.title,song.artist,env); if(cached?.contexto)context=cached.contexto;
+      else {context=await buscarContextoMusica(song.title,song.artist,env,lyrics,lang);if(!validarContexto(context,lyrics))context=null;await gravarCacheMusica(song.title,song.artist,lyrics,context,env);}
+      songData.push({...song,song_id:stored?.id,lyrics,lyrics_source:source,lyrics_hash:stored?.content_hash,context});
     }
-    if (!letra && !contextoExtra) {
-      console.error('FALHA CRÍTICA: Nenhuma letra nem contexto encontrado em nenhuma camada');
-      return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: 'SONG_NOT_FOUND' } }, 404);
-    }
-
-    const songInputs = [{ title: nome_musica, artist: artista || '', lrclib_id: lrclib_id || null }, ...musicasExtras.map(title => ({ title, artist: '' }))];
+    if(missing.length)return jsonResponse({error:{code:'LYRICS_REQUIRED',message:'Lyrics are required to continue.',missing_songs:missing}},422);
+    const letra=songData[0].lyrics; const contextoExtra=songData[0].context;
     const finalCacheKey = recommendationCacheKey(songInputs, lang, env.RECOMMENDER_VERSION || RECOMMENDER_VERSION);
     const cachedRecommendation = env.MOOVIBE_DB ? await env.MOOVIBE_DB.get(finalCacheKey, 'json') : null;
-    if (cachedRecommendation) return jsonResponse(cachedRecommendation, 200);
+    if (cachedRecommendation) { await recordRecommendation(env,{request_id:crypto.randomUUID(),language:lang,songs:songInputs,primary_tmdb_id:cachedRecommendation.movie?.tmdb_id,alternatives:cachedRecommendation.movie?.alternatives||[],duration_ms:Date.now()-startedAt,cache_hit:1,success:1}); return jsonResponse(cachedRecommendation, 200); }
 
-    const catalog = await recommendFromCatalog({ env, songs: songInputs, lyrics: letra, context: contextoExtra, lang });
+    const catalog = await recommendFromCatalog({ env, songs: songData, lyrics: letra, context: contextoExtra, lang });
     const dadosFilme = movieToLegacy(catalog.primary);
     const nomeFilme = dadosFilme.titulo_pt;
     const anoFilme = dadosFilme.ano;
@@ -1207,7 +1204,7 @@ export async function onRequest(context) {
     }
 
     // Busca capa e preview de forma independente (música principal)
-    const capaDados = await buscarCapaMusica(nome_musica, artista);
+    const capaDados = await buscarCapaMusica(nome_musica, artista, songInputs[0]);
     const coverUrl = capaDados?.coverUrl || '';
     const previewUrl = capaDados?.previewUrl || null;
     const coverSource = capaDados?.coverSource || null;
@@ -1217,10 +1214,10 @@ export async function onRequest(context) {
     const songs = [{ title: nome_musica, artist: artista || '', cover_url: coverUrl, audio_preview_url: previewUrl }];
     if (musicasExtras.length > 0) {
       for (const extra of musicasExtras) {
-        const extraCapa = await buscarCapaMusica(extra, '');
+        const extraCapa = await buscarCapaMusica(extra.title, extra.artist||'',extra);
         songs.push({
-          title: extra,
-          artist: '',
+          title: extra.title,
+          artist: extra.artist||'',
           cover_url: extraCapa?.coverUrl || '',
           audio_preview_url: extraCapa?.previewUrl || null,
         });
@@ -1266,6 +1263,7 @@ export async function onRequest(context) {
 
     const slug = slugify(nomeFilme + '-' + nome_musica);
     const resposta = {
+      request_id: catalog.request_id,
       song: nome_musica,
       artist: artista || '',
       songs,
@@ -1294,6 +1292,7 @@ export async function onRequest(context) {
         tiktok_url: `https://www.tiktok.com/search?q=${encodeURIComponent(nomeFilme + ' edit')}`,
       },
     };
+    await recordRecommendation(env,{request_id:catalog.request_id,language:lang,songs:songData.map(s=>({title:s.title,artist:s.artist,lyrics_source:s.lyrics_source})),primary_tmdb_id:dadosFilme?.id_tmdb,alternatives:alternativasComPoster,candidate_count:catalog.candidate_count,...catalog.diagnostics,duration_ms:Date.now()-startedAt,cache_hit:0,success:1});
     await storeHistory({ song: nome_musica, artist: artista, movie: resposta.movie }, env);
     await storeShare(slug, resposta, env);
     if (env.MOOVIBE_DB) await env.MOOVIBE_DB.put(finalCacheKey, JSON.stringify(resposta), { expirationTtl: 60 * 60 * 24 });
@@ -1302,8 +1301,14 @@ export async function onRequest(context) {
     return jsonResponse(resposta, 200);
   } catch (error) {
     console.error('Pages Function error:', error);
+    await recordRecommendation(env,{...failureEvent,duration_ms:Date.now()-startedAt,success:0,error_code:'UNKNOWN',error_message:String(error?.message||error).slice(0,1000)});
     return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: 'UNKNOWN' } }, 500);
   }
+}
+
+async function recordRecommendation(env,event) {
+  if(!env.MOOVIBE_LIBRARY)return;
+  try { await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO recommendation_events(request_id,language,songs_json,primary_tmdb_id,alternatives_json,candidate_count,semantic_count,numeric_count,union_count,final_count,keyword_fallback_count,duration_ms,cache_hit,success,error_code,error_message,top_candidates_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(event.request_id,event.language,JSON.stringify(event.songs||[]),event.primary_tmdb_id||null,JSON.stringify(event.alternatives||[]),event.candidate_count||null,event.semantic_count||null,event.numeric_count||null,event.union_count||null,event.final_count||null,event.keyword_fallback_count||0,event.duration_ms||null,event.cache_hit||0,event.success?1:0,event.error_code||null,event.error_message||null,JSON.stringify(event.top||[]).slice(0,20000)).run(); } catch(error) { console.error('[OBSERVABILITY] recommendation event failed:',String(error?.message||error)); }
 }
 
 async function storeHistory(payload, env) {
