@@ -8,9 +8,21 @@ export class RetryableError extends Error {
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const cleanName = name => String(name || '').replace(/^models\//, '');
 
+// Cloudflare Workers throws "Illegal invocation: function called with incorrect
+// `this` reference" when the built-in fetch runs with a receiver other than the
+// global object. `this.fetcher(...)` would pass the GeminiClient instance as
+// `this`, so every request is routed through this helper, which pins the
+// receiver to globalThis while still honoring an injected fetcher (tests).
+const invokeFetch = (fetcher, url, init) => {
+  const impl = fetcher || globalThis.fetch;
+  if (typeof impl !== 'function') throw new Error('No fetch implementation available');
+  return impl.call(globalThis, url, init);
+};
+
 export class GeminiClient {
-  constructor(apiKey, fetcher = fetch) {
+  constructor(apiKey, fetcher = null) {
     if (!apiKey) throw new Error('GEMINI_API_KEY is required');
+    if (fetcher != null && typeof fetcher !== 'function') throw new TypeError('fetcher must be a function');
     this.apiKey = apiKey;
     this.fetcher = fetcher;
     this.cachedModels = null;
@@ -20,7 +32,7 @@ export class GeminiClient {
     let last;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
-        const response = await this.fetcher(`${API}${path}${path.includes('?') ? '&' : '?'}key=${encodeURIComponent(this.apiKey)}`, init);
+        const response = await invokeFetch(this.fetcher, `${API}${path}${path.includes('?') ? '&' : '?'}key=${encodeURIComponent(this.apiKey)}`, init);
         if (response.ok) return response.json();
         const body = (await response.text()).slice(0, 500);
         if (!TRANSIENT.has(response.status)) throw new Error(`Gemini ${response.status}: ${body}`);
