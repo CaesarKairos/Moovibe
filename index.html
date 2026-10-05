@@ -68,6 +68,7 @@
             <a href="#" data-view="view-hall-of-fame" data-i18n="hall_of_fame">HALL OF FAME</a>
             <a href="#" data-view="view-how-it-works" data-i18n="how_it_works">HOW IT WORKS</a>
             <a href="#" data-view="view-about" data-i18n="about">ABOUT</a>
+            <div class="language-picker"><button id="language-button" type="button" aria-haspopup="listbox" aria-expanded="false">🌐 <span>EN</span> ▾</button><div id="language-menu" role="listbox" tabindex="-1"></div></div>
         </nav>
     </header>
 
@@ -300,6 +301,8 @@
 
     </main>
 
-    <script src="/js/script.js"></script>
+    <dialog id="lyrics-dialog" class="lyrics-dialog"><form method="dialog"><h2 data-i18n="lyrics_required">We could not find the lyrics for this song.</h2><p data-i18n="lyrics_instruction">To continue, paste the lyrics below.</p><div id="lyrics-fields"></div><div class="lyrics-actions"><button value="cancel" data-i18n="cancel">Cancel</button><button id="lyrics-continue" value="default" data-i18n="continue">Continue</button></div></form></dialog>
+
+    <script type="module" src="/js/script.js"></script>
 </body>
 </html>

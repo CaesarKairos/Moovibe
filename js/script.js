@@ -1,13 +1,15 @@
+import { LANGUAGES, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
 /**
  * Moovibe - Frontend Logic
  * Handles SPA navigation, loading states, and dynamic content injection.
  */
 
 document.addEventListener('DOMContentLoaded', () => {
+    const anonymousSession=localStorage.getItem('moovibe.session')||crypto.randomUUID(); localStorage.setItem('moovibe.session',anonymousSession);
+    const track=(event,extra={})=>fetch('/analytics',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({event,route:location.pathname,language:lang,session_id:anonymousSession,...extra}),keepalive:true}).catch(()=>{});
     
     // --- i18n Setup ---
-    const isPT = navigator.language.toLowerCase().startsWith('pt');
-    const lang = isPT ? 'pt' : 'en';
+    let lang = normalizeLanguage(localStorage.getItem('moovibe.language') || detectLanguage(navigator.languages || [navigator.language]));
 
     const i18n = {
         en: {
@@ -95,6 +97,7 @@ document.addEventListener('DOMContentLoaded', () => {
             about_p4: "Se essa experiência fez você sentir algo legal, encontrou um filme incrível para a sua noite ou simplesmente curtiu a ideia, considere me seguir nas redes sociais ou apoiar o projeto de alguma forma. E se você for desenvolvedor, o código-fonte está aberto no meu GitHub te esperando."
         }
     };
+    Object.assign(i18n, translations);
 
     // Mapeamento view → URL, título e descrição (SEO)
     const VIEW_ROUTES = {
@@ -144,7 +147,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const dictionary = i18n[lang] || i18n['en'];
         // Sincroniza o atributo lang do <html> com o idioma ativo
         if (document.documentElement) {
-            document.documentElement.setAttribute('lang', lang === 'pt' ? 'pt-BR' : 'en');
+            document.documentElement.setAttribute('lang', lang);
         }
         document.querySelectorAll('[data-i18n]').forEach(el => {
             const key = el.getAttribute('data-i18n');
@@ -160,6 +163,20 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+    const languagePicker=document.querySelector('.language-picker');
+    const languageButton=document.getElementById('language-button');
+    const languageMenu=document.getElementById('language-menu');
+    function renderLanguageMenu(){
+        languageButton.querySelector('span').textContent=lang.toUpperCase();
+        languageMenu.innerHTML=Object.entries(LANGUAGES).map(([code,item])=>`<button type="button" role="option" data-lang="${code}" aria-selected="${code===lang}">${code===lang?'✓ ':''}${item.label}</button>`).join('');
+        languageMenu.querySelectorAll('[role=option]').forEach(option=>option.addEventListener('click',()=>{lang=option.dataset.lang;localStorage.setItem('moovibe.language',lang);applyLanguage();renderLanguageMenu();languagePicker.classList.remove('open');languageButton.setAttribute('aria-expanded','false');}));
+    }
+    languageButton?.addEventListener('click',()=>{const open=languagePicker.classList.toggle('open');languageButton.setAttribute('aria-expanded',String(open));if(open)languageMenu.querySelector('[aria-selected=true]')?.focus();});
+    languagePicker?.addEventListener('keydown',event=>{const options=[...languageMenu.querySelectorAll('[role=option]')];const current=options.indexOf(document.activeElement);if(event.key==='Escape'){languagePicker.classList.remove('open');languageButton.focus();}if(event.key==='ArrowDown'){event.preventDefault();options[(current+1)%options.length]?.focus();}if(event.key==='ArrowUp'){event.preventDefault();options[(current-1+options.length)%options.length]?.focus();}});
+    document.addEventListener('click',event=>{if(languagePicker&&!languagePicker.contains(event.target)){languagePicker.classList.remove('open');languageButton?.setAttribute('aria-expanded','false');}});
+    renderLanguageMenu();
+    track('page_view');
 
     // --- DOM Elements ---
     const searchForm = document.getElementById('search-form');
@@ -190,19 +207,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let extraSongInputs = [];
 
     // Loading strings for cinematic feel
-    const loadingMessages = lang === 'pt'
-        ? [
-            "Lendo a letra...",
-            "Garimpando o contexto...",
-            "Perguntando pra IA...",
-            "Escolhendo o filme..."
-          ]
-        : [
-            "Reading the lyrics...",
-            "Digging the context...",
-            "Asking the AI...",
-            "Choosing the movie..."
-          ];
+    const loadingMessages = [i18n[lang].loading_initial, i18n[lang].step1_title, i18n[lang].step3_title, i18n[lang].step4_title];
 
     // --- Randomização leve de rotação (fitas e polaroids) ---
     function aplicarRotacaoAleatoria(container) {
@@ -319,12 +324,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'extra-song-input';
-        input.placeholder = lang === 'pt' ? 'Adicione outra música...' : 'Add another song...';
+        input.placeholder = i18n[lang].add_song;
         input.autocomplete = 'off';
         const removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'remove-song-btn';
-        removeBtn.setAttribute('aria-label', lang === 'pt' ? 'Remover música' : 'Remove song');
+        removeBtn.setAttribute('aria-label', i18n[lang].remove_song);
         const removeIcon = document.createElement('img');
         removeIcon.src = '/images/x.svg';
         removeIcon.alt = '';
@@ -348,7 +353,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const dropdown = document.createElement('div');
         dropdown.className = 'autocomplete-dropdown';
         dropdown.setAttribute('role', 'listbox');
-        dropdown.setAttribute('aria-label', lang === 'pt' ? 'Sugestões de música' : 'Music suggestions');
+        dropdown.setAttribute('aria-label', i18n[lang].suggestions);
         row.appendChild(dropdown);
         // Configura o autocomplete (mesma função de pesquisa do campo principal)
         setupAutocomplete(input, dropdown);
@@ -387,6 +392,7 @@ document.addEventListener('DOMContentLoaded', () => {
         function selectSuggestion(item) {
             if (!item) return;
             input.value = item.trackName || '';
+            input.dataset.artist=item.artistName||''; input.dataset.lrclibId=String(item.id||''); input.dataset.album=item.albumName||''; input.dataset.duration=String(item.duration||'');
             if (onSelect) onSelect(item);
             closeSuggestions();
         }
@@ -539,7 +545,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const meta = document.createElement('div');
                 meta.className = 'hall-meta';
-                const separator = lang === 'pt' ? ' — ' : ' — ';
+                const separator = ' — ';
                 meta.innerHTML = `<strong>${escapeHtml(title)}</strong><br>${escapeHtml(year)}<br>${escapeHtml(song)}${separator}${escapeHtml(artist)}`;
 
                 if (poster) {
@@ -616,7 +622,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const artist = safeStr(data && data.artist);
         const artistStr = artist ? ` - ${artist}` : '';
         const elMeta = document.getElementById('res-search-meta');
-        const metaText = lang === 'pt' ? `'${song}'${artistStr} → vibe detectada:` : `'${song}'${artistStr} → detected vibe:`;
+        const metaText = `'${song}'${artistStr} → ${i18n[lang].search_meta}`;
         if (elMeta) elMeta.textContent = metaText;
 
         // Vibe Title
@@ -692,13 +698,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     audio.src = audioUrl;
                     const btn = document.createElement('button');
                     btn.className = 'audio-preview-btn';
-                    btn.setAttribute('aria-label', lang === 'pt' ? 'Reproduzir prévia de áudio' : 'Play audio preview');
+                    btn.setAttribute('aria-label', i18n[lang].preview);
                     const playIcon = document.createElement('span');
                     playIcon.className = 'play-icon';
                     playIcon.setAttribute('aria-hidden', 'true');
                     const btnLabel = document.createElement('span');
                     btnLabel.className = 'audio-btn-label';
-                    btnLabel.textContent = lang === 'pt' ? 'PRÉVIA' : 'PREVIEW';
+                    btnLabel.textContent = i18n[lang].preview;
                     btn.appendChild(playIcon);
                     btn.appendChild(btnLabel);
                     btn.addEventListener('click', () => {
@@ -893,6 +899,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     searchForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+        track('recommend_started');
         
         let song = songInput.value.trim();
         if (!song) return;
@@ -923,31 +930,41 @@ document.addEventListener('DOMContentLoaded', () => {
         if (extraSongInputs) {
             for (const input of extraSongInputs) {
                 const val = input.value.trim();
-                if (val) extraSongs.push(val);
+                if (val) extraSongs.push({title:val,artist:input.dataset.artist||'',lrclib_id:input.dataset.lrclibId||null,album:input.dataset.album||null,duration:Number(input.dataset.duration)||null});
             }
         }
 
-        const fetchPromise = fetch('/recommend', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
+        const payload={
                 nome_musica: song,
                 artista: artist,
                 lang: lang,
                 lrclib_id: songLrclibIdInput ? songLrclibIdInput.value : '',
+                album:songInput.dataset.album||null,
+                duration:Number(songInput.dataset.duration)||null,
                 musicas_extras: extraSongs
-            })
-        })
-        .then(response => {
-            if (!response.ok) {
-                return response.json().then(err => {
-                    throw new Error(err.message || `HTTP ${response.status}`);
-                });
-            }
-            return response.json();
-        });
+            };
+        async function requestRecommendation(body) {
+          const response=await fetch('/recommend', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(body)
+          });
+          const data=await response.json();
+          if(response.status===422&&data.error?.code==='LYRICS_REQUIRED'){
+            track('lyrics_required');
+            const dialog=document.getElementById('lyrics-dialog'),fields=document.getElementById('lyrics-fields');
+            fields.innerHTML=data.error.missing_songs.map((missing,index)=>`<label>${missing.title} — ${missing.artist||''}<textarea required minlength="80" maxlength="20000" data-song-key="${missing.song_key.replace(/"/g,'&quot;')}"></textarea></label>`).join('');
+            const accepted=await new Promise(resolve=>{dialog.addEventListener('close',()=>resolve(dialog.returnValue==='default'),{once:true});dialog.showModal();});
+            if(!accepted)throw new Error(i18n[lang].error_message);
+            body.user_lyrics=Object.fromEntries([...fields.querySelectorAll('textarea')].map(x=>[x.dataset.songKey,x.value])); track('lyrics_submitted');
+            return requestRecommendation(body);
+          }
+          if(!response.ok)throw new Error(data.error?.message||`HTTP ${response.status}`);
+          track('recommend_success'); return data;
+        }
+        const fetchPromise=requestRecommendation(payload);
 
         startLoadingSequence(fetchPromise);
     });

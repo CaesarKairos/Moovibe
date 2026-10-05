@@ -28,7 +28,7 @@ O sistema **não pede a uma IA que invente um título**. A busca acontece dentro
 4. O resultado traz pôster, sinopse, justificativa da conexão, capa e prévia das músicas e links para TMDb, IMDb e Letterboxd.
 5. A recomendação pode ser compartilhada e também passa a integrar o Hall da Fama.
 
-A interface funciona em português e inglês e mantém o fluxo simples: música primeiro, cinema depois.
+A interface funciona em oito idiomas — português do Brasil, inglês, chinês simplificado, russo, espanhol, alemão, francês e japonês — e mantém o fluxo simples: música primeiro, cinema depois.
 
 ## 🧠 Como a recomendação funciona
 
@@ -84,7 +84,9 @@ Quando esse fluxo termina, o filme passa a competir automaticamente nas próxima
 - Links para TMDb, IMDb e Letterboxd.
 - URLs compartilháveis com Open Graph dinâmico.
 - Hall da Fama das recomendações.
-- Interface em português e inglês.
+- Interface localizada em oito idiomas.
+- Letras obrigatórias com catálogo musical persistente, perfis e embeddings reutilizáveis.
+- Observabilidade administrativa privada e sem rastreamento invasivo.
 - Catálogo cinematográfico próprio, crescente e pesquisável por dois canais.
 
 ## 🏗️ Arquitetura
