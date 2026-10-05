@@ -29,9 +29,53 @@ async function enqueue(env:Env,job:Job) {
   return Boolean(result.meta.changes);
 }
 
-async function seedQueries(env:Env) {
-  const statements=discoveryQueries().map(q=>env.MOOVIBE_LIBRARY.prepare(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,next_run_at) VALUES(?,?,?,1,'pending',CURRENT_TIMESTAMP) ON CONFLICT(query_id) DO UPDATE SET label=excluded.label,params_json=excluded.params_json,is_executable=1 WHERE collection_queries.query_id NOT LIKE 'legacy-%'`).bind(q.id,q.label,JSON.stringify(q.params)));
+const DISCOVERY_SEED_KEY='discovery_seed_version';
+type SeedResult={skipped:boolean;inserted:number;updated:number;unchanged:number};
+
+// Static discovery definitions are content-hashed so the cron can detect code
+// changes with a single 1-row read instead of rewriting every query each run.
+async function discoverySeedVersion():Promise<string> {
+  const canonical=discoveryQueries().map(q=>`${q.id}\n${q.label}\n${JSON.stringify(q.params)}`).join('\n');
+  const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(canonical));
+  return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+// Differential seed: reads current rows first and writes only definitions that
+// are genuinely new or changed, so a second run over unchanged definitions
+// performs zero row writes. legacy-* provenance rows are never selected as
+// targets, inserted, or updated (is_executable stays 0 and untouched).
+async function seedQueries(env:Env):Promise<Omit<SeedResult,'skipped'>> {
+  const definitions=discoveryQueries();
+  const existing=await env.MOOVIBE_LIBRARY.prepare(`SELECT query_id,label,params_json,is_executable FROM collection_queries WHERE query_id NOT LIKE 'legacy-%'`).all<{query_id:string;label:string;params_json:string;is_executable:number}>();
+  const rows=new Map(existing.results.map(r=>[r.query_id,r]));
+  const statements:D1PreparedStatement[]=[];
+  let inserted=0,updated=0,unchanged=0;
+  for(const q of definitions) {
+    const params=JSON.stringify(q.params);
+    const row=rows.get(q.id);
+    if(!row) {
+      statements.push(env.MOOVIBE_LIBRARY.prepare(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,next_run_at) VALUES(?,?,?,1,'pending',CURRENT_TIMESTAMP) ON CONFLICT(query_id) DO NOTHING`).bind(q.id,q.label,params));
+      inserted++;
+    } else if(row.label!==q.label||row.params_json!==params||row.is_executable!==1) {
+      statements.push(env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET label=?,params_json=?,is_executable=1 WHERE query_id=? AND query_id NOT LIKE 'legacy-%'`).bind(q.label,params,q.id));
+      updated++;
+    } else unchanged++;
+  }
   for(let i=0;i<statements.length;i+=80) await env.MOOVIBE_LIBRARY.batch(statements.slice(i,i+80));
+  return {inserted,updated,unchanged};
+}
+
+// Bootstrap/sync separated from the cron hot path: runs only when the stored
+// definition version differs from the code (fresh database or a deploy that
+// added/changed discovery queries), or when forced via POST /admin/seed.
+async function syncDiscoverySeed(env:Env,force=false):Promise<SeedResult> {
+  const version=await discoverySeedVersion();
+  const stored=await env.MOOVIBE_LIBRARY.prepare(`SELECT value FROM system_state WHERE key=?`).bind(DISCOVERY_SEED_KEY).first<{value:string}>();
+  if(!force&&stored?.value===version) return {skipped:true,inserted:0,updated:0,unchanged:discoveryQueries().length};
+  const result=await seedQueries(env);
+  if(stored?.value!==version) await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO system_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP`).bind(DISCOVERY_SEED_KEY,version).run();
+  log('discovery_seed_sync',{...result});
+  return {skipped:false,...result};
 }
 
 async function recoverJobs(env:Env) {
@@ -53,7 +97,9 @@ async function recoverJobs(env:Env) {
 }
 
 async function schedule(env:Env) {
-  await seedQueries(env);
+  // Version-gated bootstrap/sync: one 1-row read per cron and zero row writes
+  // while definitions are unchanged. A seed failure must not stall the cron.
+  try { await syncDiscoverySeed(env); } catch(error:any) { log('discovery_seed_failed',{error:String(error?.message||error).slice(0,300)}); }
   const recovery=await recoverJobs(env);
   // Existing library work is enqueued first and receives almost all of each cron budget.
   const pending=await env.MOOVIBE_LIBRARY.prepare(MOVIE_BACKLOG_SQL).bind(PIPELINE_BUDGET).all<any>();
@@ -173,7 +219,7 @@ async function health(env:Env) {
 export default {
   async scheduled(_controller:ScheduledController,env:Env,ctx:ExecutionContext){ctx.waitUntil(schedule(env));},
   async queue(batch:MessageBatch<Job>,env:Env){for(const message of batch.messages){const outcome=await processJob(env,message.body);if(outcome.retry)message.retry({delaySeconds:outcome.delaySeconds});else message.ack();}},
-  async fetch(request:Request,env:Env){const url=new URL(request.url);if(url.pathname==='/health')return json(await health(env));if(url.pathname==='/admin/run'){if(!env.ADMIN_TOKEN||request.headers.get('authorization')!==`Bearer ${env.ADMIN_TOKEN}`)return json({error:'unauthorized'},401);await schedule(env);return json({ok:true});}return json({service:'moovibe-pipeline',ok:true});}
+  async fetch(request:Request,env:Env){const url=new URL(request.url);if(url.pathname==='/health')return json(await health(env));if(url.pathname==='/admin/run'){if(!env.ADMIN_TOKEN||request.headers.get('authorization')!==`Bearer ${env.ADMIN_TOKEN}`)return json({error:'unauthorized'},401);await schedule(env);return json({ok:true});}if(url.pathname==='/admin/seed'){if(!env.ADMIN_TOKEN||request.headers.get('authorization')!==`Bearer ${env.ADMIN_TOKEN}`)return json({error:'unauthorized'},401);return json(await syncDiscoverySeed(env,true));}return json({service:'moovibe-pipeline',ok:true});}
 };
 
-export { enqueue,processJob,schedule };
+export { enqueue,processJob,schedule,seedQueries };
