@@ -1,125 +1,38 @@
-import { LANGUAGES, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
+import { LANGUAGES, PAGE_METADATA, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
 /**
  * Moovibe - Frontend Logic
  * Handles SPA navigation, loading states, and dynamic content injection.
  */
 
 document.addEventListener('DOMContentLoaded', () => {
-    const anonymousSession=localStorage.getItem('moovibe.session')||crypto.randomUUID(); localStorage.setItem('moovibe.session',anonymousSession);
-    const track=(event,extra={})=>fetch('/analytics',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({event,route:location.pathname,language:lang,session_id:anonymousSession,...extra}),keepalive:true}).catch(()=>{});
+    let anonymousSession='';
+    try { anonymousSession=localStorage.getItem('moovibe.session')||crypto.randomUUID(); localStorage.setItem('moovibe.session',anonymousSession); } catch { anonymousSession=crypto.randomUUID(); }
+    const track=(event,extra={})=>{try{return fetch('/analytics',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({event,route:location.pathname,language:lang,session_id:anonymousSession,...extra}),keepalive:true}).catch(()=>{});}catch{return Promise.resolve();}};
     
     // --- i18n Setup ---
-    let lang = normalizeLanguage(localStorage.getItem('moovibe.language') || detectLanguage(navigator.languages || [navigator.language]));
+    let storedLanguage=null;
+    try { storedLanguage=localStorage.getItem('moovibe.language'); } catch {}
+    let lang = normalizeLanguage(storedLanguage || detectLanguage(navigator.languages || [navigator.language]));
 
-    const i18n = {
-        en: {
-            hero_eyebrow: '<span class="red-line"></span> THE CINEMA WAS ALWAYS INSIDE THE MUSIC',
-            hero_subtitle: '<em>Every song already has a film.</em> <strong>We find it.</strong>',
-            label_song: 'SONG TITLE (WRITE CORRECTLY)',
-            btn_find: 'FIND MY MOVIE →',
-            try_label: 'TRY:',
-            loading_initial: 'Listening to the atmosphere...',
-            loading_shared: 'Loading shared vibe...',
-            search_meta: "'Style' — Taylor Swift → detected vibe:",
-            vibe_report: 'VIBE REPORT',
-            article_meta: 'CURATOR: MOOVIBE SYSTEM <span id="res-year">2026</span>',
-            dir_label: 'DIR:',
-            release_label: 'RELEASE:',
-            original_title_label: 'ORIGINAL TITLE:',
-            link_imdb: 'IMDb',
-            link_letterboxd: 'Letterboxd',
-            link_tiktok: 'TikTok',
-            song_card_label: 'THE SONG',
-            btn_new_search: '← NEW SEARCH',
-            error_title: 'SOMETHING WENT WRONG',
-            error_message: "Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.",
-            btn_try_again: '← TRY AGAIN',
-            hall_of_fame: 'HALL OF FAME',
-            how_it_works: 'HOW IT WORKS',
-            about: 'ABOUT',
-            hall_of_fame_title: 'HALL OF FAME',
-            hall_subtitle: 'The greatest music-to-film matches ever discovered.',
-            how_it_works_title: 'HOW IT WORKS',
-            step1_title: 'INGEST: lyrics + context',
-            step1_text: 'We take your song and pull together lyrics and meaning from multiple sources—LRCLIB (with exact ID lookup when you pick a suggestion), Genius, DuckDuckGo, Wikipedia PT/EN, and Brave Search—so the recommendation has real musical context, not just a title match. The result is cached for 30 days to avoid repeating the same lookups.',
-            step2_title: 'ENRICH: cover + audio preview',
-            step2_text: 'We fetch the album cover and a short audio preview from Apple Music, with fallbacks to Deezer and MusicBrainz + Cover Art Archive. These extras give the model a concrete visual and sonic reference for the song’s identity.',
-            step3_title: 'MATCH: AI + TMDb',
-            step3_text: 'The music profile is embedded in the same semantic space as Moovibe’s film library. Vector search retrieves real catalog candidates; mathematical scoring and soft diversity constraints form the finalist slate.',
-            step4_title: 'PERSIST + share',
-            step4_text: 'Gemini curates only from those finalists and explains the match. Film facts come from the catalog, while the result is stored in Cloudflare KV for history, sharing, and dynamic Open Graph.',
-            about_title: 'ABOUT',
-            about_p1: "This project was created by a film lover — without any claim to being a critic or 'cinephile' — who is also obsessed with music and soundtracks. And it was made for people who feel the same.",
-            about_p2: "You know when a song makes you feel so much — like the melancholic grandeur of Harry Styles' Sign of the Times — that you wish it could last much longer? Three minutes are rarely enough to process everything a track can convey. I always wanted to extend that feeling. Since a song can't hug you for two hours straight, a movie can.",
-            about_p3: "Moovibe was born from this desire: to create a bridge that automatically finds the perfect film that carries exactly the same aura, the same color, and the same vibe of your favorite song.",
-            about_p4: "If this experience made you feel something cool, found an amazing film for your night, or simply liked the idea, consider following me on social media or supporting the project somehow. And if you're a developer, the source code is open waiting for you on my GitHub."
-        },
-        pt: {
-            hero_eyebrow: '<span class="red-line"></span> O CINEMA ESTEVES SEMPRE DENTRO DA MÚSICA',
-            hero_subtitle: '<em>Cada música já tem um filme.</em> <strong>Nós encontramos.</strong>',
-            label_song: 'TÍTULO DA MÚSICA (ESCREVA CORRETAMENTE)',
-            btn_find: 'ENCONTRAR MEU FILME →',
-            try_label: 'TENTE:',
-            loading_initial: 'Escutando a atmosfera...',
-            loading_shared: 'Carregando vibe compartilhada...',
-            search_meta: "'Style' — Taylor Swift → vibe detectada:",
-            vibe_report: 'RELATÓRIO DE VIBE',
-            article_meta: 'CURADOR: MOOVIBE SYSTEM <span id="res-year">2026</span>',
-            dir_label: 'DIR:',
-            release_label: 'LANÇAMENTO:',
-            original_title_label: 'TÍTULO ORIGINAL:',
-            link_imdb: 'IMDb',
-            link_letterboxd: 'Letterboxd',
-            link_tiktok: 'TikTok',
-            song_card_label: 'A MÚSICA',
-            btn_new_search: '← NOVA BUSCA',
-            error_title: 'ALGO DEU ERRADO',
-            error_message: "Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.",
-            btn_try_again: '← TENTAR NOVAMENTE',
-            hall_of_fame: 'HALL DA FAMA',
-            how_it_works: 'COMO FUNCIONA',
-            about: 'SOBRE',
-            hall_of_fame_title: 'HALL DA FAMA',
-            hall_subtitle: 'As maiores conexões entre música e cinema já descobertas.',
-            how_it_works_title: 'COMO FUNCIONA',
-            step1_title: 'INGESTAR: letras + contexto',
-            step1_text: 'Nós pegamos a sua música e reunimos letras e significado de várias fontes—LRCLIB (com busca exata por ID quando você escolhe uma sugestão), Genius, DuckDuckGo, Wikipedia PT/EN e Brave Search—para que a recomendação tenha contexto musical real, não apenas uma coincidência de título. O resultado é cacheado por 30 dias para não refazer as mesmas buscas.',
-            step2_title: 'ENRIQUECER: capa + prévia de áudio',
-            step2_text: 'Buscamos a capa do álbum e uma prévia curta de áudio no iTunes, com fallbacks para Deezer e MusicBrainz + Cover Art Archive. Esses extras dão ao modelo uma referência visual e sonora concreta da identidade da música.',
-            step3_title: 'COMBINAR: IA + TMDb',
-            step3_text: 'O perfil musical é transformado em embedding no mesmo espaço semântico da biblioteca do Moovibe. A busca vetorial recupera candidatos reais; score matemático e diversidade suave formam os finalistas.',
-            step4_title: 'PERSISTIR + compartilhar',
-            step4_text: 'O Gemini atua como curador somente entre esses finalistas e explica a conexão. Os fatos vêm do catálogo, e o resultado é salvo no Cloudflare KV para histórico, compartilhamento e Open Graph dinâmico.',
-            about_title: 'SOBRE',
-            about_p1: "Este projeto foi criado por um amante de filmes — sem a pretensão de ser crítico ou 'cinéfilo' — que também é obcecado por música e trilhas sonoras. E ele foi feito para pessoas que sentem o mesmo.",
-            about_p2: "Sabe quando uma música te faz sentir tanta coisa — como a grandiosidade melancólica de Sign of the Times do Harry Styles — que você queria que ela durasse muito mais? Três minutos raramente são suficientes para processar tudo o que uma faixa pode transmitir. Eu sempre quis estender essa sensação. Já que uma música não pode te abraçar por duas horas seguidas, um filme pode.",
-            about_p3: "O Moovibe nasceu dessa minha vontade: criar uma ponte que encontre automaticamente o filme perfeito que carrega exatamente a mesma aura, a mesma cor e a mesma vibe da sua música favorita.",
-            about_p4: "Se essa experiência fez você sentir algo legal, encontrou um filme incrível para a sua noite ou simplesmente curtiu a ideia, considere me seguir nas redes sociais ou apoiar o projeto de alguma forma. E se você for desenvolvedor, o código-fonte está aberto no meu GitHub te esperando."
-        }
-    };
-    Object.assign(i18n, translations);
+    const i18n = translations;
 
     // Mapeamento view → URL, título e descrição (SEO)
     const VIEW_ROUTES = {
         'view-home': {
             path: '/',
-            title: 'Moovibe — Descubra o filme com a vibe da sua música',
-            description: 'Moovibe encontra o filme perfeito para a sua música favorita: digite uma faixa e descubra qual filme carrega exatamente a mesma atmosfera, cor e vibe.'
+            meta: 'home'
         },
         'view-about': {
             path: '/about',
-            title: 'Moovibe — Sobre',
-            description: 'Conheça o Moovibe: o projeto que conecta músicas a filmes pela atmosfera, cor e vibe.'
+            meta: 'about'
         },
         'view-how-it-works': {
             path: '/how-it-works',
-            title: 'Moovibe — Como funciona',
-            description: 'Entenda como o Moovibe encontra o filme com a mesma vibe da sua música favorita.'
+            meta: 'how'
         },
         'view-hall-of-fame': {
             path: '/hall-of-fame',
-            title: 'Moovibe — Hall da Fama',
-            description: 'As maiores conexões entre música e cinema já descobertas pelo Moovibe.'
+            meta: 'hall'
         }
     };
 
@@ -138,9 +51,12 @@ document.addEventListener('DOMContentLoaded', () => {
     function atualizarMetaPorView(targetView) {
         const rota = VIEW_ROUTES[targetView?.id];
         if (!rota) return;
-        document.title = rota.title;
+        const [title,description]=PAGE_METADATA[lang]?.[rota.meta]||PAGE_METADATA.en[rota.meta];
+        document.title = title;
         const metaDesc = document.querySelector('meta[name="description"]');
-        if (metaDesc) metaDesc.setAttribute('content', rota.description);
+        if (metaDesc) metaDesc.setAttribute('content', description);
+        document.querySelectorAll('meta[property="og:title"],meta[name="twitter:title"]').forEach(meta=>meta.setAttribute('content',title));
+        document.querySelectorAll('meta[property="og:description"],meta[name="twitter:description"]').forEach(meta=>meta.setAttribute('content',description));
     }
 
     function applyLanguage() {
@@ -162,18 +78,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 el.innerHTML = value;
             }
         });
+        atualizarMetaPorView(document.querySelector('.view-section.active'));
+        document.querySelectorAll('.extra-song-input').forEach(input=>{input.placeholder=dictionary.add_song;});
+        document.querySelectorAll('.remove-song-btn').forEach(button=>button.setAttribute('aria-label',dictionary.remove_song));
+        if(errorMessage&&viewError?.classList.contains('active'))errorMessage.textContent=dictionary.error_message;
     }
 
     const languagePicker=document.querySelector('.language-picker');
     const languageButton=document.getElementById('language-button');
     const languageMenu=document.getElementById('language-menu');
     function renderLanguageMenu(){
-        languageButton.querySelector('span').textContent=lang.toUpperCase();
-        languageMenu.innerHTML=Object.entries(LANGUAGES).map(([code,item])=>`<button type="button" role="option" data-lang="${code}" aria-selected="${code===lang}">${code===lang?'✓ ':''}${item.label}</button>`).join('');
-        languageMenu.querySelectorAll('[role=option]').forEach(option=>option.addEventListener('click',()=>{lang=option.dataset.lang;localStorage.setItem('moovibe.language',lang);applyLanguage();renderLanguageMenu();languagePicker.classList.remove('open');languageButton.setAttribute('aria-expanded','false');}));
+        languageButton.querySelector('.language-code').textContent=lang==='pt-BR'?'PT':lang.split('-')[0].toUpperCase();
+        languageMenu.innerHTML=Object.entries(LANGUAGES).map(([code,item])=>`<button type="button" role="option" data-lang="${code}" aria-selected="${code===lang}"><span class="language-mark" aria-hidden="true"></span><span>${item.label}</span><small>${code}</small></button>`).join('');
+        languageMenu.querySelectorAll('[role=option]').forEach(option=>option.addEventListener('click',()=>{lang=option.dataset.lang;try{localStorage.setItem('moovibe.language',lang);}catch{}applyLanguage();renderLanguageMenu();closeLanguageMenu(true);}));
     }
+    function closeLanguageMenu(restoreFocus=false){languagePicker?.classList.remove('open');languageButton?.setAttribute('aria-expanded','false');if(restoreFocus)languageButton?.focus();}
     languageButton?.addEventListener('click',()=>{const open=languagePicker.classList.toggle('open');languageButton.setAttribute('aria-expanded',String(open));if(open)languageMenu.querySelector('[aria-selected=true]')?.focus();});
-    languagePicker?.addEventListener('keydown',event=>{const options=[...languageMenu.querySelectorAll('[role=option]')];const current=options.indexOf(document.activeElement);if(event.key==='Escape'){languagePicker.classList.remove('open');languageButton.focus();}if(event.key==='ArrowDown'){event.preventDefault();options[(current+1)%options.length]?.focus();}if(event.key==='ArrowUp'){event.preventDefault();options[(current-1+options.length)%options.length]?.focus();}});
+    languagePicker?.addEventListener('keydown',event=>{const options=[...languageMenu.querySelectorAll('[role=option]')];const current=options.indexOf(document.activeElement);if(event.key==='Escape'){event.preventDefault();closeLanguageMenu(true);}if(event.key==='ArrowDown'){event.preventDefault();options[(current+1+options.length)%options.length]?.focus();}if(event.key==='ArrowUp'){event.preventDefault();options[(current-1+options.length)%options.length]?.focus();}});
     document.addEventListener('click',event=>{if(languagePicker&&!languagePicker.contains(event.target)){languagePicker.classList.remove('open');languageButton?.setAttribute('aria-expanded','false');}});
     renderLanguageMenu();
     track('page_view');
@@ -207,7 +128,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let extraSongInputs = [];
 
     // Loading strings for cinematic feel
-    const loadingMessages = [i18n[lang].loading_initial, i18n[lang].step1_title, i18n[lang].step3_title, i18n[lang].step4_title];
+    const getLoadingMessages = () => [i18n[lang].loading_initial, i18n[lang].step1_title, i18n[lang].step3_title, i18n[lang].step4_title];
+    applyLanguage();
 
     // --- Randomização leve de rotação (fitas e polaroids) ---
     function aplicarRotacaoAleatoria(container) {
@@ -270,7 +192,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function startLoadingSequence(fetchPromise) {
         switchView(viewLoading);
-        
+        const loadingMessages = getLoadingMessages();
         let messageIndex = 0;
         loadingText.textContent = loadingMessages[0];
         
