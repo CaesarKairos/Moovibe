@@ -6,6 +6,8 @@ import {normalizeMusicText,selectBestTrack} from '../functions/_lib/music-match.
 import {createAdminSession,safeEqual,verifyAdminSession} from '../functions/_lib/admin-auth.js';
 import {sanitizeAudit,writeAudit} from '../functions/_lib/audit.js';
 import {canonicalSongKey,validateUserLyrics} from '../functions/_lib/song-library.js';
+import {overview} from '../functions/admin/[secret]/[[path]].js';
+import {adminScript,dashboardMarkup,loginMarkup} from '../functions/_lib/admin-ui.js';
 
 describe('internationalization',()=>{
   it('defines every base key explicitly in all eight locales',()=>{expect(Object.keys(LANGUAGES)).toHaveLength(8);expect(Object.keys(translations).sort()).toEqual(Object.keys(LANGUAGES).sort());expect(localeKeysMatch()).toBe(true);for(const value of Object.values(translations))expect(Object.keys(value).sort()).toEqual([...LOCALE_KEYS].sort());});
@@ -23,6 +25,8 @@ describe('admin security',()=>{
  it('redacts secret-shaped audit fields and values',()=>{const safe:any=sanitizeAudit({Authorization:'Bearer abcdefghijklmnop',nested:{api_key:'secret'},text:'sk-abcdefghijklmnop'});expect(JSON.stringify(safe)).not.toContain('abcdefghijklmnop');expect(safe.Authorization).toBe('[REDACTED]');});
  it('emits sanitized structured AI traces without storage bindings',async()=>{const lines:string[]=[];const spy=vi.spyOn(console,'log').mockImplementation(value=>lines.push(String(value)));await writeAudit({}, {stage:'song_profile',Authorization:'Bearer abcdefghijklmnop',success:true});spy.mockRestore();const trace=JSON.parse(lines[0]);expect(trace).toMatchObject({service:'moovibe',event:'ai_trace',stage:'song_profile',success:true,Authorization:'[REDACTED]'});expect(lines[0]).not.toContain('abcdefghijklmnop');});
  it('requires no R2 binding in either deployment',()=>{const config=fs.readFileSync('wrangler.toml','utf8')+fs.readFileSync('workers/pipeline/wrangler.jsonc','utf8');expect(config).not.toMatch(/AI_AUDIT_LOGS|r2_buckets|moovibe-ai-audit/i);});
+ it('keeps the secret path out of embedded public UI and preserves all controls',()=>{const ui=dashboardMarkup()+loginMarkup()+adminScript;expect(ui).not.toContain('ADMIN_PATH_SECRET');for(const tab of ['overview','catalog','pipeline','recommendations','songs','traces','traffic','system'])expect(ui).toContain(`data-tab="${tab}"`);for(const behavior of ['logout','toolbar','filter','prev','next','drawer','setInterval'])expect(ui).toContain(behavior);});
+ it('normalizes empty aggregate metrics to zero in SQL and output',async()=>{const rows=[{total:0,complete:0,enriched:0,embedded:0,added_today:0,added_7d:0},{queued:0,running:0,done:0,errors:0,errors_24h:0,retries:0},{recommendations:0,last_24h:0,successes:0,cache_hits:0},{songs:0,with_lyrics:0,with_profiles:0,with_embeddings:0}];let index=0;const sql:string[]=[];const db={prepare:(query:string)=>{sql.push(query);return {first:async()=>rows[index++]}}};const result=await overview(db as any);expect(Object.values(result)).not.toContain(null);expect(result).toMatchObject({recommendations:0,last_24h:0,successes:0,cache_hits:0,songs:0,with_lyrics:0,with_profiles:0,with_embeddings:0});expect(sql.join(' ')).toContain('COALESCE');});
 });
 describe('song persistence invariants',()=>{
  it('uses LRCLIB identity first and canonicalizes text fallback',()=>{expect(canonicalSongKey({title:'x',artist:'y',lrclib_id:'42'})).toBe('lrclib:42');expect(canonicalSongKey({title:' The One ',artist:'LIMP BIZKIT'})).toBe(canonicalSongKey({title:'the one',artist:'limp bizkit'}));});
