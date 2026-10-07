@@ -7,7 +7,7 @@ import { LRCLIB_URL, LRCLIB_GET_URL, LRCLIB_SEARCH_URL, lrclibHeaders, lrclibThr
 import { recommendFromCatalog, movieToLegacy } from './_lib/catalog.js';
 import { recommendationCacheKey, RECOMMENDER_VERSION } from './_lib/recommender.js';
 import { selectBestTrack } from './_lib/music-match.js';
-import { findSong, persistLyrics, validateUserLyrics } from './_lib/song-library.js';
+import { findSong, persistLyricsBestEffort, validateUserLyrics } from './_lib/song-library.js';
 import { getLanguageConfig, normalizeLanguage } from './_lib/languages.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -1155,8 +1155,9 @@ export async function onRequest(context) {
     for(const song of songInputs) {
       let stored=await findSong(env.MOOVIBE_LIBRARY,song); let lyrics=stored?.lyrics||''; let source=stored?.lyrics_source||null;
       const userValue=supplied[stored?.canonical_key||`${song.title}|${song.artist}`]||song.user_lyrics;
-      if(!lyrics&&userValue){ try { lyrics=validateUserLyrics(userValue); source='user'; stored=await persistLyrics(env.MOOVIBE_LIBRARY,song,lyrics,source); } catch { return jsonResponse({error:{code:'INVALID_LYRICS',message:'Lyrics must be between 80 and 20000 characters.'}},422); } }
-      if(!lyrics){ const found=await buscarLetraMusica(song.title,song.artist,env,song.lrclib_id); if(found?.lyrics){lyrics=found.lyrics;source=found.source;stored=await persistLyrics(env.MOOVIBE_LIBRARY,song,lyrics,source,song.lrclib_id||null);} }
+      const degraded=error=>console.warn(JSON.stringify({event:'persistence_degraded',request_id:failureEvent.request_id,stage:'lyrics_persist',error_code:'D1_WRITE_QUOTA',error_class:error?.constructor?.name||'Error'}));
+      if(!lyrics&&userValue){ try { lyrics=validateUserLyrics(userValue); source='user'; } catch { return jsonResponse({error:{code:'INVALID_LYRICS',message:'Lyrics must be between 80 and 20000 characters.'}},422); } stored=await persistLyricsBestEffort(env.MOOVIBE_LIBRARY,song,lyrics,source,null,degraded); }
+      if(!lyrics){ const found=await buscarLetraMusica(song.title,song.artist,env,song.lrclib_id); if(found?.lyrics){lyrics=found.lyrics;source=found.source;stored=await persistLyricsBestEffort(env.MOOVIBE_LIBRARY,song,lyrics,source,song.lrclib_id||null,degraded);} }
       if(!lyrics){missing.push({song_key:stored?.canonical_key||`${song.title}|${song.artist}`,title:song.title,artist:song.artist,lrclib_id:song.lrclib_id});continue;}
       let context=null; const cached=await obterCacheMusica(song.title,song.artist,env); if(cached?.contexto)context=cached.contexto;
       else {context=await buscarContextoMusica(song.title,song.artist,env,lyrics,lang);if(!validarContexto(context,lyrics))context=null;await gravarCacheMusica(song.title,song.artist,lyrics,context,env);}
@@ -1300,11 +1301,14 @@ export async function onRequest(context) {
     console.log(`[SHARE] Slug gerado: ${slug}`);
     return jsonResponse(resposta, 200);
   } catch (error) {
-    console.error('Pages Function error:', error);
-    await recordRecommendation(env,{...failureEvent,duration_ms:Date.now()-startedAt,success:0,error_code:'UNKNOWN',error_message:String(error?.message||error).slice(0,1000)});
-    return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: 'UNKNOWN' } }, 500);
+    const classified=classifyRecommendationError(error);
+    console.error(JSON.stringify({event:'recommendation_failed',request_id:failureEvent.request_id,stage:classified.stage,error_class:error?.constructor?.name||'Error',error_code:classified.code,duration_ms:Date.now()-startedAt,songs:failureEvent.songs?.map(s=>({title:s.title,artist:s.artist}))}));
+    await recordRecommendation(env,{...failureEvent,duration_ms:Date.now()-startedAt,success:0,error_code:classified.code,error_message:String(error?.message||error).slice(0,300)});
+    return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: classified.code } }, 500);
   }
 }
+
+function classifyRecommendationError(error){const message=String(error?.message||error||'');if(/CATALOG_TOO_SMALL/.test(message))return{code:'CATALOG_TOO_SMALL',stage:'candidate_generation'};if(/vector/i.test(message))return{code:'VECTOR_QUERY_FAILED',stage:'candidate_generation'};if(/embed/i.test(message))return{code:'EMBEDDING_FAILED',stage:'song_embedding'};if(/gemini|429|503/i.test(message))return{code:'GEMINI_UNAVAILABLE',stage:'song_profile'};if(/D1/i.test(message))return{code:'D1_READ_FAILED',stage:'catalog_read'};return{code:'UNKNOWN',stage:'unknown'};}
 
 async function recordRecommendation(env,event) {
   if(!env.MOOVIBE_LIBRARY)return;

@@ -63,6 +63,7 @@
         <div class="nav-logo">
             <h1>MOOVIBE</h1>
             <span class="nav-meta">VOL. I -<br>2026</span>
+            <span id="beta-badge" class="beta-badge">PUBLIC BETA<br>CATALOG IN PROGRESS</span>
         </div>
         <nav class="nav-links">
             <a href="#" data-view="view-hall-of-fame" data-i18n="hall_of_fame">HALL OF FAME</a>
@@ -86,6 +87,7 @@
                     <div class="tape yellow-tape top-left"></div>
                     
                     <form id="search-form">
+                        <p id="beta-note" class="beta-note">Moovibe is in beta. The catalog is still growing, and some songs may require you to provide the lyrics before the analysis can continue.</p>
                         <div class="input-group autocomplete-group">
                             <label for="song-title" data-i18n="label_song">SONG TITLE (WRITE CORRECTLY)</label>
                             <div class="song-input-row">
@@ -301,7 +303,7 @@
 
     </main>
 
-    <dialog id="lyrics-dialog" class="lyrics-dialog"><form method="dialog"><h2 data-i18n="lyrics_required">We could not find the lyrics for this song.</h2><p data-i18n="lyrics_instruction">To continue, paste the lyrics below.</p><div id="lyrics-fields"></div><div class="lyrics-actions"><button value="cancel" data-i18n="cancel">Cancel</button><button id="lyrics-continue" value="default" data-i18n="continue">Continue</button></div></form></dialog>
+    <dialog id="lyrics-dialog" class="lyrics-dialog"><form method="dialog"><span class="dialog-kicker">MOOVIBE / LYRICS</span><h2 data-i18n="lyrics_required">WE NEED THE LYRICS TO THIS SONG</h2><p data-i18n="lyrics_instruction">We could not find a reliable source automatically. Provide the lyrics below to continue.</p><div id="lyrics-fields"></div><div class="lyrics-actions"><button value="cancel" data-i18n="cancel">Cancel</button><button id="lyrics-continue" value="default" data-i18n="continue">Continue</button></div></form></dialog>
 
     <script type="module" src="/js/script.js"></script>
 </body>

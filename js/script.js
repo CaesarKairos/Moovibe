@@ -1,4 +1,4 @@
-import { LANGUAGES, PAGE_METADATA, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
+import { BETA_COPY, LANGUAGES, PAGE_METADATA, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
 /**
  * Moovibe - Frontend Logic
  * Handles SPA navigation, loading states, and dynamic content injection.
@@ -78,6 +78,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 el.innerHTML = value;
             }
         });
+        const beta=BETA_COPY[lang]||BETA_COPY.en;const badge=document.getElementById('beta-badge'),note=document.getElementById('beta-note');if(badge)badge.innerHTML=beta[0];if(note)note.textContent=beta[1];
         atualizarMetaPorView(document.querySelector('.view-section.active'));
         document.querySelectorAll('.extra-song-input').forEach(input=>{input.placeholder=dictionary.add_song;});
         document.querySelectorAll('.remove-song-btn').forEach(button=>button.setAttribute('aria-label',dictionary.remove_song));
@@ -206,7 +207,9 @@ document.addEventListener('DOMContentLoaded', () => {
         fetchPromise
             .then(data => {
                 clearInterval(messageInterval);
-                if (data && data.error && data.error.message) {
+                if (data?.cancelled) {
+                    switchView(viewHome);
+                } else if (data && data.error && data.error.message) {
                     showError(data.error.message);
                 } else {
                     injectResults(data);
@@ -879,7 +882,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const dialog=document.getElementById('lyrics-dialog'),fields=document.getElementById('lyrics-fields');
             fields.innerHTML=data.error.missing_songs.map((missing,index)=>`<label>${missing.title} — ${missing.artist||''}<textarea required minlength="80" maxlength="20000" data-song-key="${missing.song_key.replace(/"/g,'&quot;')}"></textarea></label>`).join('');
             const accepted=await new Promise(resolve=>{dialog.addEventListener('close',()=>resolve(dialog.returnValue==='default'),{once:true});dialog.showModal();});
-            if(!accepted)throw new Error(i18n[lang].error_message);
+            if(!accepted){track('lyrics_cancelled');return {cancelled:true};}
             body.user_lyrics=Object.fromEntries([...fields.querySelectorAll('textarea')].map(x=>[x.dataset.songKey,x.value])); track('lyrics_submitted');
             return requestRecommendation(body);
           }

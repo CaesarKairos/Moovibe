@@ -1,7 +1,7 @@
 import { GeminiClient } from './gemini.js';
 import { CANDIDATE_LIMIT, NUMERIC_TOP_K, SEMANTIC_TOP_K, diversify, mergeCandidateChannels, numericCandidateSql, rerank, validateCuration } from './recommender.js';
 import { getLanguageConfig } from './languages.js';
-import { loadProfile, saveProfile, SONG_PROFILE_SCHEMA_VERSION, sha256 } from './song-library.js';
+import { isTransientPersistenceError, loadProfile, saveProfile, SONG_PROFILE_SCHEMA_VERSION, sha256 } from './song-library.js';
 import { writeAudit } from './audit.js';
 
 const parse=value=>{try{return Array.isArray(value)?value:JSON.parse(value||'[]')}catch{return[]}};
@@ -19,11 +19,11 @@ async function loadMovies(db,ids) {
     const chunk=ids.slice(offset,offset+D1_ID_CHUNK_SIZE);
     const placeholders=chunk.map(()=>'?').join(',');
     const result=await db.prepare(`SELECT m.*,
-    (SELECT json_group_array(g.name) FROM movie_genres mg JOIN genres g ON g.id=mg.genre_id WHERE mg.movie_id=m.id) genres,
-    (SELECT json_group_array(c.name) FROM movie_countries mc JOIN countries c ON c.iso_3166_1=mc.country_code WHERE mc.movie_id=m.id) countries,
-    (SELECT json_group_array(l.name) FROM movie_languages ml JOIN languages l ON l.iso_639_1=ml.language_code WHERE ml.movie_id=m.id) languages,
-    (SELECT json_group_array(k.name) FROM movie_keywords mk JOIN keywords k ON k.id=mk.keyword_id WHERE mk.movie_id=m.id) keywords,
-    (SELECT p.name FROM movie_credits mc JOIN people p ON p.id=mc.person_id WHERE mc.movie_id=m.id AND mc.job='Director' LIMIT 1) director,
+    COALESCE(m.genres_json,(SELECT json_group_array(g.name) FROM movie_genres mg JOIN genres g ON g.id=mg.genre_id WHERE mg.movie_id=m.id)) genres,
+    COALESCE(m.countries_json,(SELECT json_group_array(c.name) FROM movie_countries mc JOIN countries c ON c.iso_3166_1=mc.country_code WHERE mc.movie_id=m.id)) countries,
+    COALESCE(m.languages_json,(SELECT json_group_array(l.name) FROM movie_languages ml JOIN languages l ON l.iso_639_1=ml.language_code WHERE ml.movie_id=m.id)) languages,
+    COALESCE(m.keywords_json,(SELECT json_group_array(k.name) FROM movie_keywords mk JOIN keywords k ON k.id=mk.keyword_id WHERE mk.movie_id=m.id)) keywords,
+    COALESCE(m.director_name,(SELECT p.name FROM movie_credits mc JOIN people p ON p.id=mc.person_id WHERE mc.movie_id=m.id AND mc.job='Director' LIMIT 1)) director,
     e.moods_json,e.themes_json,e.atmosphere_json,e.visual_style_json,e.pace,e.emotional_valence,e.energy,e.intimacy,e.surrealism,e.darkness,e.humor,e.romanticism,e.narrative_density,e.melancholy_level,e.tension_level,e.confidence
     FROM movies m LEFT JOIN movie_enrichments e ON e.movie_id=m.id WHERE m.tmdb_id IN (${placeholders})`).bind(...chunk).all();
     rows.push(...result.results);
@@ -104,7 +104,10 @@ export async function recommendFromCatalog({env,songs,lyrics,context,lang='en'})
     try{generated=await gemini.generateJson({system:'Create a language-independent structured music vibe profile grounded in the supplied lyrics. Do not invent lyrics or factual claims. Numeric dimensions must be from 0 to 1.',prompt,schema:profileSchema});await writeAudit(env,{request_id:requestId,timestamp:new Date().toISOString(),stage:'song_profile',model:generated.model,input:prompt,system_prompt:'structured music vibe profile grounded in lyrics',output:generated.data,duration_ms:Date.now()-started,success:true});}catch(error){await writeAudit(env,{request_id:requestId,timestamp:new Date().toISOString(),stage:'song_profile',input:prompt,duration_ms:Date.now()-started,success:false,error:String(error?.message||error)});throw error;}
     const document=`Song: ${song.title} — ${song.artist||''}\nProfile: ${JSON.stringify(generated.data)}\nLyrics: ${String(song.lyrics||'').slice(0,5000)}\nContext: ${String(song.context||'').slice(0,1500)}`; const embeddedAt=Date.now(); let embedding;
     try{embedding=await gemini.embed(document,{model:embeddingModel,dimensions,taskType:'RETRIEVAL_QUERY'});await writeAudit(env,{request_id:requestId,timestamp:new Date().toISOString(),stage:'song_embedding',model:embeddingModel,input:document,input_hash:await sha256(document),dimensions,duration_ms:Date.now()-embeddedAt,success:true});}catch(error){await writeAudit(env,{request_id:requestId,timestamp:new Date().toISOString(),stage:'song_embedding',model:embeddingModel,input:document,input_hash:await sha256(document),dimensions,duration_ms:Date.now()-embeddedAt,success:false,error:String(error?.message||error)});throw error;}
-    if(song.song_id)await saveProfile(env.MOOVIBE_LIBRARY,song.song_id,{profile:generated.data,model:generated.model,lyricsHash,embedding,embeddingModel,dimensions}); perSong.push({profile:generated.data,embedding,model:generated.model});
+    if(song.song_id)try{await saveProfile(env.MOOVIBE_LIBRARY,song.song_id,{profile:generated.data,model:generated.model,lyricsHash,embedding,embeddingModel,dimensions});}catch(error){
+      if(!isTransientPersistenceError(error))throw error;
+      console.warn(JSON.stringify({event:'persistence_degraded',request_id:requestId,stage:'song_profile_persist',error_code:'D1_WRITE_QUOTA',error_class:error?.constructor?.name||'Error'}));
+    } perSong.push({profile:generated.data,embedding,model:generated.model});
   }
   const numericKeys=['emotional_valence','energy','intimacy','surrealism','darkness','humor','romanticism','narrative_density','melancholy_level','tension_level'];
   /** @type {any} */ const combined={}; for(const key of ['moods','themes','atmosphere'])combined[key]=[...new Set(perSong.flatMap(x=>x.profile[key]||[]))].slice(0,12); combined.pace=perSong.map(x=>x.profile.pace).filter(Boolean).join(' / '); for(const key of numericKeys)combined[key]=perSong.reduce((sum,x)=>sum+Number(x.profile[key]||0),0)/perSong.length;
@@ -156,7 +159,25 @@ export async function recommendFromCatalog({env,songs,lyrics,context,lang='en'})
     const fallback=FALLBACKS[lang]||FALLBACKS.en; curation={primary_tmdb_id:Number(slate[0].tmdb_id),alternative_tmdb_ids:slate.slice(1,3).map(x=>Number(x.tmdb_id)),justification:fallback[0],vibe_title:'CINEMATIC ECHO',tags:[...(analysis.data.moods||[]),...(analysis.data.atmosphere||[])].slice(0,4).map(x=>String(x).toUpperCase()),alternative_calls:fallback.slice(1)};
   }
   const byId=new Map(slate.map(m=>[Number(m.tmdb_id),m]));
-  return {request_id:requestId,profile:analysis.data,curation,primary:byId.get(curation.primary_tmdb_id),alternatives:curation.alternative_tmdb_ids.map(id=>byId.get(id)).filter(Boolean),candidate_ids:slate.map(x=>Number(x.tmdb_id)),candidate_count:slate.length,diagnostics};
+  const selected=[byId.get(curation.primary_tmdb_id),...curation.alternative_tmdb_ids.map(id=>byId.get(id))].filter(Boolean);
+  const hydrated=await Promise.all(selected.map(movie=>hydrateMoviePresentation(env,movie,lang)));
+  return {request_id:requestId,profile:analysis.data,curation,primary:hydrated[0],alternatives:hydrated.slice(1),candidate_ids:slate.map(x=>Number(x.tmdb_id)),candidate_count:slate.length,diagnostics};
+}
+
+export async function hydrateMoviePresentation(env,movie,lang='en') {
+  if(!movie?.tmdb_id)return movie;
+  const key=`movie-presentation:${movie.tmdb_id}:${lang}`;
+  try { const cached=await env.MOOVIBE_DB?.get(key,'json'); if(cached)return {...movie,...cached}; } catch(error) { console.warn(JSON.stringify({event:'hydration_cache_read_failed',tmdb_id:movie.tmdb_id})); }
+  if(!env.TMDB_API_KEY)return movie;
+  try {
+    const url=new URL(`https://api.themoviedb.org/3/movie/${movie.tmdb_id}`);
+    url.searchParams.set('api_key',env.TMDB_API_KEY);url.searchParams.set('language',lang);url.searchParams.set('append_to_response','credits,external_ids,images');
+    const response=await fetch(url);if(!response.ok)throw new Error(`TMDB_${response.status}`);
+    const data=await response.json();
+    const presentation={director:data.credits?.crew?.find(x=>x.job==='Director')?.name||movie.director||null,imdb_id:data.external_ids?.imdb_id||data.imdb_id||movie.imdb_id||null,runtime:data.runtime||movie.runtime||null,tagline:data.tagline||movie.tagline||'',poster_path:data.poster_path||movie.poster_path,backdrop_path:data.backdrop_path||movie.backdrop_path};
+    try{await env.MOOVIBE_DB?.put(key,JSON.stringify(presentation),{expirationTtl:60*60*24*14});}catch{console.warn(JSON.stringify({event:'hydration_cache_write_failed',tmdb_id:movie.tmdb_id}));}
+    return {...movie,...presentation};
+  } catch(error) { console.warn(JSON.stringify({event:'hydration_failed',tmdb_id:movie.tmdb_id,error_code:'TMDB_UNAVAILABLE'})); return movie; }
 }
 
 export function movieToLegacy(movie) {

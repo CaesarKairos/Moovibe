@@ -8,7 +8,8 @@ vi.mock('../functions/_lib/gemini.js',()=>({
   GeminiClient:class{constructor(_key?:string){}async generateJson(...args:any[]){return generateJson(...args);}async embed(...args:any[]){return embed(...args);}}
 }));
 
-import {D1_ID_CHUNK_SIZE,recommendFromCatalog} from '../functions/_lib/catalog.js';
+import {D1_ID_CHUNK_SIZE,hydrateMoviePresentation,recommendFromCatalog} from '../functions/_lib/catalog.js';
+import {persistLyricsBestEffort} from '../functions/_lib/song-library.js';
 
 class Statement {
   values:any[]=[];
@@ -54,6 +55,19 @@ beforeEach(()=>{
 });
 
 describe('hybrid recommendation flow',()=>{
+  it('retains in-memory lyrics when D1 rejects their persistence',async()=>{const db:any={prepare:()=>({bind(){return this;},async run(){throw new Error('D1_ERROR: row writes quota exceeded');}})};expect(await persistLyricsBestEffort(db,{title:'A',artist:'X'},'x'.repeat(100),'user')).toBeNull();});
+  it('keeps recommending when song profile persistence hits the D1 write quota',async()=>{
+    const {env}=makeEnv(db);const prepare=env.MOOVIBE_LIBRARY.prepare;
+    env.MOOVIBE_LIBRARY.prepare=(sql:string)=>{if(sql.includes('INSERT INTO song_profiles'))return{bind(){return this;},async run(){throw new Error('D1_ERROR: row writes quota exceeded');}};return prepare(sql);};
+    const result=await recommendFromCatalog({env,songs:[{title:'A',artist:'X',song_id:99}],lyrics:'lyrics',context:'',lang:'en'});
+    expect(result.primary).toBeDefined();expect(result.alternatives).toHaveLength(2);
+  });
+  it('hydrates only selected movies, caches them, and falls back on TMDb failure',async()=>{
+    const cache=new Map<string,string>();const env:any={TMDB_API_KEY:'x',MOOVIBE_DB:{get:vi.fn(async(k:string)=>cache.has(k)?JSON.parse(cache.get(k)!):null),put:vi.fn(async(k:string,v:string)=>cache.set(k,v))}};
+    const fetchMock=vi.fn(async()=>new Response(JSON.stringify({runtime:123,tagline:'T',credits:{crew:[{job:'Director',name:'D'}]},external_ids:{imdb_id:'tt1'}}),{status:200}));vi.stubGlobal('fetch',fetchMock);
+    const movie:any={tmdb_id:1,title:'Film',director:'Fallback'};expect((await hydrateMoviePresentation(env,movie,'en')).director).toBe('D');expect((await hydrateMoviePresentation(env,movie,'en')).director).toBe('D');expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockResolvedValueOnce(new Response('down',{status:503}));const failed=await hydrateMoviePresentation({...env,MOOVIBE_DB:null},{tmdb_id:2,title:'Fallback',director:'Stored'},'en');expect(failed.director).toBe('Stored');vi.unstubAllGlobals();
+  });
   it('loads a 200-id hybrid union in D1-safe chunks and keeps a 100-film shortlist',async()=>{
     seedMovies(db,195,6);
     const {env,MOVIE_VECTORS}=makeEnv(db);

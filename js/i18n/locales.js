@@ -15,6 +15,10 @@ ja:locale(['<span class="red-line"></span> 映画はいつも音楽の中にあ�
 });
 
 export {LANGUAGES,detectLanguage,normalizeLanguage};
+export const BETA_COPY=Object.freeze({
+en:['PUBLIC BETA<br>CATALOG IN PROGRESS','Moovibe is in beta. The catalog is still growing, and some songs may require you to provide the lyrics before the analysis can continue.'],
+'pt-BR':['BETA PÚBLICA<br>CATÁLOGO EM CONSTRUÇÃO','O Moovibe está em beta. O catálogo ainda está crescendo e algumas músicas podem exigir que você forneça a letra para continuar a análise.'],
+'zh-CN':['公开测试<br>片库持续扩充中','Moovibe 目前处于测试阶段。片库仍在扩充，部分歌曲可能需要您提供歌词才能继续分析。'],ru:['ПУБЛИЧНАЯ БЕТА<br>КАТАЛОГ ПОПОЛНЯЕТСЯ','Moovibe находится в бета-версии. Каталог продолжает расти, и для анализа некоторых песен может потребоваться текст.'],es:['BETA PÚBLICA<br>CATÁLOGO EN PROGRESO','Moovibe está en beta. El catálogo sigue creciendo y algunas canciones pueden requerir que proporciones la letra para continuar el análisis.'],de:['ÖFFENTLICHE BETA<br>KATALOG IM AUFBAU','Moovibe befindet sich in der Beta-Phase. Der Katalog wächst noch; bei manchen Songs musst du den Text angeben, damit die Analyse fortgesetzt werden kann.'],fr:['BÊTA PUBLIQUE<br>CATALOGUE EN COURS','Moovibe est en bêta. Le catalogue continue de s’enrichir et certaines chansons peuvent nécessiter leurs paroles pour poursuivre l’analyse.'],ja:['公開ベータ<br>カタログ拡充中','Moovibe はベータ版です。カタログは拡充中のため、分析を続けるには歌詞の入力が必要な曲もあります。']});
 export function localeKeysMatch(locales=translations){const expected=Object.keys(locales.en).sort().join('|');return Object.values(locales).every(item=>Object.keys(item).sort().join('|')===expected);}
 
 export const PAGE_METADATA=Object.freeze({
