@@ -13,7 +13,7 @@ describe('candidate safety',()=>{
 });
 describe('ranking and diversity',()=>it('keeps affinity while penalizing a homogeneous slate',()=>{const ranked=rerank([movie(1),movie(2),movie(3,{countries:['Japan'],genres:['Animation'],release_year:1988})],profile);const slate=diversify(ranked,3);expect(slate).toHaveLength(3);expect(slate.every(x=>typeof x.deterministic_score==='number')).toBe(true);}));
 describe('cache',()=>it('distinguishes one, two and three song combinations and order',()=>{const a={title:'A',artist:'X'},b={title:'B',artist:'Y'},c={title:'C',artist:'Z'};const keys=[recommendationCacheKey([a]),recommendationCacheKey([a,b]),recommendationCacheKey([a,b,c]),recommendationCacheKey([b,a])];expect(new Set(keys).size).toBe(4);}));
-describe('discovery strategy',()=>it('preserves overlapping country, genre, decade and sort memberships without duplicate query ids',()=>{const queries=discoveryQueries();expect(queries.length).toBeGreaterThan(1000);expect(new Set(queries.map(q=>q.id)).size).toBe(queries.length);expect(queries.some(q=>q.id.includes('country-BR-genre-18'))).toBe(true);expect(queries.some(q=>q.id.includes('genre-18-1970'))).toBe(true);}));
+describe('discovery strategy',()=>it('uses a small set of non-overlapping v2 temporal partitions',()=>{const queries=discoveryQueries();expect(queries).toHaveLength(14);expect(new Set(queries.map(q=>q.id)).size).toBe(queries.length);const history=queries.filter(q=>q.id.startsWith('history-v2:'));expect(history).toHaveLength(11);expect(history.every(q=>q.params.sort_by==='popularity.desc')).toBe(true);}));
 
 describe('numeric vibe similarity',()=>{
   it('is exactly 1 when movie and music dimensions match',()=>{
@@ -130,10 +130,10 @@ describe('curation guard',()=>{
 });
 
 describe('recent release definitions',()=>{
-  const recentIds=['newest-global','recent-global-120','recent-global-30','recent-popular-30','upcoming-global-60'];
+  const recentIds=['recent-v2:120','recent-v2:30','recent-v2:upcoming-60'];
   it('keeps stable ids and date-free static params so the seed version never churns daily',()=>{
     const queries=discoveryQueries();
-    const recent=queries.filter(q=>/^(recent|upcoming|newest)-/.test(q.id));
+    const recent=queries.filter(q=>q.id.startsWith('recent-v2:'));
     expect(recent.map(q=>q.id).sort()).toEqual(recentIds);
     for(const q of recent){
       expect(q.params).toHaveProperty('lane','recent');
@@ -141,8 +141,8 @@ describe('recent release definitions',()=>{
       expect(q.params).not.toHaveProperty('primary_release_date.lte');
       expect(JSON.stringify(q.params)).not.toMatch(/\d{4}-\d{2}-\d{2}/);
     }
-    expect(recent.find(q=>q.id==='recent-global-120')!.params.lookback_days).toBe(120);
-    expect(recent.find(q=>q.id==='upcoming-global-60')!.params.upcoming_days).toBe(60);
+    expect(recent.find(q=>q.id==='recent-v2:120')!.params.lookback_days).toBe(120);
+    expect(recent.find(q=>q.id==='recent-v2:upcoming-60')!.params.upcoming_days).toBe(60);
     // Static definitions are identical across calls regardless of the day,
     // so discoverySeedVersion() cannot change without a code change.
     expect(JSON.stringify(queries)).toBe(JSON.stringify(discoveryQueries()));

@@ -25,7 +25,7 @@ const recent: DiscoveryQuery[] = [
   { id:'newest-global', label:'Mais novos (ordem de lançamento)', params:{ lane:'recent', sort_by:'primary_release_date.desc' } }
 ];
 
-export function discoveryQueries(): DiscoveryQuery[] {
+export function discoveryQueriesV1(): DiscoveryQuery[] {
   const output: DiscoveryQuery[]=[];
   for (const [code,name] of Object.entries(countries)) {
     for (const [genre,label] of Object.entries(genres)) output.push({ id:`country-${code}-genre-${genre}`, label:`${name} + ${label}`, params:{ with_origin_country:code, with_genres:genre, sort_by:'vote_average.desc', 'vote_count.gte':10 } });
@@ -36,3 +36,17 @@ export function discoveryQueries(): DiscoveryQuery[] {
   output.push(...recent);
   return output;
 }
+
+// V2 is the active bootstrap: non-overlapping temporal partitions avoid the
+// country × genre × decade amplification. V1 definitions remain in D1 only as
+// historical progress and are excluded by the scheduler.
+export function discoveryQueries():DiscoveryQuery[]{
+  const windows=[[1920,1939],[1940,1959],[1960,1979],[1980,1989],[1990,1999],[2000,2009],[2010,2014],[2015,2019],[2020,2022],[2023,2024],[2025,2026]];
+  return [
+    ...windows.map(([from,to])=>({id:`history-v2:${from}-${to}`,label:`Historical core ${from}–${to}`,params:{coverage:'core','primary_release_date.gte':`${from}-01-01`,'primary_release_date.lte':`${to}-12-31`,sort_by:'popularity.desc','vote_count.gte':5}})),
+    {id:'recent-v2:120',label:'Recent 120 days',params:{lane:'recent',lookback_days:120,sort_by:'primary_release_date.desc'}},
+    {id:'recent-v2:30',label:'Recent 30 days',params:{lane:'recent',lookback_days:30,sort_by:'popularity.desc'}},
+    {id:'recent-v2:upcoming-60',label:'Upcoming 60 days',params:{lane:'recent',upcoming_days:60,sort_by:'primary_release_date.asc'}}
+  ];
+}
+export function splitDateInterval(from:string,to:string){const a=new Date(`${from}T00:00:00Z`),b=new Date(`${to}T00:00:00Z`);if(!(a<b))return[];const mid=new Date(Math.floor((a.getTime()+b.getTime())/2));const right=new Date(mid.getTime()+86400000);return [[from,mid.toISOString().slice(0,10)],[right.toISOString().slice(0,10),to]] as const;}

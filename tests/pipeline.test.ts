@@ -73,13 +73,13 @@ describe('pipeline scheduling',()=>{
   it('gives both lanes their own budget so recent work cannot monopolize historical work',async()=>{
     const {env,sent}=makeEnv(db);await schedule(env);
     const jobs=sent.filter(x=>x.type==='DISCOVER_QUERY');
-    const recentIds=new Set(['recent-global-120','recent-global-30','upcoming-global-60','recent-popular-30','newest-global']);
+    const recentIds=new Set(['recent-v2:120','recent-v2:30','recent-v2:upcoming-60']);
     expect(jobs.filter(x=>recentIds.has(x.payload.query_id))).toHaveLength(RECENT_DISCOVERY_BUDGET);
     expect(jobs.filter(x=>!recentIds.has(x.payload.query_id))).toHaveLength(HISTORICAL_DISCOVERY_BUDGET);
   });
   it('eligibility SQL excludes imported rows',()=>{
-    db.exec(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status) VALUES('legacy','L','{}',0,'imported'),('real','R','{}',1,'pending')`);
-    expect(db.prepare(HISTORICAL_DISCOVERY_DUE_SQL).all(10)).toEqual([{query_id:'real'}]);
+    db.exec(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status) VALUES('legacy','L','{}',0,'imported'),('history-v2:real','R','{}',1,'pending')`);
+    expect(db.prepare(HISTORICAL_DISCOVERY_DUE_SQL).all(10)).toEqual([{query_id:'history-v2:real'}]);
     expect(db.prepare(RECENT_DISCOVERY_DUE_SQL).all(10)).toEqual([]);
     expect(stableDiscoveryKey('real')).toBe('discover:real:v1');
   });
@@ -99,7 +99,7 @@ describe('pipeline scheduling',()=>{
     const {env}=makeEnv(db);
     const writes=trackRowWrites(env);
     const first=await seedQueries(env);
-    expect(first.inserted).toBeGreaterThan(1000);
+    expect(first.inserted).toBe(14);
     expect(first.updated).toBe(0);
     const afterFirst=writes.count;
     expect(afterFirst).toBe(first.inserted);
@@ -354,7 +354,7 @@ describe('recent releases discovery',()=>{
     db.prepare(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,next_run_at) VALUES('new-history','New','{}',1,'pending',CURRENT_TIMESTAMP)`).run();
     const requested:number[]=[];vi.stubGlobal('fetch',pagedFetch(requested,1));
     const {env,sent}=makeEnv(db);await discover(env,{type:'DISCOVER_QUERY',key:'discover:new-history:v1',payload:{query_id:'new-history'}});
-    expect(sent).toContainEqual({type:'FETCH_MOVIE',key:'fetch:1001:v1',payload:{tmdb_id:1001}});
+    expect(sent).toContainEqual({type:'INDEX_MOVIE',key:'index:1001:v1',payload:{tmdb_id:1001}});
     vi.unstubAllGlobals();
   });
   it('computes the date window at runtime while ids and stored params stay date-free',async()=>{
@@ -380,13 +380,13 @@ describe('recent releases discovery',()=>{
   });
   it('selects recent and historical due queries independently',()=>{
     db.exec(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,last_run_at) VALUES
-      ('old-scan','Old','{}',1,'pending',datetime('now','-1 day')),
-      ('recent-global-30','Recent','{"lane":"recent","lookback_days":30}',1,'pending',datetime('now')),
-      ('upcoming-global-60','Soon','{"lane":"recent","upcoming_days":60}',1,'pending',datetime('now'))`);
+      ('history-v2:old-scan','Old','{}',1,'pending',datetime('now','-1 day')),
+      ('recent-v2:30','Recent','{"lane":"recent","lookback_days":30}',1,'pending',datetime('now')),
+      ('recent-v2:upcoming-60','Soon','{"lane":"recent","upcoming_days":60}',1,'pending',datetime('now'))`);
     const recentDue=db.prepare(RECENT_DISCOVERY_DUE_SQL).all(10) as any[];
     const historicalDue=db.prepare(HISTORICAL_DISCOVERY_DUE_SQL).all(10) as any[];
-    expect(recentDue.map(r=>r.query_id)).toEqual(['recent-global-30','upcoming-global-60']);
-    expect(historicalDue.map(r=>r.query_id)).toEqual(['old-scan']);
+    expect(recentDue.map(r=>r.query_id)).toEqual(['recent-v2:30','recent-v2:upcoming-60']);
+    expect(historicalDue.map(r=>r.query_id)).toEqual(['history-v2:old-scan']);
   });
   it('does not re-enqueue or rewrite a rediscovered completed movie',async()=>{
     db.prepare(`INSERT INTO movies(tmdb_id,title,overview,release_date,release_year,original_language,popularity,vote_average,vote_count,poster_path,backdrop_path,collection_status,enrichment_status,updated_at) VALUES(42,'Existing','Story','2001-02-03',2001,'en',7.5,7.1,100,'/p.jpg','/b.jpg','complete','complete',datetime('now','-2 days'))`).run();

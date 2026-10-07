@@ -1,8 +1,8 @@
 export const MAX_JOB_ATTEMPTS=5;
 export const STALE_JOB_MINUTES=30;
-export const RECENT_DISCOVERY_BUDGET=2;
-export const HISTORICAL_DISCOVERY_BUDGET=4;
-export const PIPELINE_BUDGET=50;
+export const RECENT_DISCOVERY_BUDGET=1;
+export const HISTORICAL_DISCOVERY_BUDGET=1;
+export const PIPELINE_BUDGET=20;
 
 const DISCOVERY_DUE_BASE=`SELECT query_id FROM collection_queries
   WHERE is_executable=1 AND status='pending'
@@ -11,10 +11,10 @@ const DISCOVERY_DUE_BASE=`SELECT query_id FROM collection_queries
 // Separate lane queries guarantee that a permanently-due recent lane cannot
 // consume the historical allocation (or vice versa).
 export const RECENT_DISCOVERY_DUE_SQL=`${DISCOVERY_DUE_BASE}
-    AND params_json LIKE '%"lane":"recent"%'
+    AND query_id LIKE 'recent-v2:%'
   ORDER BY COALESCE(last_run_at,''),query_id LIMIT ?`;
 export const HISTORICAL_DISCOVERY_DUE_SQL=`${DISCOVERY_DUE_BASE}
-    AND params_json NOT LIKE '%"lane":"recent"%'
+    AND query_id LIKE 'history-v2:%'
   ORDER BY COALESCE(last_run_at,''),query_id LIMIT ?`;
 
 export const STALE_JOBS_SQL=`SELECT job_key,type,payload_json,attempts FROM pipeline_jobs
