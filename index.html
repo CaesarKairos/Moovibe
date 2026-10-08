@@ -91,7 +91,7 @@
                         <div class="input-group autocomplete-group">
                             <label for="song-title" data-i18n="label_song">SONG TITLE (WRITE CORRECTLY)</label>
                             <div class="song-input-row">
-                                <input type="text" id="song-title" placeholder='Ex: "Bohemian Rhapsody" ou "Bohemian Rhapsody - Queen"' required autocomplete="off">
+                                <input type="text" id="song-title" placeholder="Type a song or paste a Spotify link" required autocomplete="off">
                                 <button type="button" id="btn-add-song" class="add-song-btn" aria-label="Add another song" title="Add another song">
                                     <img src="/images/plus.svg" alt="" width="24" height="24" aria-hidden="true">
                                 </button>
@@ -304,6 +304,7 @@
     </main>
 
     <dialog id="lyrics-dialog" class="lyrics-dialog"><form method="dialog"><span class="dialog-kicker">MOOVIBE / LYRICS</span><h2 data-i18n="lyrics_required">WE NEED THE LYRICS TO THIS SONG</h2><p data-i18n="lyrics_instruction">We could not find a reliable source automatically. Provide the lyrics below to continue.</p><div id="lyrics-fields"></div><div class="lyrics-actions"><button value="cancel" data-i18n="cancel">Cancel</button><button id="lyrics-continue" value="default" data-i18n="continue">Continue</button></div></form></dialog>
+    <dialog id="identity-dialog" class="lyrics-dialog"><form method="dialog"><span class="dialog-kicker">MOOVIBE / IDENTITY</span><h2 id="identity-title">WHICH SONG DID YOU MEAN?</h2><p id="identity-instruction"></p><div id="identity-candidates"></div><div class="lyrics-actions"><button value="cancel" id="identity-cancel">None of these</button></div></form></dialog>
 
     <script type="module" src="/js/script.js"></script>
 </body>

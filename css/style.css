@@ -21,6 +21,32 @@
     --transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 
+.identity-confirmed {
+    border-color: var(--accent-blue) !important;
+    box-shadow: inset 5px 0 0 var(--accent-blue);
+}
+.identity-candidate {
+    width: 100%;
+    display: grid;
+    text-align: left;
+    gap: .25rem;
+    background: var(--paper-bg);
+    color: var(--text-dark);
+    border: 2px solid var(--text-dark);
+    padding: 1rem;
+    margin: .75rem 0;
+    cursor: pointer;
+}
+.identity-candidate:hover,
+.identity-candidate:focus-visible {
+    background: #fff;
+    box-shadow: 4px 4px 0 var(--accent-red);
+    outline: 0;
+}
+.identity-candidate strong { font-family: var(--font-display); font-size: 1.15rem; }
+.identity-candidate span { font-family: var(--font-mono); font-size: .75rem; }
+.identity-summary{display:grid;gap:2px;border-left:5px solid var(--accent-blue);background:#fff;padding:.6rem .75rem;margin-top:.5rem}.identity-summary strong{font-family:var(--font-display);text-transform:uppercase}.identity-summary span{font-family:var(--font-mono);font-size:.72rem}
+
 .language-picker{position:relative}.language-picker #language-button{display:flex;align-items:center;gap:.45rem;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--text-dark);font:700 .78rem var(--font-mono);letter-spacing:.12em;cursor:pointer;padding:.35rem .1rem}.language-picker #language-button:hover,.language-picker #language-button:focus-visible{border-bottom-color:var(--accent-red);outline:0}.language-chevron{width:10px;height:7px;fill:none;stroke:currentColor;stroke-width:1.5;transition:transform .18s}.language-picker.open .language-chevron{transform:rotate(180deg)}.language-picker [role=listbox]{display:none;position:absolute;right:0;top:calc(100% + .75rem);width:min(260px,calc(100vw - 2rem));background:var(--bg-paper);border:2px solid var(--text-dark);box-shadow:6px 6px 0 var(--accent-blue);z-index:100;padding:.5rem;box-sizing:border-box}.language-picker.open [role=listbox]{display:grid}.language-picker [role=option]{display:grid;grid-template-columns:10px 1fr auto;align-items:center;gap:.65rem;text-align:left;border:0;border-bottom:1px solid rgba(28,28,28,.18);background:var(--bg-paper);color:var(--text-dark);font:700 .78rem var(--font-mono);padding:.7rem .55rem;cursor:pointer}.language-picker [role=option]:last-child{border-bottom:0}.language-picker [role=option] small{font-size:.62rem;opacity:.55;text-transform:uppercase}.language-picker [role=option]:hover,.language-picker [role=option]:focus-visible{background:#fff;outline:2px dashed var(--accent-red);outline-offset:-3px}.language-picker .language-mark{width:7px;height:7px;border:1px solid currentColor}.language-picker [aria-selected=true]{color:var(--accent-red)}.language-picker [aria-selected=true] .language-mark{background:var(--accent-red);border-color:var(--accent-red)}
 .beta-badge{font:700 .58rem/1.25 var(--font-mono);letter-spacing:.12em;color:var(--accent-red);border:1px solid var(--accent-red);padding:.3rem .45rem;transform:rotate(-1deg)}.beta-note{font:600 .72rem/1.45 var(--font-mono);border-left:4px solid var(--accent-gold);padding:.6rem .75rem;margin:0 0 1.2rem;background:rgba(255,255,255,.35)}
 .lyrics-dialog{max-width:680px;width:calc(100% - 2rem);background:var(--bg-paper);color:var(--text-dark);border:3px solid var(--text-dark);box-shadow:10px 10px 0 var(--accent-blue);padding:2rem}.lyrics-dialog::backdrop{background:#111b}.dialog-kicker{font:700 .7rem var(--font-mono);color:var(--accent-red);letter-spacing:.15em}.lyrics-dialog h2{margin:.6rem 0;border-bottom:5px solid var(--accent-gold);padding-bottom:.6rem}.lyrics-dialog textarea{width:100%;min-height:180px;background:#fff;color:var(--text-dark);border:2px solid var(--text-dark);padding:1rem;margin:1rem 0;box-sizing:border-box}.lyrics-actions{display:flex;justify-content:flex-end;gap:.75rem}.lyrics-actions button{border:2px solid var(--text-dark);background:var(--bg-paper);font:700 .75rem var(--font-mono);padding:.7rem 1rem}.lyrics-actions #lyrics-continue{background:var(--accent-red);color:#fff}

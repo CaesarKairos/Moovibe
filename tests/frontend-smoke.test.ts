@@ -69,6 +69,10 @@ describe('public frontend boundary',()=>{
     expect(source).toContain("languagePicker?.addEventListener('keydown'");
     expect(source).toContain("navLinks.forEach");
     expect(source).toContain("searchForm.addEventListener('submit'");
+    expect(source).toContain("fetch('/music-search?q='");
+    for(const field of ['provider','providerId','artist','album','duration','lrclibId'])expect(source).toContain(`dataset.${field}`);
+    expect(source).toContain("data.error?.code==='SONG_IDENTITY_REQUIRED'");
+    expect(source).not.toContain('resolverArtistaViaLrclib');
     expect(source).toContain('fetchSuggestions(termo, requestId)');
     expect(source).toMatch(/fetchSuggestions\(termo, requestId\);\s*\}, 1000\);/);
     expect(source).toContain('requestId !== autocompleteRequest || input.value.trim() !== termo');

@@ -55,7 +55,7 @@ beforeEach(()=>{
 });
 
 describe('hybrid recommendation flow',()=>{
-  it('retains in-memory lyrics when D1 rejects their persistence',async()=>{const db:any={prepare:()=>({bind(){return this;},async run(){throw new Error('D1_ERROR: row writes quota exceeded');}})};expect(await persistLyricsBestEffort(db,{title:'A',artist:'X'},'x'.repeat(100),'user')).toBeNull();});
+  it('retains in-memory lyrics when D1 rejects their persistence',async()=>{const db:any={prepare:()=>({bind(){return this;},async run(){throw new Error('D1_ERROR: row writes quota exceeded');}})};expect(await persistLyricsBestEffort(db,{title:'A',artist:'X',provider:'spotify',provider_id:'track-id'},'x'.repeat(100),'user')).toBeNull();});
   it('keeps recommending when song profile persistence hits the D1 write quota',async()=>{
     const {env}=makeEnv(db);const prepare=env.MOOVIBE_LIBRARY.prepare;
     env.MOOVIBE_LIBRARY.prepare=(sql:string)=>{if(sql.includes('INSERT INTO song_profiles'))return{bind(){return this;},async run(){throw new Error('D1_ERROR: row writes quota exceeded');}};return prepare(sql);};

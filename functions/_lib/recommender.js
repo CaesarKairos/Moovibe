@@ -1,4 +1,4 @@
-export const RECOMMENDER_VERSION = 'catalog-v3-hybrid';
+export const RECOMMENDER_VERSION = 'catalog-v4-song-identity';
 export const EMBEDDING_SCHEMA_VERSION = 'movie-v1';
 
 // Candidate generation limits: each channel contributes up to 100 candidates,
@@ -164,7 +164,7 @@ export function numericCandidateSql(profile, limit = NUMERIC_TOP_K) {
 }
 
 export function recommendationCacheKey(songs, lang='en', version=RECOMMENDER_VERSION) {
-  const normalized = songs.slice(0,3).map(s => `${String(s.title||'').trim().toLowerCase()}::${String(s.artist||'').trim().toLowerCase()}::${s.lrclib_id||''}`);
+  const normalized = songs.slice(0,3).map(s => `${s.provider||''}:${s.provider_id||s.lrclib_id||''}::${String(s.title||'').trim().toLowerCase()}::${String(s.artist||'').trim().toLowerCase()}`);
   const source=normalized.join('|'); let h1=0x811c9dc5,h2=0x9e3779b9;
   for(let i=0;i<source.length;i++){h1=Math.imul(h1^source.charCodeAt(i),0x01000193);h2=Math.imul(h2^source.charCodeAt(i),0x85ebca6b);}
   return `recommendation:${version}:${lang}:${(h1>>>0).toString(16)}${(h2>>>0).toString(16)}`;

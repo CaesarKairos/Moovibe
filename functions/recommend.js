@@ -7,8 +7,9 @@ import { LRCLIB_URL, LRCLIB_GET_URL, LRCLIB_SEARCH_URL, lrclibHeaders, lrclibThr
 import { recommendFromCatalog, movieToLegacy } from './_lib/catalog.js';
 import { recommendationCacheKey, RECOMMENDER_VERSION } from './_lib/recommender.js';
 import { selectBestTrack } from './_lib/music-match.js';
-import { findSong, persistLyricsBestEffort, validateUserLyrics } from './_lib/song-library.js';
+import { canonicalSongKey,findSong, persistLyricsBestEffort, validateUserLyrics } from './_lib/song-library.js';
 import { getLanguageConfig, normalizeLanguage } from './_lib/languages.js';
+import { resolveCanonicalSong,selectGeniusHit,selectLyricsMatch } from './_lib/song-identity.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
@@ -256,7 +257,7 @@ async function buscarLetraPorIdLrclib(id) {
   return null;
 }
 
-async function buscarLetraMusica(nomeMusica, artista, env, lrclibId = null) {
+async function buscarLetraMusica(nomeMusica, artista, env, lrclibId = null, requestId = null) {
   const nomeLimpo = limparTermoMusica(nomeMusica);
   const artistaLimpo = limparTermoMusica(artista) || artista;
 
@@ -280,14 +281,14 @@ async function buscarLetraMusica(nomeMusica, artista, env, lrclibId = null) {
       const retryResp = await fetch(`${LRCLIB_GET_URL}?${params}`, { headers: lrclibHeaders() });
       if (retryResp.ok) {
         const data = await retryResp.json();
-        if (data?.plainLyrics) {
+        if (selectLyricsMatch({title:nomeLimpo,artist:artistaLimpo},[data])?.plainLyrics) {
           console.log('[LETRA] LRCLIB /api/get: Letra encontrada (apos retry)!');
           return {lyrics:data.plainLyrics.substring(0, 5000),source:'lrclib'};
         }
       }
     } else if (resp.ok) {
       const data = await resp.json();
-      if (data?.plainLyrics) {
+      if (selectLyricsMatch({title:nomeLimpo,artist:artistaLimpo},[data])?.plainLyrics) {
         console.log('[LETRA] LRCLIB /api/get: Letra encontrada!');
         return {lyrics:data.plainLyrics.substring(0, 5000),source:'lrclib'};
       }
@@ -310,23 +311,26 @@ async function buscarLetraMusica(nomeMusica, artista, env, lrclibId = null) {
         const dados = await retryResp.json();
         // Percorre o array e usa o PRIMEIRO item que tenha plainLyrics não vazio
         // (o índice 0 pode ser um instrumental/cover/só syncedLyrics).
-        const comLetra = Array.isArray(dados) ? dados.find(item => item?.plainLyrics && item.plainLyrics.trim().length > 0) : null;
+        const comLetra = selectLyricsMatch({title:nomeLimpo,artist:artistaLimpo},dados);
         if (comLetra) {
           console.log('[LETRA] LRCLIB /api/search: Letra encontrada (apos retry)!');
-          return {lyrics:comLetra.plainLyrics.substring(0, 5000),source:'lrclib'};
+          console.log(JSON.stringify({event:'lyrics_match_resolved',provider:'lrclib',provider_id:String(comLetra.provider_id||comLetra.id||''),title:comLetra.title||comLetra.trackName,artist:comLetra.artist||comLetra.artistName,stage:'lyrics'}));
+          return {lyrics:comLetra.plainLyrics.substring(0, 5000),source:'lrclib',lrclib_id:comLetra.provider_id||comLetra.id};
         }
       }
     } else if (respSearch.ok) {
       const dados = await respSearch.json();
-      const comLetra = Array.isArray(dados) ? dados.find(item => item?.plainLyrics && item.plainLyrics.trim().length > 0) : null;
+      const comLetra = selectLyricsMatch({title:nomeLimpo,artist:artistaLimpo},dados);
       if (comLetra) {
         console.log('[LETRA] LRCLIB /api/search: Letra encontrada!');
-        return {lyrics:comLetra.plainLyrics.substring(0, 5000),source:'lrclib'};
+        console.log(JSON.stringify({event:'lyrics_match_resolved',provider:'lrclib',provider_id:String(comLetra.provider_id||comLetra.id||''),title:comLetra.title||comLetra.trackName,artist:comLetra.artist||comLetra.artistName,stage:'lyrics'}));
+        return {lyrics:comLetra.plainLyrics.substring(0, 5000),source:'lrclib',lrclib_id:comLetra.provider_id||comLetra.id};
       }
     }
   } catch (err) {
     console.error('[LETRA] LRCLIB /api/search erro:', err);
   }
+  console.log(JSON.stringify({event:'lyrics_match_rejected',request_id:requestId,provider:'lrclib',title:nomeLimpo,artist:artistaLimpo,stage:'lyrics'}));
 
   console.log('[LETRA] CAMADA 2: Genius...');
   const geniusKey = env?.GENIUS_API_KEY;
@@ -342,7 +346,7 @@ async function buscarLetraMusica(nomeMusica, artista, env, lrclibId = null) {
         return null;
       }
       const dados = await resp.json();
-      const hit = dados?.response?.hits?.[0]?.result;
+      const hit = selectGeniusHit({title:nomeLimpo,artist:artistaLimpo},dados?.response?.hits);
       if (hit?.url) {
         const pageResp = await fetch(hit.url, { headers: { 'User-Agent': MOOVIBE_USER_AGENT } });
         if (!pageResp.ok) {
@@ -367,6 +371,7 @@ async function buscarLetraMusica(nomeMusica, artista, env, lrclibId = null) {
           return {lyrics:limparHTML(lyricsMatch[1]).substring(0, 5000),source:'genius'};
         }
       }
+      if(!hit)console.log(JSON.stringify({event:'lyrics_match_rejected',request_id:requestId,provider:'genius',title:nomeLimpo,artist:artistaLimpo,candidate_count:dados?.response?.hits?.length||0,stage:'lyrics'}));
     } catch (err) {
       console.error('[LETRA] Genius erro:', err);
     }
@@ -430,7 +435,7 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
         console.error(`[GENIUS] Falhou com status ${resp.status}:`, errorText.substring(0, 300));
       } else {
         const dados = await resp.json();
-        const hit = dados?.response?.hits?.[0]?.result;
+        const hit = selectGeniusHit({title:nomeLimpo,artist:artistaLimpo},dados?.response?.hits);
         if (hit?.id) {
           console.log(`[CONTEXTO] Genius: song id = ${hit.id}`);
           const songResp = await fetch(`${GENIUS_SONGS_URL}/${hit.id}`, {
@@ -688,11 +693,12 @@ export async function buscarCapaMusica(nomeMusica, artista, canonical = {}) {
   };
 }
 
-async function obterCacheMusica(nomeMusica, artista, env) {
+function musicContextKey(song){return `music-context:${song.provider}:${song.provider_id}`;}
+async function obterCacheMusica(song, env) {
   try {
     const kv = env.MOOVIBE_DB;
     if (!kv) return null;
-    const key = `cache:${slugify(nomeMusica)}:${slugify(artista || '')}`;
+    const key = musicContextKey(song);
     const cached = await kv.get(key, 'json');
     if (cached) {
       console.log(`[CACHE] Cache encontrado para chave: ${key}`);
@@ -705,11 +711,11 @@ async function obterCacheMusica(nomeMusica, artista, env) {
   }
 }
 
-async function gravarCacheMusica(nomeMusica, artista, letra, contextoExtra, env) {
+async function gravarCacheMusica(song, letra, contextoExtra, env) {
   try {
     const kv = env.MOOVIBE_DB;
     if (!kv) return;
-    const key = `cache:${slugify(nomeMusica)}:${slugify(artista || '')}`;
+    const key = musicContextKey(song);
     const payload = { letra, contexto: contextoExtra };
     await kv.put(key, JSON.stringify(payload), { expirationTtl: 60 * 60 * 24 * 30 });
     console.log(`[CACHE] Cache gravado para chave: ${key}`);
@@ -1149,18 +1155,23 @@ export async function onRequest(context) {
 
     console.log('\n=== INICIANDO PIPELINE ===');
     const supplied=body.user_lyrics&&typeof body.user_lyrics==='object'?body.user_lyrics:{};
-    const songInputs = [{ title: nome_musica, artist: artista || '', lrclib_id: lrclib_id || null, album:body.album||null,duration:body.duration||null }, ...musicasExtras.map(m => ({ title:m.title, artist:m.artist||'',lrclib_id:m.lrclib_id||null,album:m.album||null,duration:m.duration||null }))];
+    const rawSongInputs = [{ title: nome_musica, artist: artista || '',provider:body.provider||'',provider_id:body.provider_id||'',lrclib_id:lrclib_id||null,album:body.album||null,duration:body.duration||null }, ...musicasExtras.map(m => ({ title:m.title,artist:m.artist||'',provider:m.provider||'',provider_id:m.provider_id||'',lrclib_id:m.lrclib_id||null,album:m.album||null,duration:m.duration||null }))];
+    const resolved=[];const unresolved=[];
+    for(const [index,input] of rawSongInputs.entries()){try{const result=await resolveCanonicalSong(env,input,failureEvent.request_id);if(result.track)resolved.push(result.track);else unresolved.push({...result.unresolved,index})}catch(error){if(String(error?.message||error)==='NOT_A_TRACK')return jsonResponse({error:{code:'NOT_A_TRACK',message:'The Spotify URL is not a track.'}},422);unresolved.push({input:input.title,candidates:[],index})}}
+    if(unresolved.length)return jsonResponse({error:{code:'SONG_IDENTITY_REQUIRED',message:'Confirm every song before continuing.',unresolved_songs:unresolved}},422);
+    const songInputs=resolved;
     failureEvent.songs=songInputs;
     const songData=[]; const missing=[];
     for(const song of songInputs) {
       let stored=await findSong(env.MOOVIBE_LIBRARY,song); let lyrics=stored?.lyrics||''; let source=stored?.lyrics_source||null;
-      const userValue=supplied[stored?.canonical_key||`${song.title}|${song.artist}`]||song.user_lyrics;
+      const identityKey=stored?.canonical_key||canonicalSongKey(song);
+      const userValue=supplied[identityKey]||song.user_lyrics;
       const degraded=error=>console.warn(JSON.stringify({event:'persistence_degraded',request_id:failureEvent.request_id,stage:'lyrics_persist',error_code:'D1_WRITE_QUOTA',error_class:error?.constructor?.name||'Error'}));
       if(!lyrics&&userValue){ try { lyrics=validateUserLyrics(userValue); source='user'; } catch { return jsonResponse({error:{code:'INVALID_LYRICS',message:'Lyrics must be between 80 and 20000 characters.'}},422); } stored=await persistLyricsBestEffort(env.MOOVIBE_LIBRARY,song,lyrics,source,null,degraded); }
-      if(!lyrics){ const found=await buscarLetraMusica(song.title,song.artist,env,song.lrclib_id); if(found?.lyrics){lyrics=found.lyrics;source=found.source;stored=await persistLyricsBestEffort(env.MOOVIBE_LIBRARY,song,lyrics,source,song.lrclib_id||null,degraded);} }
-      if(!lyrics){missing.push({song_key:stored?.canonical_key||`${song.title}|${song.artist}`,title:song.title,artist:song.artist,lrclib_id:song.lrclib_id});continue;}
-      let context=null; const cached=await obterCacheMusica(song.title,song.artist,env); if(cached?.contexto)context=cached.contexto;
-      else {context=await buscarContextoMusica(song.title,song.artist,env,lyrics,lang);if(!validarContexto(context,lyrics))context=null;await gravarCacheMusica(song.title,song.artist,lyrics,context,env);}
+      if(!lyrics){ const found=await buscarLetraMusica(song.title,song.artist,env,song.lrclib_id,failureEvent.request_id); if(found?.lyrics){lyrics=found.lyrics;source=found.source;if(found.lrclib_id)song.lrclib_id=found.lrclib_id;stored=await persistLyricsBestEffort(env.MOOVIBE_LIBRARY,song,lyrics,source,song.lrclib_id||null,degraded);} }
+      if(!lyrics){missing.push({song_key:identityKey,title:song.title,artist:song.artist,provider:song.provider,provider_id:song.provider_id,lrclib_id:song.lrclib_id});continue;}
+      let context=null; const cached=await obterCacheMusica(song,env); if(cached?.contexto)context=cached.contexto;
+      else {context=await buscarContextoMusica(song.title,song.artist,env,lyrics,lang);if(!validarContexto(context,lyrics))context=null;await gravarCacheMusica(song,lyrics,context,env);}
       songData.push({...song,song_id:stored?.id,lyrics,lyrics_source:source,lyrics_hash:stored?.content_hash,context});
     }
     if(missing.length)return jsonResponse({error:{code:'LYRICS_REQUIRED',message:'Lyrics are required to continue.',missing_songs:missing}},422);
@@ -1200,18 +1211,19 @@ export async function onRequest(context) {
     }
     quotes = quotes.slice(0, 3);
     // Busca capa e preview de forma independente (música principal)
-    const capaDados = await buscarCapaMusica(nome_musica, artista, songInputs[0]);
+    const capaDados = await buscarCapaMusica(songInputs[0].title,songInputs[0].artist,songInputs[0]);
     const coverUrl = capaDados?.coverUrl || '';
     const previewUrl = capaDados?.previewUrl || null;
     const coverSource = capaDados?.coverSource || null;
     const previewSource = capaDados?.previewSource || null;
 
     // Busca capa e preview para cada música extra (até 3 no total)
-    const songs = [{ title: nome_musica, artist: artista || '', cover_url: coverUrl, audio_preview_url: previewUrl }];
-    if (musicasExtras.length > 0) {
-      for (const extra of musicasExtras) {
+    const songs = [{...songInputs[0],cover_url:coverUrl,audio_preview_url:previewUrl}];
+    if (songInputs.length > 1) {
+      for (const extra of songInputs.slice(1)) {
         const extraCapa = await buscarCapaMusica(extra.title, extra.artist||'',extra);
         songs.push({
+          ...extra,
           title: extra.title,
           artist: extra.artist||'',
           cover_url: extraCapa?.coverUrl || '',
@@ -1260,8 +1272,8 @@ export async function onRequest(context) {
     const slug = slugify(nomeFilme + '-' + nome_musica);
     const resposta = {
       request_id: catalog.request_id,
-      song: nome_musica,
-      artist: artista || '',
+      song: songInputs[0].title,
+      artist: songInputs[0].artist,
       songs,
       share_slug: slug,
       movie: {
@@ -1289,7 +1301,7 @@ export async function onRequest(context) {
       },
     };
     await recordRecommendation(env,{request_id:catalog.request_id,language:lang,songs:songData.map(s=>({title:s.title,artist:s.artist,lyrics_source:s.lyrics_source})),primary_tmdb_id:dadosFilme?.id_tmdb,alternatives:alternativasComPoster,candidate_count:catalog.candidate_count,...catalog.diagnostics,duration_ms:Date.now()-startedAt,cache_hit:0,success:1});
-    await storeHistory({ song: nome_musica, artist: artista, movie: resposta.movie }, env);
+    await storeHistory({ song:songInputs[0].title,artist:songInputs[0].artist,movie:resposta.movie }, env);
     await storeShare(slug, resposta, env);
     if (env.MOOVIBE_DB) await env.MOOVIBE_DB.put(finalCacheKey, JSON.stringify(resposta), { expirationTtl: 60 * 60 * 24 });
     console.log('\n=== PIPELINE CONCLUÍDA COM SUCESSO ===');

@@ -31,3 +31,14 @@ de:{home:['Moovibe — Finde den Film zur Stimmung deines Songs','Gib einen Song
 fr:{home:['Moovibe — Trouvez le film qui partage la vibe de votre chanson','Saisissez une chanson et découvrez le film avec la même atmosphère, couleur et émotion.'],about:['Moovibe — À propos','Découvrez le projet qui relie musique et cinéma par l’atmosphère et l’émotion.'],how:['Moovibe — Comment ça marche','Découvrez comment Moovibe trouve un film avec la vibe de votre chanson préférée.'],hall:['Moovibe — Panthéon','Les plus belles connexions entre musique et cinéma découvertes par Moovibe.']},
 ja:{home:['Moovibe — 曲の雰囲気に合う映画を見つける','曲を入力して、同じ空気、色、感情を持つ映画を見つけましょう。'],about:['Moovibe — 概要','音楽と映画を空気、色、感情で結ぶ Moovibe を紹介します。'],how:['Moovibe — 仕組み','Moovibe が好きな曲と同じ雰囲気の映画を見つける仕組みです。'],hall:['Moovibe — 殿堂','Moovibe が見つけた音楽と映画の素晴らしいつながり。']}
 });
+
+export const IDENTITY_COPY=Object.freeze({
+en:['Type a song or paste a Spotify link','WHICH SONG DID YOU MEAN?','Choose the exact recording before we analyze it.','None of these','This Spotify link cannot be verified now. Search by song name.'],
+'pt-BR':['Digite uma música ou cole um link do Spotify','QUAL MÚSICA VOCÊ QUIS DIZER?','Escolha a gravação exata antes da análise.','Nenhuma dessas','Não foi possível verificar esse link agora. Pesquise pelo nome da música.'],
+'zh-CN':['输入歌曲或粘贴 Spotify 链接','你指的是哪首歌？','分析前请选择准确的录音版本。','都不是','目前无法验证此链接，请按歌曲名称搜索。'],
+ru:['Введите песню или вставьте ссылку Spotify','КАКУЮ ПЕСНЮ ВЫ ИМЕЛИ В ВИДУ?','Перед анализом выберите точную запись.','Ни одну','Сейчас не удалось проверить ссылку. Найдите песню по названию.'],
+es:['Escribe una canción o pega un enlace de Spotify','¿QUÉ CANCIÓN QUISISTE DECIR?','Elige la grabación exacta antes del análisis.','Ninguna','No se pudo verificar el enlace. Busca por el nombre de la canción.'],
+de:['Song eingeben oder Spotify-Link einfügen','WELCHEN SONG MEINST DU?','Wähle vor der Analyse die genaue Aufnahme.','Keinen davon','Der Link kann gerade nicht geprüft werden. Suche nach dem Songnamen.'],
+fr:['Saisissez une chanson ou collez un lien Spotify','QUELLE CHANSON VOULEZ-VOUS DIRE ?','Choisissez l’enregistrement exact avant l’analyse.','Aucune','Impossible de vérifier ce lien. Recherchez avec le titre de la chanson.'],
+ja:['曲名を入力するか Spotify リンクを貼り付ける','どの曲ですか？','分析前に正確な音源を選んでください。','どれでもない','現在このリンクを確認できません。曲名で検索してください。']
+});

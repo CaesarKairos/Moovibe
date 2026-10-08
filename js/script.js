@@ -1,4 +1,4 @@
-import { BETA_COPY, LANGUAGES, PAGE_METADATA, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
+import { BETA_COPY, IDENTITY_COPY, LANGUAGES, PAGE_METADATA, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
 /**
  * Moovibe - Frontend Logic
  * Handles SPA navigation, loading states, and dynamic content injection.
@@ -83,6 +83,10 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.extra-song-input').forEach(input=>{input.placeholder=dictionary.add_song;});
         document.querySelectorAll('.remove-song-btn').forEach(button=>button.setAttribute('aria-label',dictionary.remove_song));
         if(errorMessage&&viewError?.classList.contains('active'))errorMessage.textContent=dictionary.error_message;
+        const identityCopy=IDENTITY_COPY[lang]||IDENTITY_COPY.en;
+        if(songInput) songInput.placeholder=identityCopy[0];
+        const identityTitle=document.getElementById('identity-title'),identityInstruction=document.getElementById('identity-instruction'),identityCancel=document.getElementById('identity-cancel');
+        if(identityTitle)identityTitle.textContent=identityCopy[1];if(identityInstruction)identityInstruction.textContent=identityCopy[2];if(identityCancel)identityCancel.textContent=identityCopy[3];
     }
 
     const languagePicker=document.querySelector('.language-picker');
@@ -294,10 +298,10 @@ document.addEventListener('DOMContentLoaded', () => {
         switchView(viewHome, true);
     }
 
-    // --- Autocomplete de música (LRCLIB) ---
+    // --- Autocomplete de identidade musical (Spotify com fallback LRCLIB) ---
     // Replica a interação de barra de busca de app de streaming: o usuário
     // digita algumas letras e vê sugestões aparecendo embaixo do campo.
-    // A fonte é o LRCLIB (proxy /lrclib-search no backend), sem dependência paga.
+    // O backend normaliza ambos os provedores no mesmo contrato público.
     // A função setupAutocomplete é reutilizável: funciona no campo principal
     // e também nos campos extras adicionados pelo botão "+".
 
@@ -317,8 +321,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         function selectSuggestion(item) {
             if (!item) return;
-            input.value = item.trackName || '';
-            input.dataset.artist=item.artistName||''; input.dataset.lrclibId=String(item.id||''); input.dataset.album=item.albumName||''; input.dataset.duration=String(item.duration||'');
+            input.value = item.title || '';
+            input.dataset.provider=item.provider||'';input.dataset.providerId=String(item.provider_id||'');input.dataset.artist=item.artist||'';input.dataset.lrclibId=String(item.lrclib_id||'');input.dataset.album=item.album||'';input.dataset.duration=String(item.duration||'');
+            input.classList.add('identity-confirmed');input.setAttribute('aria-label',`${item.title} — ${item.artist} · ${item.album||''}`);
+            let summary=input.parentElement.querySelector('.identity-summary');if(!summary){summary=document.createElement('div');summary.className='identity-summary';input.insertAdjacentElement('afterend',summary);}summary.innerHTML=`<strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.artist)} · ${escapeHtml(item.album||'')}</span>`;
             if (onSelect) onSelect(item);
             closeSuggestions();
         }
@@ -350,11 +356,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const title = document.createElement('div');
                 title.className = 'ac-title';
-                title.textContent = item.trackName || '';
+                title.textContent = item.title || '';
 
                 const artist = document.createElement('div');
                 artist.className = 'ac-artist';
-                artist.textContent = item.artistName || '';
+                const minutes=item.duration?Math.floor(item.duration/60)+':'+String(Math.round(item.duration%60)).padStart(2,'0'):'';
+                artist.textContent = [item.artist,item.album,minutes].filter(Boolean).join(' · ');
 
                 div.appendChild(title);
                 div.appendChild(artist);
@@ -370,9 +377,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         async function fetchSuggestions(termo, requestId) {
             try {
-                const resp = await fetch('/lrclib-search?q=' + encodeURIComponent(termo));
+                const resp = await fetch('/music-search?q=' + encodeURIComponent(termo));
                 if (requestId !== autocompleteRequest || input.value.trim() !== termo) return;
                 if (!resp.ok) {
+                    if(/^https?:|^spotify:/i.test(termo)){input.setCustomValidity((IDENTITY_COPY[lang]||IDENTITY_COPY.en)[4]);input.reportValidity();}
                     closeSuggestions();
                     return;
                 }
@@ -394,9 +402,13 @@ document.addEventListener('DOMContentLoaded', () => {
             clearTimeout(autocompleteTimer);
             closeSuggestions();
             delete input.dataset.artist;
+            delete input.dataset.provider;
+            delete input.dataset.providerId;
             delete input.dataset.lrclibId;
             delete input.dataset.album;
             delete input.dataset.duration;
+            input.classList.remove('identity-confirmed');input.removeAttribute('aria-label');
+            input.setCustomValidity('');input.parentElement.querySelector('.identity-summary')?.remove();
             if (input === songInput) {
                 artistaResolvido = '';
                 if (songLrclibIdInput) songLrclibIdInput.value = '';
@@ -442,8 +454,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Configura o autocomplete do campo principal
     if (songInput && songSuggestions) {
         setupAutocomplete(songInput, songSuggestions, (item) => {
-            artistaResolvido = item.artistName || '';
-            if (songLrclibIdInput) songLrclibIdInput.value = String(item.id || '');
+            artistaResolvido = item.artist || '';
+            if (songLrclibIdInput) songLrclibIdInput.value = String(item.lrclib_id || '');
         });
     }
 
@@ -800,90 +812,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Event Listeners ---
 
-    // Tenta extrair artista do texto digitado livremente usando separadores comuns.
-    // Último recurso quando o LRCLIB não retorna nada.
-    function extrairArtistaDoTexto(texto) {
-        if (!texto) return { musica: texto, artista: '' };
-        // Separa por " - ", " – ", " by ", " de " (case-insensitive)
-        const separadores = [/\s+-\s+/, /\s+–\s+/, /\s+by\s+/i, /\s+de\s+/i];
-        for (const sep of separadores) {
-            const partes = texto.split(sep);
-            if (partes.length >= 2) {
-                const musica = partes[0].trim();
-                const artista = partes.slice(1).join(' - ').trim();
-                if (musica && artista) return { musica, artista };
-            }
-        }
-        return { musica: texto, artista: '' };
-    }
-
-    // Resolve o artista via /lrclib-search quando o usuário digitou livremente
-    // e enviou sem escolher uma sugestão do autocomplete (lrclib_id vazio).
-    async function resolverArtistaViaLrclib(song) {
-        try {
-            const resp = await fetch('/lrclib-search?q=' + encodeURIComponent(song));
-            if (!resp.ok) return null;
-            const data = await resp.json();
-            const items = Array.isArray(data.items) ? data.items : [];
-            if (items.length > 0) {
-                const primeiro = items[0];
-                console.log('[LRCLIB-RESOLVE] Sugestão encontrada:', primeiro.trackName, '-', primeiro.artistName);
-                return {
-                    trackName: primeiro.trackName || song,
-                    artistName: primeiro.artistName || '',
-                    id: primeiro.id || ''
-                };
-            }
-        } catch (err) {
-            console.error('[LRCLIB-RESOLVE] Erro na busca:', err);
-        }
-        return null;
-    }
+    const trackFromInput=input=>({title:input.value.trim(),artist:input.dataset.artist||'',provider:input.dataset.provider||'',provider_id:input.dataset.providerId||'',lrclib_id:input.dataset.lrclibId||null,album:input.dataset.album||null,duration:Number(input.dataset.duration)||null});
 
     searchForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         track('recommend_started');
         
-        let song = songInput.value.trim();
-        if (!song) return;
-
-        // Se o usuário digitou livremente (sem escolher sugestão), tenta resolver
-        // o artista via LRCLIB antes de montar o payload do /recommend.
-        const lrclibIdAtual = songLrclibIdInput ? songLrclibIdInput.value : '';
-        if (!lrclibIdAtual) {
-            const resolvido = await resolverArtistaViaLrclib(song);
-            if (resolvido) {
-                song = resolvido.trackName || song;
-                artistaResolvido = resolvido.artistName || '';
-                if (songLrclibIdInput) songLrclibIdInput.value = String(resolvido.id || '');
-                console.log('[LRCLIB-RESOLVE] Artista preenchido automaticamente:', artistaResolvido);
-            } else {
-                // Último recurso: tenta dividir o texto digitado por separadores comuns
-                const { musica, artista } = extrairArtistaDoTexto(song);
-                song = musica;
-                artistaResolvido = artista;
-                if (artista) console.log('[LRCLIB-RESOLVE] Artista extraído do texto:', artista);
-            }
-        }
-
-        const artist = artistaResolvido;
+        const primary=trackFromInput(songInput);
+        if (!primary.title) return;
 
         // Agrupa as músicas extras (até 3 no total)
         const extraSongs = [];
         if (extraSongInputs) {
             for (const input of extraSongInputs) {
                 const val = input.value.trim();
-                if (val) extraSongs.push({title:val,artist:input.dataset.artist||'',lrclib_id:input.dataset.lrclibId||null,album:input.dataset.album||null,duration:Number(input.dataset.duration)||null});
+                if (val) extraSongs.push(trackFromInput(input));
             }
         }
 
         const payload={
-                nome_musica: song,
-                artista: artist,
+                nome_musica: primary.title,
+                artista: primary.artist,
                 lang: lang,
-                lrclib_id: songLrclibIdInput ? songLrclibIdInput.value : '',
-                album:songInput.dataset.album||null,
-                duration:Number(songInput.dataset.duration)||null,
+                provider:primary.provider,
+                provider_id:primary.provider_id,
+                lrclib_id:primary.lrclib_id,
+                album:primary.album,
+                duration:primary.duration,
                 musicas_extras: extraSongs
             };
         async function requestRecommendation(body) {
@@ -895,6 +850,17 @@ document.addEventListener('DOMContentLoaded', () => {
             body: JSON.stringify(body)
           });
           const data=await response.json();
+          if(response.status===422&&data.error?.code==='SONG_IDENTITY_REQUIRED'){
+            const unresolved=data.error.unresolved_songs?.[0],dialog=document.getElementById('identity-dialog'),container=document.getElementById('identity-candidates');
+            container.innerHTML='';
+            for(const candidate of unresolved?.candidates||[]){const button=document.createElement('button');button.type='button';button.className='identity-candidate';button.innerHTML=`<strong>${escapeHtml(candidate.title)}</strong><span>${escapeHtml(candidate.artist)} · ${escapeHtml(candidate.album||'')}</span>`;button.addEventListener('click',()=>dialog.close(candidate.provider+':'+candidate.provider_id));container.appendChild(button);}
+            const choice=await new Promise(resolve=>{dialog.addEventListener('close',()=>resolve(dialog.returnValue),{once:true});dialog.showModal();});
+            if(!choice||choice==='cancel')return {cancelled:true};
+            const candidate=(unresolved.candidates||[]).find(item=>item.provider+':'+item.provider_id===choice);if(!candidate)return {cancelled:true};
+            if(unresolved.index===0){Object.assign(body,{nome_musica:candidate.title,artista:candidate.artist,provider:candidate.provider,provider_id:candidate.provider_id,lrclib_id:candidate.lrclib_id,album:candidate.album,duration:candidate.duration});}
+            else body.musicas_extras[unresolved.index-1]={...candidate};
+            return requestRecommendation(body);
+          }
           if(response.status===422&&data.error?.code==='LYRICS_REQUIRED'){
             track('lyrics_required');
             const dialog=document.getElementById('lyrics-dialog'),fields=document.getElementById('lyrics-fields');

@@ -1,0 +1,3 @@
+import {safeTrack,searchCanonicalTracks} from './_lib/song-identity.js';
+const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
+export async function onRequestGet({request,env}){const query=(new URL(request.url).searchParams.get('q')||'').trim();if(!query)return json({items:[]});try{return json({items:(await searchCanonicalTracks(env,query,crypto.randomUUID())).map(safeTrack)})}catch(error){const code=String(error?.message||error);return json({error:{code:code==='NOT_A_TRACK'?'NOT_A_TRACK':'SPOTIFY_LINK_UNAVAILABLE',message:code==='NOT_A_TRACK'?'The Spotify URL is not a track.':'This Spotify link cannot be verified right now.'}},422)}}

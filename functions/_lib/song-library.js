@@ -1,6 +1,6 @@
 import { normalizeMusicText } from './music-match.js';
 
-export const SONG_PROFILE_SCHEMA_VERSION='song-v1';
+export const SONG_PROFILE_SCHEMA_VERSION='song-v2-identity';
 export function isD1WriteQuotaError(error) {
   const message=String(error?.message||error||'').toLowerCase();
   return /d1/.test(message)&&/(quota|limit|too many writes|row writes|exceeded)/.test(message);
@@ -13,7 +13,13 @@ export const MIN_USER_LYRICS=80;
 export const MAX_LYRICS=20000;
 const encoder=new TextEncoder();
 export async function sha256(value) { const bytes=await crypto.subtle.digest('SHA-256',encoder.encode(String(value))); return [...new Uint8Array(bytes)].map(x=>x.toString(16).padStart(2,'0')).join(''); }
-export function canonicalSongKey(song) { return song.lrclib_id?`lrclib:${song.lrclib_id}`:`text:${normalizeMusicText(song.title)}|${normalizeMusicText(song.artist)}`; }
+export function canonicalSongKey(song) {
+  if(song.provider==='spotify'&&song.provider_id)return `spotify:${song.provider_id}`;
+  if((song.provider==='lrclib'&&song.provider_id)||song.lrclib_id)return `lrclib:${song.provider_id||song.lrclib_id}`;
+  const title=normalizeMusicText(song.title),artist=normalizeMusicText(song.artist);
+  if(!title||!artist||song.identity_confirmed!==true)throw new Error('SONG_IDENTITY_REQUIRED');
+  return `text:${title}|${artist}`;
+}
 export function validateUserLyrics(value) { const lyrics=typeof value==='string'?value.trim():''; if(lyrics.length<MIN_USER_LYRICS||lyrics.length>MAX_LYRICS)throw new Error('INVALID_LYRICS'); return lyrics; }
 export async function findSong(db,song) {
   if(!db)return null;
