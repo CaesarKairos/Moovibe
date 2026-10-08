@@ -12,7 +12,7 @@ const profileSchema={type:'object',properties:{moods:{type:'array',items:{type:'
 const curationSchema={type:'object',properties:{primary_tmdb_id:{type:'integer'},alternative_tmdb_ids:{type:'array',items:{type:'integer'},minItems:2,maxItems:2},justification:{type:'string'},vibe_title:{type:'string'},tags:{type:'array',items:{type:'string'},minItems:4,maxItems:4},alternative_calls:{type:'array',items:{type:'string'},minItems:2,maxItems:2}},required:['primary_tmdb_id','alternative_tmdb_ids','justification','vibe_title','tags','alternative_calls']};
 export const D1_ID_CHUNK_SIZE=90;
 
-async function loadMovies(db,ids) {
+export async function loadMovies(db,ids) {
   if(!ids.length)return[];
   const rows=[];
   for(let offset=0;offset<ids.length;offset+=D1_ID_CHUNK_SIZE) {

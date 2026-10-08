@@ -1,4 +1,5 @@
-import { BETA_COPY, IDENTITY_COPY, LANGUAGES, PAGE_METADATA, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
+import { BETA_COPY, IDENTITY_COPY, LANGUAGES, PAGE_METADATA, TRACK_SELECTION_COPY, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
+import { clearTrackSelection, getTrackSelection, resetTrackField, setTrackSelection } from './track-selection.js';
 /**
  * Moovibe - Frontend Logic
  * Handles SPA navigation, loading states, and dynamic content injection.
@@ -87,6 +88,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if(songInput) songInput.placeholder=identityCopy[0];
         const identityTitle=document.getElementById('identity-title'),identityInstruction=document.getElementById('identity-instruction'),identityCancel=document.getElementById('identity-cancel');
         if(identityTitle)identityTitle.textContent=identityCopy[1];if(identityInstruction)identityInstruction.textContent=identityCopy[2];if(identityCancel)identityCancel.textContent=identityCopy[3];
+        const selectionCopy=TRACK_SELECTION_COPY[lang]||TRACK_SELECTION_COPY.en;
+        document.querySelectorAll('input.identity-confirmed').forEach(input=>{const selected=getTrackSelection(input);if(selected)setTrackSelection(input,selected,{changeLabel:selectionCopy[0],confirmedLabel:selectionCopy[1]});});
     }
 
     const languagePicker=document.querySelector('.language-picker');
@@ -108,10 +111,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const searchForm = document.getElementById('search-form');
     const songInput = document.getElementById('song-title');
     const songSuggestions = document.getElementById('song-suggestions');
-    const songLrclibIdInput = document.getElementById('song-lrclib-id');
-    // Estado em memória do artista resolvido (o input #artist-name foi removido
-    // na unificação do campo de busca; o artista agora é guardado aqui).
-    let artistaResolvido = '';
     const btnSearchAgain = document.getElementById('btn-search-again');
     const tagButtons = document.querySelectorAll('.tag-btn');
     const logoEl = document.querySelector('.nav-logo h1');
@@ -196,12 +195,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function startLoadingSequence(fetchPromise) {
+        stopLoading();
+        const run=loadingRun;
         switchView(viewLoading);
         const loadingMessages = getLoadingMessages();
         let messageIndex = 0;
         loadingText.textContent = loadingMessages[0];
         
-        const messageInterval = setInterval(() => {
+        loadingInterval = setInterval(() => {
             messageIndex++;
             if (messageIndex < loadingMessages.length) {
                 loadingText.textContent = loadingMessages[messageIndex];
@@ -210,9 +211,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         fetchPromise
             .then(data => {
-                clearInterval(messageInterval);
+                if(run!==loadingRun)return;
+                stopLoading();
                 if (data?.cancelled) {
-                    switchView(viewHome);
+                    returnHomePreservingSearch();
                 } else if (data && data.error && data.error.message) {
                     showError(data.error.message);
                 } else {
@@ -225,16 +227,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             })
             .catch(error => {
-                clearInterval(messageInterval);
+                if(run!==loadingRun)return;
+                stopLoading();
                 console.error('Erro na requisição:', error);
                 showError(i18n[lang]?.error_message || 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.');
             });
     }
 
+    let loadingRun = 0;
+    let loadingInterval = null;
+    function stopLoading(){loadingRun++;if(loadingInterval){clearInterval(loadingInterval);loadingInterval=null;}}
+    function pauseLoadingForDialog(){if(loadingInterval){clearInterval(loadingInterval);loadingInterval=null;}switchView(viewHome);}
+    function resumeLoadingAfterDialog(){switchView(viewLoading);loadingText.textContent=getLoadingMessages()[1];}
+
     function resetSearch() {
-        if (songInput) songInput.value = '';
-        artistaResolvido = '';
-        if (songLrclibIdInput) songLrclibIdInput.value = '';
+        stopLoading();
+        if (songInput) resetTrackField(songInput);
         if (songSuggestions) {
             songSuggestions.classList.remove('active');
             songSuggestions.innerHTML = '';
@@ -244,6 +252,7 @@ document.addEventListener('DOMContentLoaded', () => {
         extraSongCount = 0;
         extraSongInputs = [];
         if (btnAddSong) btnAddSong.disabled = false;
+        document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close('cancel'));
     }
 
     function addExtraSongField() {
@@ -267,6 +276,7 @@ document.addEventListener('DOMContentLoaded', () => {
         removeIcon.setAttribute('aria-hidden', 'true');
         removeBtn.appendChild(removeIcon);
         removeBtn.addEventListener('click', () => {
+            resetTrackField(input);
             row.remove();
             extraSongCount--;
             extraSongInputs = extraSongInputs.filter(el => el !== input);
@@ -293,10 +303,12 @@ document.addEventListener('DOMContentLoaded', () => {
         btnAddSong.addEventListener('click', addExtraSongField);
     }
 
-    function goHome() {
+    function startNewSearch() {
         resetSearch();
         switchView(viewHome, true);
     }
+
+    function returnHomePreservingSearch(){stopLoading();switchView(viewHome,true);}
 
     // --- Autocomplete de identidade musical (Spotify com fallback LRCLIB) ---
     // Replica a interação de barra de busca de app de streaming: o usuário
@@ -321,10 +333,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         function selectSuggestion(item) {
             if (!item) return;
-            input.value = item.title || '';
-            input.dataset.provider=item.provider||'';input.dataset.providerId=String(item.provider_id||'');input.dataset.artist=item.artist||'';input.dataset.lrclibId=String(item.lrclib_id||'');input.dataset.album=item.album||'';input.dataset.duration=String(item.duration||'');
-            input.classList.add('identity-confirmed');input.setAttribute('aria-label',`${item.title} — ${item.artist} · ${item.album||''}`);
-            let summary=input.parentElement.querySelector('.identity-summary');if(!summary){summary=document.createElement('div');summary.className='identity-summary';input.insertAdjacentElement('afterend',summary);}summary.innerHTML=`<strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.artist)} · ${escapeHtml(item.album||'')}</span>`;
+            const selectionCopy=TRACK_SELECTION_COPY[lang]||TRACK_SELECTION_COPY.en;
+            setTrackSelection(input,item,{changeLabel:selectionCopy[0],confirmedLabel:selectionCopy[1],onChange:()=>closeSuggestions()});
             if (onSelect) onSelect(item);
             closeSuggestions();
         }
@@ -402,18 +412,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const requestId = autocompleteRequest;
             clearTimeout(autocompleteTimer);
             closeSuggestions();
-            delete input.dataset.artist;
-            delete input.dataset.provider;
-            delete input.dataset.providerId;
-            delete input.dataset.lrclibId;
-            delete input.dataset.album;
-            delete input.dataset.duration;
-            input.classList.remove('identity-confirmed');input.removeAttribute('aria-label');
-            input.setCustomValidity('');input.parentElement.querySelector('.identity-summary')?.remove();
-            if (input === songInput) {
-                artistaResolvido = '';
-                if (songLrclibIdInput) songLrclibIdInput.value = '';
-            }
+            clearTrackSelection(input,{preserveText:true});
             // Só dispara a partir de 2 caracteres, pra não bombardear o endpoint
             if (termo.length < 2) return;
             autocompleteTimer = setTimeout(() => {
@@ -454,10 +453,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Configura o autocomplete do campo principal
     if (songInput && songSuggestions) {
-        setupAutocomplete(songInput, songSuggestions, (item) => {
-            artistaResolvido = item.artist || '';
-            if (songLrclibIdInput) songLrclibIdInput.value = String(item.lrclib_id || '');
-        });
+        setupAutocomplete(songInput, songSuggestions);
     }
 
     async function loadHallOfFame() {
@@ -544,7 +540,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (logoEl) {
         logoEl.addEventListener('click', () => {
-            goHome();
+            startNewSearch();
         });
         logoEl.style.cursor = 'pointer';
     }
@@ -813,21 +809,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Event Listeners ---
 
-    const trackFromInput=input=>({title:input.value.trim(),artist:input.dataset.artist||'',provider:input.dataset.provider||'',provider_id:input.dataset.providerId||'',lrclib_id:input.dataset.lrclibId||null,album:input.dataset.album||null,duration:Number(input.dataset.duration)||null});
-
     searchForm.addEventListener('submit', async (e) => {
         e.preventDefault();
-        track('recommend_started');
-        
-        const primary=trackFromInput(songInput);
-        if (!primary.title) return;
+        const primary=getTrackSelection(songInput);
+        if (!primary) { songInput.setCustomValidity((TRACK_SELECTION_COPY[lang]||TRACK_SELECTION_COPY.en)[2]); songInput.reportValidity(); songInput.focus(); return; }
 
         // Agrupa as músicas extras (até 3 no total)
         const extraSongs = [];
         if (extraSongInputs) {
             for (const input of extraSongInputs) {
-                const val = input.value.trim();
-                if (val) extraSongs.push(trackFromInput(input));
+                if(!input.value.trim())continue;
+                const selected=getTrackSelection(input);
+                if(!selected){input.setCustomValidity((TRACK_SELECTION_COPY[lang]||TRACK_SELECTION_COPY.en)[2]);input.reportValidity();input.focus();return;}
+                extraSongs.push(selected);
             }
         }
 
@@ -852,6 +846,7 @@ document.addEventListener('DOMContentLoaded', () => {
           });
           const data=await response.json();
           if(response.status===422&&data.error?.code==='SONG_IDENTITY_REQUIRED'){
+            pauseLoadingForDialog();
             const unresolved=data.error.unresolved_songs?.[0],dialog=document.getElementById('identity-dialog'),container=document.getElementById('identity-candidates');
             container.innerHTML='';
             for(const candidate of unresolved?.candidates||[]){const button=document.createElement('button');button.type='button';button.className='identity-candidate';button.innerHTML=`<strong>${escapeHtml(candidate.title)}</strong><span>${escapeHtml(candidate.artist)} · ${escapeHtml(candidate.album||'')}</span>`;button.addEventListener('click',()=>dialog.close(candidate.provider+':'+candidate.provider_id));container.appendChild(button);}
@@ -860,36 +855,35 @@ document.addEventListener('DOMContentLoaded', () => {
             const candidate=(unresolved.candidates||[]).find(item=>item.provider+':'+item.provider_id===choice);if(!candidate)return {cancelled:true};
             if(unresolved.index===0){Object.assign(body,{nome_musica:candidate.title,artista:candidate.artist,provider:candidate.provider,provider_id:candidate.provider_id,lrclib_id:candidate.lrclib_id,album:candidate.album,duration:candidate.duration});}
             else body.musicas_extras[unresolved.index-1]={...candidate};
-            return requestRecommendation(body);
+            resumeLoadingAfterDialog(); return requestRecommendation(body);
           }
           if(response.status===422&&data.error?.code==='LYRICS_REQUIRED'){
             track('lyrics_required');
+            pauseLoadingForDialog();
             const dialog=document.getElementById('lyrics-dialog'),fields=document.getElementById('lyrics-fields');
             fields.innerHTML=data.error.missing_songs.map((missing,index)=>`<label>${missing.title} — ${missing.artist||''}<textarea required minlength="80" maxlength="20000" data-song-key="${missing.song_key.replace(/"/g,'&quot;')}"></textarea></label>`).join('');
             const accepted=await new Promise(resolve=>{dialog.addEventListener('close',()=>resolve(dialog.returnValue==='default'),{once:true});dialog.showModal();});
             if(!accepted){track('lyrics_cancelled');return {cancelled:true};}
             body.user_lyrics=Object.fromEntries([...fields.querySelectorAll('textarea')].map(x=>[x.dataset.songKey,x.value])); track('lyrics_submitted');
-            return requestRecommendation(body);
+            resumeLoadingAfterDialog(); return requestRecommendation(body);
           }
           if(!response.ok)throw new Error(data.error?.message||`HTTP ${response.status}`);
           track('recommend_success'); return data;
         }
-        const fetchPromise=requestRecommendation(payload);
-
-        startLoadingSequence(fetchPromise);
+        track('recommend_started');
+        startLoadingSequence(requestRecommendation(payload));
     });
 
-    btnSearchAgain.addEventListener('click', goHome);
+    btnSearchAgain.addEventListener('click', startNewSearch);
 
     if (btnRetry) {
-        btnRetry.addEventListener('click', goHome);
+        btnRetry.addEventListener('click', startNewSearch);
     }
 
     tagButtons.forEach(btn => {
         btn.addEventListener('click', (e) => {
             songInput.value = e.target.textContent;
-            artistaResolvido = '';
-            if (songLrclibIdInput) songLrclibIdInput.value = '';
+            clearTrackSelection(songInput,{preserveText:true});
             if (songSuggestions) {
                 songSuggestions.classList.remove('active');
                 songSuggestions.innerHTML = '';

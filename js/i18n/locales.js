@@ -42,3 +42,7 @@ de:['Song eingeben oder Spotify-Link einfügen','WELCHEN SONG MEINST DU?','Wähl
 fr:['Saisissez une chanson ou collez un lien Spotify','QUELLE CHANSON VOULEZ-VOUS DIRE ?','Choisissez l’enregistrement exact avant l’analyse.','Aucune','Impossible de vérifier ce lien. Recherchez avec le titre de la chanson.','Ce lien Spotify ne correspond pas à une chanson.'],
 ja:['曲名を入力するか Spotify リンクを貼り付ける','どの曲ですか？','分析前に正確な音源を選んでください。','どれでもない','現在このリンクを確認できません。曲名で検索してください。','この Spotify リンクは曲ではありません。']
 });
+
+export const TRACK_SELECTION_COPY=Object.freeze({
+en:['CHANGE','Confirmed song','Choose a song from the suggestions.'],'pt-BR':['TROCAR','Música confirmada','Escolha uma música nas sugestões.'],'zh-CN':['更换','已确认歌曲','请从建议中选择歌曲。'],ru:['ИЗМЕНИТЬ','Песня подтверждена','Выберите песню из подсказок.'],es:['CAMBIAR','Canción confirmada','Elige una canción de las sugerencias.'],de:['ÄNDERN','Song bestätigt','Wähle einen Song aus den Vorschlägen.'],fr:['CHANGER','Chanson confirmée','Choisissez une chanson parmi les suggestions.'],ja:['変更','確認済みの曲','候補から曲を選んでください。']
+});

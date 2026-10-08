@@ -8,7 +8,7 @@ vi.mock('../functions/_lib/gemini.js',()=>({
   GeminiClient:class{constructor(_key?:string){}async generateJson(...args:any[]){return generateJson(...args);}async embed(...args:any[]){return embed(...args);}}
 }));
 
-import {D1_ID_CHUNK_SIZE,hydrateMoviePresentation,recommendFromCatalog,selectBestPoster,selectBestStills} from '../functions/_lib/catalog.js';
+import {D1_ID_CHUNK_SIZE,hydrateMoviePresentation,loadMovies,recommendFromCatalog,selectBestPoster,selectBestStills} from '../functions/_lib/catalog.js';
 import {persistLyricsBestEffort} from '../functions/_lib/song-library.js';
 
 class Statement {
@@ -55,6 +55,12 @@ beforeEach(()=>{
 });
 
 describe('hybrid recommendation flow',()=>{
+  it('requires migration 0005 for compact catalog columns',async()=>{
+    const legacy=new Database(':memory:');
+    for(const file of fs.readdirSync('migrations').filter(x=>x.endsWith('.sql')&&x<'0005_catalog_efficiency.sql').sort())legacy.exec(fs.readFileSync(`migrations/${file}`,'utf8'));
+    const d1={prepare:(sql:string)=>new Statement(legacy,sql)};
+    await expect(loadMovies(d1,[1])).rejects.toThrow(/no such column: m\.genres_json/);
+  });
   it('retains in-memory lyrics when D1 rejects their persistence',async()=>{const db:any={prepare:()=>({bind(){return this;},async run(){throw new Error('D1_ERROR: row writes quota exceeded');}})};expect(await persistLyricsBestEffort(db,{title:'A',artist:'X',provider:'spotify',provider_id:'track-id'},'x'.repeat(100),'user')).toBeNull();});
   it('keeps recommending when song profile persistence hits the D1 write quota',async()=>{
     const {env}=makeEnv(db);const prepare=env.MOOVIBE_LIBRARY.prepare;

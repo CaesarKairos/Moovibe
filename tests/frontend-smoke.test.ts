@@ -69,8 +69,15 @@ describe('public frontend boundary',()=>{
     expect(source).toContain("languagePicker?.addEventListener('keydown'");
     expect(source).toContain("navLinks.forEach");
     expect(source).toContain("searchForm.addEventListener('submit'");
+    expect(source).toContain('setTrackSelection(input,item');
+    expect(source).toContain('const primary=getTrackSelection(songInput)');
+    expect(source).toContain("btnRetry.addEventListener('click', startNewSearch)");
+    expect(source).toContain("btnSearchAgain.addEventListener('click', startNewSearch)");
+    expect(source).toMatch(/e\.preventDefault\(\);\s*selectSuggestion\(autocompleteItems\[autocompleteIndex\]\)/);
+    expect(source.indexOf('setTrackSelection(input,item')).toBeLessThan(source.indexOf("track('recommend_started')"));
     expect(source).toContain("fetch('/music-search?q='");
-    for(const field of ['provider','providerId','artist','album','duration','lrclibId'])expect(source).toContain(`dataset.${field}`);
+    const selectionSource=await readFile(path.join(root,'js','track-selection.js'),'utf8');
+    for(const field of ['provider','providerId','artist','album','duration','lrclibId'])expect(selectionSource).toContain(`dataset.${field}`);
     expect(source).toContain("data.error?.code==='SONG_IDENTITY_REQUIRED'");
     expect(source).toContain("errorData.error?.code==='NOT_A_TRACK'?copy[5]:copy[4]");
     expect(source).not.toContain('resolverArtistaViaLrclib');
