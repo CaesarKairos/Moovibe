@@ -706,6 +706,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     img.src = stills[index];
                     polaroid.style.display = '';
                 } else {
+                    img.removeAttribute('src');
                     polaroid.style.display = 'none';
                 }
             }

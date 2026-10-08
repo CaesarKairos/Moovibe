@@ -8,7 +8,7 @@ vi.mock('../functions/_lib/gemini.js',()=>({
   GeminiClient:class{constructor(_key?:string){}async generateJson(...args:any[]){return generateJson(...args);}async embed(...args:any[]){return embed(...args);}}
 }));
 
-import {D1_ID_CHUNK_SIZE,hydrateMoviePresentation,recommendFromCatalog} from '../functions/_lib/catalog.js';
+import {D1_ID_CHUNK_SIZE,hydrateMoviePresentation,recommendFromCatalog,selectBestPoster,selectBestStills} from '../functions/_lib/catalog.js';
 import {persistLyricsBestEffort} from '../functions/_lib/song-library.js';
 
 class Statement {
@@ -179,5 +179,45 @@ describe('hybrid recommendation flow',()=>{
     expect(second.curation.primary_tmdb_id).toBe(chosen[0]);
     expect(second.primary.tmdb_id).toBe(chosen[0]);
     expect(second.alternatives.map((a:any)=>a.tmdb_id)).toEqual([chosen[1],chosen[2]]);
+  });
+  it('hydrates stills only for the primary selected movie',async()=>{
+    const {env}=makeEnv(db);env.TMDB_API_KEY='tmdb';
+    const cache=new Map<string,string>();env.MOOVIBE_DB={get:async(k:string)=>cache.has(k)?JSON.parse(cache.get(k)!):null,put:async(k:string,v:string)=>cache.set(k,v)};
+    generateJson.mockImplementation(async({schema}:any)=>schema?.properties?.primary_tmdb_id?{model:'m',data:{primary_tmdb_id:1,alternative_tmdb_ids:[2,3],justification:'fit',vibe_title:'V',tags:['a','b','c','d'],alternative_calls:['x','y']}}:validProfile());
+    const fetchMock=vi.fn(async(input:RequestInfo|URL)=>{
+      const url=new URL(String(input));
+      if(url.pathname.endsWith('/images'))return new Response(JSON.stringify({posters:[],backdrops:[{file_path:'/still.jpg',width:1920,height:1080}]}));
+      return new Response(JSON.stringify({title:'Film',overview:'Story',credits:{crew:[]},external_ids:{},images:{posters:[{file_path:'/poster.jpg',iso_639_1:'en'}]}}));
+    });vi.stubGlobal('fetch',fetchMock);
+    const result=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'en'});
+    expect(result.primary.stills).toEqual(['/still.jpg']);expect(result.alternatives.every((movie:any)=>movie.stills.length===0)).toBe(true);
+    const urls=fetchMock.mock.calls.map(call=>new URL(String(call[0])));
+    expect(urls.filter(url=>url.pathname.endsWith('/images'))).toHaveLength(1);
+    expect(urls.filter(url=>url.searchParams.get('append_to_response')?.includes('images'))).toHaveLength(2);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('TMDb image policy',()=>{
+  const poster=(file_path:string,iso_639_1:string|null,vote_average=5,vote_count=1,width=1000,height=1500)=>({file_path,iso_639_1,vote_average,vote_count,width,height});
+  it('prefers the original Japanese poster over PT, EN and language-neutral posters',()=>expect(selectBestPoster([poster('/pt','pt',9),poster('/en','en',9),poster('/ja','ja',1),poster('/null',null,10)],{originalLanguage:'ja',interfaceLanguage:'pt-BR'})?.file_path).toBe('/ja'));
+  it('prefers original Portuguese when the interface is English',()=>expect(selectBestPoster([poster('/en','en',10),poster('/pt','pt',1)],{originalLanguage:'pt',interfaceLanguage:'en-US'})?.file_path).toBe('/pt'));
+  it('uses a language-neutral poster before the interface language',()=>expect(selectBestPoster([poster('/en','en',10),poster('/null',null,1)],{originalLanguage:'ja',interfaceLanguage:'en'})?.file_path).toBe('/null'));
+  it('allows every backdrop language and returns the best three distinct images',()=>{
+    const images=[poster('/null',null,5,1,2000,1000),poster('/en','en',8,2,1900,1000),poster('/ja','ja',7,2,1800,1000),poster('/pt','pt',6,2,1700,1000),poster('/en','en',10,99,100,100),poster('/x','fr',1,1,50,50)];
+    expect(selectBestStills(images).map(x=>x.file_path)).toEqual(['/null','/en','/ja']);
+    expect(selectBestStills(images.slice(0,2))).toHaveLength(2);expect(selectBestStills([])).toEqual([]);
+  });
+  it('shares the image cache across locales and does not repeat the images request',async()=>{
+    const cache=new Map<string,string>();const env:any={TMDB_API_KEY:'x',MOOVIBE_DB:{get:async(k:string)=>cache.has(k)?JSON.parse(cache.get(k)!):null,put:async(k:string,v:string)=>cache.set(k,v)}};
+    const fetchMock=vi.fn(async(input:RequestInfo|URL)=>String(input).includes('/images')?new Response(JSON.stringify({posters:[poster('/ja','ja')],backdrops:[poster('/b',null)]})):new Response(JSON.stringify({credits:{crew:[]},external_ids:{}})));vi.stubGlobal('fetch',fetchMock);
+    const movie:any={tmdb_id:7,original_language:'ja',poster_path:'/old-p',backdrop_path:'/old-b'};
+    await hydrateMoviePresentation(env,movie,'pt-BR',{includeStills:true});await hydrateMoviePresentation(env,movie,'ja',{includeStills:true});
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).includes('/images'))).toHaveLength(1);vi.unstubAllGlobals();
+  });
+  it('falls back to catalog images when the images endpoint fails',async()=>{
+    const env:any={TMDB_API_KEY:'x'};const fetchMock=vi.fn(async(input:RequestInfo|URL)=>String(input).includes('/images')?new Response('down',{status:500}):new Response(JSON.stringify({credits:{crew:[]},external_ids:{}})));vi.stubGlobal('fetch',fetchMock);
+    const result:any=await hydrateMoviePresentation(env,{tmdb_id:8,poster_path:'/old-p',backdrop_path:'/old-b'},'en',{includeStills:true});
+    expect(result.poster_path).toBe('/old-p');expect(result.stills).toEqual(['/old-b']);vi.unstubAllGlobals();
   });
 });

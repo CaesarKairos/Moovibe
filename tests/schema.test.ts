@@ -31,4 +31,7 @@ describe('D1 schema idempotency',()=>{
   });
 });
 
-describe('frontend adapter',()=>it('maps catalog facts to the legacy response fields',()=>{const out=movieToLegacy({tmdb_id:10,title:'Film',original_title:'Original',release_year:1999,overview:'Synopsis',poster_path:'/p.jpg',backdrop_path:'/b.jpg',director:'Director',imdb_id:'tt1'});expect(out).toMatchObject({id_tmdb:10,titulo_pt:'Film',titulo_original:'Original',ano:1999,sinopse:'Synopsis',diretor:'Director',imdb_id:'tt1'});expect(out.poster).toContain('/p.jpg');}));
+describe('frontend adapter',()=>{
+  it('maps catalog facts to the legacy response fields',()=>{const out=movieToLegacy({tmdb_id:10,title:'Film',original_title:'Original',release_year:1999,overview:'Synopsis',poster_path:'/p.jpg',backdrop_path:'/b.jpg',director:'Director',imdb_id:'tt1'});expect(out).toMatchObject({id_tmdb:10,titulo_pt:'Film',titulo_original:'Original',ano:1999,sinopse:'Synopsis',diretor:'Director',imdb_id:'tt1'});expect(out.poster).toContain('/p.jpg');});
+  it('preserves explicit distinct stills and never substitutes the poster',()=>{const out=movieToLegacy({tmdb_id:10,title:'Film',poster_path:'/p.jpg',stills:['/a.jpg','/b.jpg']});expect(out.cenas).toEqual(['https://image.tmdb.org/t/p/original/a.jpg','https://image.tmdb.org/t/p/original/b.jpg']);expect(movieToLegacy({tmdb_id:11,title:'No still',poster_path:'/p.jpg'}).cenas).toEqual([]);});
+});

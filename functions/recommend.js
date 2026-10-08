@@ -1199,11 +1199,6 @@ export async function onRequest(context) {
       quotes = [dadosFilme.tagline, quotes[1], quotes[2]];
     }
     quotes = quotes.slice(0, 3);
-    if (dadosFilme && (!dadosFilme.cenas || dadosFilme.cenas.length === 0)) {
-      const poster = dadosFilme.poster;
-      if (poster) dadosFilme.cenas = [poster, poster, poster];
-    }
-
     // Busca capa e preview de forma independente (música principal)
     const capaDados = await buscarCapaMusica(nome_musica, artista, songInputs[0]);
     const coverUrl = capaDados?.coverUrl || '';

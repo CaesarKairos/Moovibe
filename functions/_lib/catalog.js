@@ -160,26 +160,71 @@ export async function recommendFromCatalog({env,songs,lyrics,context,lang='en'})
   }
   const byId=new Map(slate.map(m=>[Number(m.tmdb_id),m]));
   const selected=[byId.get(curation.primary_tmdb_id),...curation.alternative_tmdb_ids.map(id=>byId.get(id))].filter(Boolean);
-  const hydrated=await Promise.all(selected.map(movie=>hydrateMoviePresentation(env,movie,lang)));
+  const hydrated=await Promise.all(selected.map((movie,index)=>hydrateMoviePresentation(env,movie,lang,{includeStills:index===0})));
   return {request_id:requestId,profile:analysis.data,curation,primary:hydrated[0],alternatives:hydrated.slice(1),candidate_ids:slate.map(x=>Number(x.tmdb_id)),candidate_count:slate.length,diagnostics};
 }
 
-export async function hydrateMoviePresentation(env,movie,lang='en') {
+const IMAGE_CACHE_TTL=60*60*24*14;
+const normalizeLanguage=value=>String(value||'').trim().toLowerCase().split('-')[0]||null;
+const validImages=images=>(Array.isArray(images)?images:[]).filter(image=>image?.file_path);
+const imageQuality=(a,b)=>Number(b.vote_average||0)-Number(a.vote_average||0)||Number(b.vote_count||0)-Number(a.vote_count||0)||(Number(b.width||0)*Number(b.height||0))-(Number(a.width||0)*Number(a.height||0))||String(a.file_path).localeCompare(String(b.file_path));
+
+export function selectBestPoster(posters,{originalLanguage,interfaceLanguage}={}) {
+  const original=normalizeLanguage(originalLanguage),ui=normalizeLanguage(interfaceLanguage);
+  const priority=language=>language===original&&original?0:language==null?1:language===ui&&ui?2:language==='en'?3:4;
+  return validImages(posters).sort((a,b)=>priority(normalizeLanguage(a.iso_639_1))-priority(normalizeLanguage(b.iso_639_1))||imageQuality(a,b))[0]||null;
+}
+
+export function selectBestStills(backdrops,limit=3) {
+  const stillQuality=(a,b)=>(Number(b.width||0)*Number(b.height||0))-(Number(a.width||0)*Number(a.height||0))||imageQuality(a,b);
+  const byPath=new Map();
+  for(const image of validImages(backdrops))if(!byPath.has(image.file_path)||stillQuality(image,byPath.get(image.file_path))<0)byPath.set(image.file_path,image);
+  const unique=[...byPath.values()];
+  return unique.sort(stillQuality).slice(0,limit);
+}
+
+const readCache=async(env,key,tmdbId)=>{try{return await env.MOOVIBE_DB?.get(key,'json')||null;}catch{console.warn(JSON.stringify({event:'hydration_cache_read_failed',tmdb_id:tmdbId,key}));return null;}};
+const writeCache=async(env,key,value,tmdbId)=>{try{await env.MOOVIBE_DB?.put(key,JSON.stringify(value),{expirationTtl:IMAGE_CACHE_TTL});}catch{console.warn(JSON.stringify({event:'hydration_cache_write_failed',tmdb_id:tmdbId,key}));}};
+const posterLanguages=(movie,lang)=>[normalizeLanguage(movie.original_language),'null','en','pt','zh','ru','es','de','fr','ja',normalizeLanguage(lang)].filter(Boolean).filter((value,index,list)=>list.indexOf(value)===index).join(',');
+
+export async function hydrateMoviePresentation(env,movie,lang='en',{includeStills=false}={}) {
   if(!movie?.tmdb_id)return movie;
-  const key=`movie-presentation:${movie.tmdb_id}:${lang}`;
-  try { const cached=await env.MOOVIBE_DB?.get(key,'json'); if(cached)return {...movie,...cached}; } catch(error) { console.warn(JSON.stringify({event:'hydration_cache_read_failed',tmdb_id:movie.tmdb_id})); }
-  if(!env.TMDB_API_KEY)return movie;
-  try {
+  const metadataKey=`movie-presentation:${movie.tmdb_id}:${lang}`,imagesKey=`movie-images:${movie.tmdb_id}`;
+  let [presentation,images]=await Promise.all([readCache(env,metadataKey,movie.tmdb_id),readCache(env,imagesKey,movie.tmdb_id)]);
+  if(!env.TMDB_API_KEY)return {...movie,...presentation,...images,stills:includeStills?(images?.stills||[]):[]};
+
+  if(!presentation)try {
     const url=new URL(`https://api.themoviedb.org/3/movie/${movie.tmdb_id}`);
-    url.searchParams.set('api_key',env.TMDB_API_KEY);url.searchParams.set('language',lang);url.searchParams.set('append_to_response','credits,external_ids,images');
+    url.searchParams.set('api_key',env.TMDB_API_KEY);url.searchParams.set('language',lang);
+    url.searchParams.set('append_to_response',includeStills?'credits,external_ids':'credits,external_ids,images');
+    if(!includeStills)url.searchParams.set('include_image_language',posterLanguages(movie,lang));
     const response=await fetch(url);if(!response.ok)throw new Error(`TMDB_${response.status}`);
     const data=await response.json();
-    const presentation={director:data.credits?.crew?.find(x=>x.job==='Director')?.name||movie.director||null,imdb_id:data.external_ids?.imdb_id||data.imdb_id||movie.imdb_id||null,runtime:data.runtime||movie.runtime||null,tagline:data.tagline||movie.tagline||'',poster_path:data.poster_path||movie.poster_path,backdrop_path:data.backdrop_path||movie.backdrop_path};
-    try{await env.MOOVIBE_DB?.put(key,JSON.stringify(presentation),{expirationTtl:60*60*24*14});}catch{console.warn(JSON.stringify({event:'hydration_cache_write_failed',tmdb_id:movie.tmdb_id}));}
-    return {...movie,...presentation};
-  } catch(error) { console.warn(JSON.stringify({event:'hydration_failed',tmdb_id:movie.tmdb_id,error_code:'TMDB_UNAVAILABLE'})); return movie; }
+    presentation={director:data.credits?.crew?.find(x=>x.job==='Director')?.name||movie.director||null,imdb_id:data.external_ids?.imdb_id||data.imdb_id||movie.imdb_id||null,runtime:data.runtime||movie.runtime||null,tagline:data.tagline||movie.tagline||'',title:data.title||movie.title,overview:data.overview||movie.overview};
+    await writeCache(env,metadataKey,presentation,movie.tmdb_id);
+    if(!images&&!includeStills) {
+      const poster=selectBestPoster(data.images?.posters,{originalLanguage:movie.original_language||data.original_language,interfaceLanguage:lang});
+      images={poster_path:poster?.file_path||movie.poster_path||null,stills:[],complete:false};
+      await writeCache(env,imagesKey,images,movie.tmdb_id);
+    }
+  } catch { console.warn(JSON.stringify({event:'hydration_failed',tmdb_id:movie.tmdb_id,error_code:'TMDB_UNAVAILABLE'})); }
+
+  if(includeStills&&(!images||!images.complete))try {
+    const url=new URL(`https://api.themoviedb.org/3/movie/${movie.tmdb_id}/images`);
+    url.searchParams.set('api_key',env.TMDB_API_KEY);
+    const response=await fetch(url);if(!response.ok)throw new Error(`TMDB_IMAGES_${response.status}`);
+    const data=await response.json();
+    const poster=selectBestPoster(data.posters,{originalLanguage:movie.original_language,interfaceLanguage:lang});
+    images={poster_path:poster?.file_path||images?.poster_path||movie.poster_path||null,stills:selectBestStills(data.backdrops).map(image=>image.file_path),complete:true};
+    await writeCache(env,imagesKey,images,movie.tmdb_id);
+  } catch { console.warn(JSON.stringify({event:'image_hydration_failed',tmdb_id:movie.tmdb_id,error_code:'TMDB_IMAGES_UNAVAILABLE'})); }
+
+  const stills=includeStills?(images?.stills?.length?images.stills:(movie.backdrop_path?[movie.backdrop_path]:[])):[];
+  return {...movie,...presentation,...images,poster_path:images?.poster_path||movie.poster_path,stills};
 }
 
 export function movieToLegacy(movie) {
-  return {id_tmdb:movie.tmdb_id,tmdb_url:`https://www.themoviedb.org/movie/${movie.tmdb_id}`,titulo_pt:movie.title,titulo_original:movie.original_title||movie.title,ano:movie.release_year||'',sinopse:movie.overview||'Sinopse indisponível.',poster:movie.poster_path?`https://image.tmdb.org/t/p/w780${movie.poster_path}`:null,diretor:movie.director||'Não encontrado',imdb_id:movie.imdb_id||null,cenas:movie.backdrop_path?[`https://image.tmdb.org/t/p/original${movie.backdrop_path}`]:[],tagline:movie.tagline||''};
+  const imageUrl=(path,size)=>path?(String(path).startsWith('http')?path:`https://image.tmdb.org/t/p/${size}${path}`):null;
+  const stills=Array.isArray(movie.stills)&&movie.stills.length?movie.stills:(movie.backdrop_path?[movie.backdrop_path]:[]);
+  return {id_tmdb:movie.tmdb_id,tmdb_url:`https://www.themoviedb.org/movie/${movie.tmdb_id}`,titulo_pt:movie.title,titulo_original:movie.original_title||movie.title,ano:movie.release_year||'',sinopse:movie.overview||'Sinopse indisponível.',poster:imageUrl(movie.poster_path,'w780'),diretor:movie.director||'Não encontrado',imdb_id:movie.imdb_id||null,cenas:[...new Set(stills)].map(path=>imageUrl(path,'original')).filter(Boolean),tagline:movie.tagline||''};
 }
