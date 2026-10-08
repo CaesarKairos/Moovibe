@@ -306,6 +306,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let autocompleteItems = [];
         let autocompleteIndex = -1;
         let autocompleteTimer = null;
+        let autocompleteRequest = 0;
 
         function closeSuggestions() {
             dropdown.classList.remove('active');
@@ -367,17 +368,20 @@ document.addEventListener('DOMContentLoaded', () => {
             dropdown.classList.add('active');
         }
 
-        async function fetchSuggestions(termo) {
+        async function fetchSuggestions(termo, requestId) {
             try {
                 const resp = await fetch('/lrclib-search?q=' + encodeURIComponent(termo));
+                if (requestId !== autocompleteRequest || input.value.trim() !== termo) return;
                 if (!resp.ok) {
                     closeSuggestions();
                     return;
                 }
                 const data = await resp.json();
+                if (requestId !== autocompleteRequest || input.value.trim() !== termo) return;
                 const items = Array.isArray(data.items) ? data.items : [];
                 renderSuggestions(items);
             } catch (err) {
+                if (requestId !== autocompleteRequest || input.value.trim() !== termo) return;
                 // Graceful degradation: se falhar, o campo funciona como digitação livre normal
                 closeSuggestions();
             }
@@ -385,14 +389,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
         input.addEventListener('input', () => {
             const termo = input.value.trim();
+            autocompleteRequest += 1;
+            const requestId = autocompleteRequest;
+            clearTimeout(autocompleteTimer);
             closeSuggestions();
+            delete input.dataset.artist;
+            delete input.dataset.lrclibId;
+            delete input.dataset.album;
+            delete input.dataset.duration;
+            if (input === songInput) {
+                artistaResolvido = '';
+                if (songLrclibIdInput) songLrclibIdInput.value = '';
+            }
             // Só dispara a partir de 2 caracteres, pra não bombardear o endpoint
             if (termo.length < 2) return;
-            clearTimeout(autocompleteTimer);
             autocompleteTimer = setTimeout(() => {
                 if (!viewHome.classList.contains('active')) return;
-                fetchSuggestions(termo);
-            }, 350);
+                fetchSuggestions(termo, requestId);
+            }, 1000);
         });
 
         input.addEventListener('keydown', (e) => {

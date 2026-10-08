@@ -69,6 +69,9 @@ describe('public frontend boundary',()=>{
     expect(source).toContain("languagePicker?.addEventListener('keydown'");
     expect(source).toContain("navLinks.forEach");
     expect(source).toContain("searchForm.addEventListener('submit'");
+    expect(source).toContain('fetchSuggestions(termo, requestId)');
+    expect(source).toMatch(/fetchSuggestions\(termo, requestId\);\s*\}, 1000\);/);
+    expect(source).toContain('requestId !== autocompleteRequest || input.value.trim() !== termo');
     expect(source).toContain("window.addEventListener('popstate'");
     expect(source).toMatch(/fetch\('\/analytics'[\s\S]+?\.catch\(\(\)=>\{\}\)/);
     expect(source.indexOf('const errorMessage')).toBeLessThan(source.lastIndexOf('\n    applyLanguage();'));
