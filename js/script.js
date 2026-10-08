@@ -697,13 +697,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Stills
         const stills = safeArr(movie.stills);
+        const displayedStills = stills.length
+            ? Array.from({ length: 3 }, (_, index) => stills[index % stills.length])
+            : [];
         const stillIds = ['res-still-1', 'res-still-2', 'res-still-3'];
         stillIds.forEach((id, index) => {
             const img = document.getElementById(id);
             const polaroid = img ? img.closest('.polaroid') : null;
             if (polaroid) {
-                if (stills[index]) {
-                    img.src = stills[index];
+                if (displayedStills[index]) {
+                    img.src = displayedStills[index];
                     polaroid.style.display = '';
                 } else {
                     img.removeAttribute('src');
