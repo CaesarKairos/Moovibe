@@ -33,12 +33,12 @@ ja:{home:['Moovibe — 曲の雰囲気に合う映画を見つける','曲を入
 });
 
 export const IDENTITY_COPY=Object.freeze({
-en:['Type a song or paste a Spotify link','WHICH SONG DID YOU MEAN?','Choose the exact recording before we analyze it.','None of these','This Spotify link cannot be verified now. Search by song name.'],
-'pt-BR':['Digite uma música ou cole um link do Spotify','QUAL MÚSICA VOCÊ QUIS DIZER?','Escolha a gravação exata antes da análise.','Nenhuma dessas','Não foi possível verificar esse link agora. Pesquise pelo nome da música.'],
-'zh-CN':['输入歌曲或粘贴 Spotify 链接','你指的是哪首歌？','分析前请选择准确的录音版本。','都不是','目前无法验证此链接，请按歌曲名称搜索。'],
-ru:['Введите песню или вставьте ссылку Spotify','КАКУЮ ПЕСНЮ ВЫ ИМЕЛИ В ВИДУ?','Перед анализом выберите точную запись.','Ни одну','Сейчас не удалось проверить ссылку. Найдите песню по названию.'],
-es:['Escribe una canción o pega un enlace de Spotify','¿QUÉ CANCIÓN QUISISTE DECIR?','Elige la grabación exacta antes del análisis.','Ninguna','No se pudo verificar el enlace. Busca por el nombre de la canción.'],
-de:['Song eingeben oder Spotify-Link einfügen','WELCHEN SONG MEINST DU?','Wähle vor der Analyse die genaue Aufnahme.','Keinen davon','Der Link kann gerade nicht geprüft werden. Suche nach dem Songnamen.'],
-fr:['Saisissez une chanson ou collez un lien Spotify','QUELLE CHANSON VOULEZ-VOUS DIRE ?','Choisissez l’enregistrement exact avant l’analyse.','Aucune','Impossible de vérifier ce lien. Recherchez avec le titre de la chanson.'],
-ja:['曲名を入力するか Spotify リンクを貼り付ける','どの曲ですか？','分析前に正確な音源を選んでください。','どれでもない','現在このリンクを確認できません。曲名で検索してください。']
+en:['Type a song or paste a Spotify link','WHICH SONG DID YOU MEAN?','Choose the exact recording before we analyze it.','None of these','This Spotify link cannot be verified now. Search by song name.','This Spotify link is not a song.'],
+'pt-BR':['Digite uma música ou cole um link do Spotify','QUAL MÚSICA VOCÊ QUIS DIZER?','Escolha a gravação exata antes da análise.','Nenhuma dessas','Não foi possível verificar esse link agora. Pesquise pelo nome da música.','Esse link do Spotify não é de uma música.'],
+'zh-CN':['输入歌曲或粘贴 Spotify 链接','你指的是哪首歌？','分析前请选择准确的录音版本。','都不是','目前无法验证此链接，请按歌曲名称搜索。','这个 Spotify 链接不是歌曲。'],
+ru:['Введите песню или вставьте ссылку Spotify','КАКУЮ ПЕСНЮ ВЫ ИМЕЛИ В ВИДУ?','Перед анализом выберите точную запись.','Ни одну','Сейчас не удалось проверить ссылку. Найдите песню по названию.','Эта ссылка Spotify ведёт не на песню.'],
+es:['Escribe una canción o pega un enlace de Spotify','¿QUÉ CANCIÓN QUISISTE DECIR?','Elige la grabación exacta antes del análisis.','Ninguna','No se pudo verificar el enlace. Busca por el nombre de la canción.','Este enlace de Spotify no corresponde a una canción.'],
+de:['Song eingeben oder Spotify-Link einfügen','WELCHEN SONG MEINST DU?','Wähle vor der Analyse die genaue Aufnahme.','Keinen davon','Der Link kann gerade nicht geprüft werden. Suche nach dem Songnamen.','Dieser Spotify-Link führt nicht zu einem Song.'],
+fr:['Saisissez une chanson ou collez un lien Spotify','QUELLE CHANSON VOULEZ-VOUS DIRE ?','Choisissez l’enregistrement exact avant l’analyse.','Aucune','Impossible de vérifier ce lien. Recherchez avec le titre de la chanson.','Ce lien Spotify ne correspond pas à une chanson.'],
+ja:['曲名を入力するか Spotify リンクを貼り付ける','どの曲ですか？','分析前に正確な音源を選んでください。','どれでもない','現在このリンクを確認できません。曲名で検索してください。','この Spotify リンクは曲ではありません。']
 });

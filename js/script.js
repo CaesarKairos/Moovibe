@@ -380,7 +380,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const resp = await fetch('/music-search?q=' + encodeURIComponent(termo));
                 if (requestId !== autocompleteRequest || input.value.trim() !== termo) return;
                 if (!resp.ok) {
-                    if(/^https?:|^spotify:/i.test(termo)){input.setCustomValidity((IDENTITY_COPY[lang]||IDENTITY_COPY.en)[4]);input.reportValidity();}
+                    const errorData=await resp.json().catch(()=>({}));
+                    if(/^https?:|^spotify:/i.test(termo)){const copy=IDENTITY_COPY[lang]||IDENTITY_COPY.en;input.setCustomValidity(errorData.error?.code==='NOT_A_TRACK'?copy[5]:copy[4]);input.reportValidity();}
                     closeSuggestions();
                     return;
                 }

@@ -72,6 +72,7 @@ describe('public frontend boundary',()=>{
     expect(source).toContain("fetch('/music-search?q='");
     for(const field of ['provider','providerId','artist','album','duration','lrclibId'])expect(source).toContain(`dataset.${field}`);
     expect(source).toContain("data.error?.code==='SONG_IDENTITY_REQUIRED'");
+    expect(source).toContain("errorData.error?.code==='NOT_A_TRACK'?copy[5]:copy[4]");
     expect(source).not.toContain('resolverArtistaViaLrclib');
     expect(source).toContain('fetchSuggestions(termo, requestId)');
     expect(source).toMatch(/fetchSuggestions\(termo, requestId\);\s*\}, 1000\);/);
