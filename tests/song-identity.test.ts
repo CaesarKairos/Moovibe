@@ -2,6 +2,7 @@ import {beforeEach,describe,expect,it,vi} from 'vitest';
 import {getSpotifyTrack,parseSpotifyTrackInput,resetSpotifyTokenForTests,resolveSpotifyTrackUrl,searchSpotifyTracks} from '../functions/_lib/spotify.js';
 import {resolveCanonicalSong,selectGeniusHit,selectLyricsMatch} from '../functions/_lib/song-identity.js';
 import {recommendationCacheKey,RECOMMENDER_VERSION} from '../functions/_lib/recommender.js';
+import {onRequestGet as musicSearch} from '../functions/music-search.js';
 
 const id='4uLU6hMCjMI75M1A2tKUQC';
 const id2='0VjIjW4GlUZAMYd2vXMi3b';
@@ -15,6 +16,7 @@ function spotifyFetch(){
 }
 
 describe('Spotify input safety',()=>{
+ it('marks exact Spotify URLs and URIs explicitly for frontend auto-confirmation',async()=>{for(const query of ['https://open.spotify.com/track/'+id,'https://open.spotify.com/intl-pt/track/'+id,'spotify:track:'+id]){vi.stubGlobal('fetch',spotifyFetch());const response=await musicSearch({request:new Request('https://site/music-search?q='+encodeURIComponent(query)),env} as any);const data:any=await response.json();expect(data.mode).toBe('exact');expect(data.items).toHaveLength(1);expect(data.items[0].provider_id).toBe(id);resetSpotifyTokenForTests();}});
  it('parses direct, localized and URI track ids while ignoring query strings',()=>{for(const value of ['https://open.spotify.com/track/'+id,'https://open.spotify.com/intl-pt/track/'+id,'https://open.spotify.com/intl-br/track/'+id+'?si=abc','https://open.spotify.com/intl-en/track/'+id+'?utm_source=x','spotify:track:'+id])expect(parseSpotifyTrackInput(value)).toMatchObject({kind:'track',id})});
  it('rejects localized non-track resources and external URLs',()=>{for(const type of ['artist','album','playlist'])expect(parseSpotifyTrackInput(`https://open.spotify.com/intl-pt/${type}/${id}`)?.kind).toBe('not_track');for(const value of ['https://open.spotify.com/episode/'+id,'https://evil.example/track/'+id,'file:///track/'+id,'http://localhost/track/'+id,'http://127.0.0.1/track/'+id])expect(parseSpotifyTrackInput(value)?.kind).toMatch(/not_track|invalid_url/)});
  it('resolves an exact URL through the track endpoint',async()=>{vi.stubGlobal('fetch',spotifyFetch());expect((await resolveSpotifyTrackUrl(env,'https://open.spotify.com/track/'+id))?.provider_id).toBe(id)});

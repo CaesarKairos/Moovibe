@@ -1218,7 +1218,8 @@ export async function onRequest(context) {
     const previewSource = capaDados?.previewSource || null;
 
     // Busca capa e preview para cada música extra (até 3 no total)
-    const songs = [{...songInputs[0],cover_url:coverUrl,audio_preview_url:previewUrl}];
+    const publicLyrics=(item)=>({lyrics_available:Boolean(item?.lyrics),lyrics_source:item?.lyrics_source||null,lyrics_preview:item?.lyrics_source&&item.lyrics_source!=='user'?String(item.lyrics).replace(/\s+/g,' ').trim().slice(0,280):null,lyrics_url:null});
+    const songs = [{...songInputs[0],cover_url:coverUrl,audio_preview_url:previewUrl,...publicLyrics(songData[0])}];
     if (songInputs.length > 1) {
       for (const extra of songInputs.slice(1)) {
         const extraCapa = await buscarCapaMusica(extra.title, extra.artist||'',extra);
@@ -1228,6 +1229,7 @@ export async function onRequest(context) {
           artist: extra.artist||'',
           cover_url: extraCapa?.coverUrl || '',
           audio_preview_url: extraCapa?.previewUrl || null,
+          ...publicLyrics(songData[songs.length]),
         });
       }
     }

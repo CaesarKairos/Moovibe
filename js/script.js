@@ -1,5 +1,6 @@
-import { BETA_COPY, IDENTITY_COPY, LANGUAGES, PAGE_METADATA, TRACK_SELECTION_COPY, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
+import { BETA_COPY, IDENTITY_COPY, LANGUAGES, PAGE_METADATA, RESULT_COPY, TRACK_SELECTION_COPY, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
 import { clearTrackSelection, getTrackSelection, resetTrackField, setTrackSelection } from './track-selection.js';
+import { buildMediaSlots } from './result-presentation.js';
 /**
  * Moovibe - Frontend Logic
  * Handles SPA navigation, loading states, and dynamic content injection.
@@ -130,6 +131,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const MAX_SONGS = 3;
     let extraSongCount = 0;
     let extraSongInputs = [];
+    const sessionLyrics=new Map();
 
     // Loading strings for cinematic feel
     const getLoadingMessages = () => [i18n[lang].loading_initial, i18n[lang].step1_title, i18n[lang].step3_title, i18n[lang].step4_title];
@@ -242,6 +244,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function resetSearch() {
         stopLoading();
+        sessionLyrics.clear();
         if (songInput) resetTrackField(songInput);
         if (songSuggestions) {
             songSuggestions.classList.remove('active');
@@ -398,6 +401,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const data = await resp.json();
                 if (requestId !== autocompleteRequest || input.value.trim() !== termo) return;
                 const items = Array.isArray(data.items) ? data.items : [];
+                if(data.mode==='exact'&&items[0]){selectSuggestion(items[0]);return;}
                 renderSuggestions(items);
             } catch (err) {
                 if (requestId !== autocompleteRequest || input.value.trim() !== termo) return;
@@ -415,10 +419,11 @@ document.addEventListener('DOMContentLoaded', () => {
             clearTrackSelection(input,{preserveText:true});
             // Só dispara a partir de 2 caracteres, pra não bombardear o endpoint
             if (termo.length < 2) return;
+            const exactSpotify=/^spotify:track:[A-Za-z0-9]{22}$/i.test(termo)||/^https:\/\/(?:open\.spotify\.com|spotify\.link)\//i.test(termo);
             autocompleteTimer = setTimeout(() => {
                 if (!viewHome.classList.contains('active')) return;
                 fetchSuggestions(termo, requestId);
-            }, 1000);
+            }, exactSpotify?0:1000);
         });
 
         input.addEventListener('keydown', (e) => {
@@ -639,6 +644,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 info.appendChild(artistEl);
                 card.appendChild(cover);
                 card.appendChild(info);
+                const actions=document.createElement('div');actions.className='song-card-actions';
                 const audioUrl = safeStr(s.audio_preview_url);
                 if (audioUrl) {
                     const audio = document.createElement('audio');
@@ -671,8 +677,21 @@ document.addEventListener('DOMContentLoaded', () => {
                         btn.classList.remove('playing');
                     });
                     card.appendChild(audio);
-                    card.appendChild(btn);
+                    actions.appendChild(btn);
                 }
+                const visibleLyrics=sessionLyrics.get(`${s.title}\u0000${s.artist||''}`)||safeStr(s.lyrics_preview);
+                if(s.lyrics_available&&visibleLyrics){
+                    const copy=RESULT_COPY[lang]||RESULT_COPY.en,details=document.createElement('details');details.className='song-lyrics';
+                    const summary=document.createElement('summary');summary.innerHTML=`<span class="lyrics-show-label">${escapeHtml(copy[0])}</span><span class="lyrics-hide-label">${escapeHtml(copy[1])}</span>`;
+                    const content=document.createElement('div');content.className='song-lyrics-content';
+                    const heading=document.createElement('p');heading.className='song-lyrics-heading';heading.textContent=copy[2];
+                    const source=document.createElement('p');source.className='song-lyrics-source';source.textContent=`${copy[3]}: ${String(s.lyrics_source||'').toUpperCase()}`;
+                    const preview=document.createElement('p');preview.className='song-lyrics-preview';preview.textContent=visibleLyrics;
+                    content.append(heading,source,preview);
+                    if(s.lyrics_url){const link=document.createElement('a');link.className='song-lyrics-source-link';link.href=s.lyrics_url;link.target='_blank';link.rel='noopener noreferrer';link.textContent=copy[4];content.appendChild(link);}
+                    details.append(summary,content);card.appendChild(details);
+                }
+                if(actions.children.length)card.insertBefore(actions,card.querySelector('.song-lyrics'));
                 songsList.appendChild(card);
             });
         }
@@ -705,6 +724,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const elLb = document.getElementById('res-letterboxd');
         if (elLb) elLb.href = safeStr(movie.letterboxd_url);
 
+        const alternativesPanel=document.getElementById('alternatives-panel'),alternativesList=document.getElementById('alternatives-list'),alternatives=safeArr(movie.alternatives).slice(0,2),resultCopy=RESULT_COPY[lang]||RESULT_COPY.en;
+        document.getElementById('alternatives-title').textContent=resultCopy[5];alternativesList.innerHTML='';alternativesPanel.hidden=alternatives.length===0;
+        alternatives.forEach(alt=>{const link=document.createElement('a');link.className='alternative-card';link.href=safeStr(alt.letterboxd_url)||safeStr(alt.imdb_url)||'#';link.target='_blank';link.rel='noopener noreferrer';
+            if(alt.poster_url){const image=document.createElement('img');image.className='alternative-poster';image.src=alt.poster_url;image.alt=alt.titulo||'';link.appendChild(image);}else{const placeholder=document.createElement('span');placeholder.className='alternative-placeholder';placeholder.setAttribute('aria-hidden','true');placeholder.textContent='M';link.appendChild(placeholder);}
+            const copy=document.createElement('span');copy.className='alternative-copy';const title=document.createElement('strong');title.className='alternative-title';title.textContent=alt.titulo||'';const meta=document.createElement('span');meta.className='alternative-meta';meta.textContent=[alt.ano,alt.diretor].filter(Boolean).join(' · ');const call=document.createElement('span');call.className='alternative-call';call.textContent=alt.chamada||'';copy.append(title,meta,call);link.appendChild(copy);alternativesList.appendChild(link);});
+
         // TikTok
         const tiktokLink = document.getElementById('res-tiktok');
         if (tiktokLink) {
@@ -719,20 +744,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Stills
-        const stills = safeArr(movie.stills);
-        const displayedStills = stills.length
-            ? Array.from({ length: 3 }, (_, index) => stills[index % stills.length])
-            : [];
+        const displayedStills = buildMediaSlots(safeArr(movie.stills),safeStr(movie.poster_url));
         const stillIds = ['res-still-1', 'res-still-2', 'res-still-3'];
         stillIds.forEach((id, index) => {
             const img = document.getElementById(id);
             const polaroid = img ? img.closest('.polaroid') : null;
             if (polaroid) {
                 if (displayedStills[index]) {
-                    img.src = displayedStills[index];
+                    const slot=displayedStills[index];img.src=slot.src;img.style.objectPosition=slot.position;img.alt=slot.source==='still'?`${safeStr(movie.title)} — ${index+1}`:`${safeStr(movie.title)} poster crop`;polaroid.dataset.source=slot.source;
                     polaroid.style.display = '';
                 } else {
                     img.removeAttribute('src');
+                    img.style.removeProperty('object-position');delete polaroid.dataset.source;
                     polaroid.style.display = 'none';
                 }
             }
@@ -864,7 +887,9 @@ document.addEventListener('DOMContentLoaded', () => {
             fields.innerHTML=data.error.missing_songs.map((missing,index)=>`<label>${missing.title} — ${missing.artist||''}<textarea required minlength="80" maxlength="20000" data-song-key="${missing.song_key.replace(/"/g,'&quot;')}"></textarea></label>`).join('');
             const accepted=await new Promise(resolve=>{dialog.addEventListener('close',()=>resolve(dialog.returnValue==='default'),{once:true});dialog.showModal();});
             if(!accepted){track('lyrics_cancelled');return {cancelled:true};}
-            body.user_lyrics=Object.fromEntries([...fields.querySelectorAll('textarea')].map(x=>[x.dataset.songKey,x.value])); track('lyrics_submitted');
+            const textareas=[...fields.querySelectorAll('textarea')];
+            body.user_lyrics=Object.fromEntries(textareas.map(x=>[x.dataset.songKey,x.value]));
+            textareas.forEach((field,index)=>{const missing=data.error.missing_songs[index];if(missing)sessionLyrics.set(`${missing.title}\u0000${missing.artist||''}`,field.value);}); track('lyrics_submitted');
             resumeLoadingAfterDialog(); return requestRecommendation(body);
           }
           if(!response.ok)throw new Error(data.error?.message||`HTTP ${response.status}`);

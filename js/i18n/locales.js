@@ -46,3 +46,9 @@ ja:['曲名を入力するか Spotify リンクを貼り付ける','どの曲で
 export const TRACK_SELECTION_COPY=Object.freeze({
 en:['CHANGE','Confirmed song','Choose a song from the suggestions.'],'pt-BR':['TROCAR','Música confirmada','Escolha uma música nas sugestões.'],'zh-CN':['更换','已确认歌曲','请从建议中选择歌曲。'],ru:['ИЗМЕНИТЬ','Песня подтверждена','Выберите песню из подсказок.'],es:['CAMBIAR','Canción confirmada','Elige una canción de las sugerencias.'],de:['ÄNDERN','Song bestätigt','Wähle einen Song aus den Vorschlägen.'],fr:['CHANGER','Chanson confirmée','Choisissez une chanson parmi les suggestions.'],ja:['変更','確認済みの曲','候補から曲を選んでください。']
 });
+
+export const RESULT_COPY=Object.freeze({
+en:['VIEW LYRICS','HIDE LYRICS','LYRICS','SOURCE','VIEW AT SOURCE ↗','OTHER SUGGESTIONS'],
+'pt-BR':['VER LETRA','OCULTAR LETRA','LETRA','FONTE','VER NA FONTE ↗','OUTRAS SUGESTÕES'],
+'zh-CN':['查看歌词','隐藏歌词','歌词','来源','前往来源 ↗','其他推荐'],ru:['ПОКАЗАТЬ ТЕКСТ','СКРЫТЬ ТЕКСТ','ТЕКСТ ПЕСНИ','ИСТОЧНИК','ОТКРЫТЬ ИСТОЧНИК ↗','ДРУГИЕ ВАРИАНТЫ'],es:['VER LETRA','OCULTAR LETRA','LETRA','FUENTE','VER EN LA FUENTE ↗','OTRAS SUGERENCIAS'],de:['SONGTEXT ZEIGEN','SONGTEXT AUSBLENDEN','SONGTEXT','QUELLE','QUELLE ÖFFNEN ↗','WEITERE VORSCHLÄGE'],fr:['VOIR LES PAROLES','MASQUER LES PAROLES','PAROLES','SOURCE','VOIR À LA SOURCE ↗','AUTRES SUGGESTIONS'],ja:['歌詞を見る','歌詞を隠す','歌詞','出典','出典を見る ↗','ほかの候補']
+});
