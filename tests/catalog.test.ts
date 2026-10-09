@@ -8,7 +8,7 @@ vi.mock('../functions/_lib/gemini.js',()=>({
   GeminiClient:class{constructor(_key?:string){}async generateJson(...args:any[]){return generateJson(...args);}async embed(...args:any[]){return embed(...args);}}
 }));
 
-import {D1_ID_CHUNK_SIZE,hydrateMoviePresentation,loadMovies,recommendFromCatalog,selectBestPoster,selectBestStills} from '../functions/_lib/catalog.js';
+import {buildCuratorSystem,compactCandidate,curationSchema,D1_ID_CHUNK_SIZE,hydrateMoviePresentation,isWeakJustification,loadMovies,recommendFromCatalog,selectBestPoster,selectBestStills} from '../functions/_lib/catalog.js';
 import {persistLyricsBestEffort} from '../functions/_lib/song-library.js';
 
 class Statement {
@@ -146,8 +146,8 @@ describe('hybrid recommendation flow',()=>{
     const result=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'en'});
     const curationCall=generateJson.mock.calls.find(c=>c[0]?.schema?.properties?.primary_tmdb_id)!;
     const prompt=curationCall[0].prompt as string;
-    expect(prompt).not.toContain('X'.repeat(400));  // overview capped at ~300 chars
-    expect(prompt).toContain('X'.repeat(250));
+    expect(prompt).not.toContain('X'.repeat(550));  // overview capped at ~520 chars
+    expect(prompt).toContain('X'.repeat(450));
     expect(prompt).toContain('numeric_vibe_score');
     expect(prompt).toContain('final_score');
     expect(prompt).not.toContain('"final_score":null');
@@ -211,8 +211,18 @@ describe('TMDb image policy',()=>{
   it('uses a language-neutral poster before the interface language',()=>expect(selectBestPoster([poster('/en','en',10),poster('/null',null,1)],{originalLanguage:'ja',interfaceLanguage:'en'})?.file_path).toBe('/null'));
   it('allows every backdrop language and returns the best three distinct images',()=>{
     const images=[poster('/null',null,5,1,2000,1000),poster('/en','en',8,2,1900,1000),poster('/ja','ja',7,2,1800,1000),poster('/pt','pt',6,2,1700,1000),poster('/en','en',10,99,100,100),poster('/x','fr',1,1,50,50)];
-    expect(selectBestStills(images).map(x=>x.file_path)).toEqual(['/null','/en','/ja']);
+    expect(selectBestStills(images).map((x:any)=>x.file_path)).toEqual(['/null','/en','/ja']);
     expect(selectBestStills(images.slice(0,2))).toHaveLength(2);expect(selectBestStills([])).toEqual([]);
+  });
+  it('prefers neutral cinematic candidates over larger language-tagged key art',()=>{
+    const images=[poster('/gravity-title-en.jpg','en',10,100,4000,2250),poster('/gravity-title-tr.jpg','tr',10,90,3900,2200),poster('/gravity-clean-keyart.jpg',null,5,1,1920,1080),poster('/gravity-scene-a.jpg',null,9,30,1920,1080),poster('/gravity-scene-b.jpg',null,8,20,1600,900),poster('/gravity-scene-c.jpg',null,7,10,1280,720)];
+    const selected=selectBestStills(images).map((x:any)=>x.file_path);
+    expect(selected).toHaveLength(3);expect(selected.every((path:string)=>path.includes('scene-'))).toBe(true);
+  });
+  it('excludes the selected poster, duplicate paths and undersized assets deterministically',()=>{
+    const images=[poster('/poster.jpg',null,10,99,2000,1200),poster('/scene-a.jpg',null,7,9,1920,1080),poster('/scene-a.jpg',null,9,20,1920,1080),poster('/tiny.jpg',null,10,100,640,360),poster('/scene-b.jpg',null,8,10,1600,900)];
+    const first=selectBestStills(images,3,{posterPath:'/poster.jpg'}).map((x:any)=>x.file_path);
+    expect(first).toEqual(['/scene-a.jpg','/scene-b.jpg']);expect(selectBestStills(images,3,{posterPath:'/poster.jpg'}).map((x:any)=>x.file_path)).toEqual(first);
   });
   it('shares the image cache across locales and does not repeat the images request',async()=>{
     const cache=new Map<string,string>();const env:any={TMDB_API_KEY:'x',MOOVIBE_DB:{get:async(k:string)=>cache.has(k)?JSON.parse(cache.get(k)!):null,put:async(k:string,v:string)=>cache.set(k,v)}};
@@ -225,5 +235,21 @@ describe('TMDb image policy',()=>{
     const env:any={TMDB_API_KEY:'x'};const fetchMock=vi.fn(async(input:RequestInfo|URL)=>String(input).includes('/images')?new Response('down',{status:500}):new Response(JSON.stringify({credits:{crew:[]},external_ids:{}})));vi.stubGlobal('fetch',fetchMock);
     const result:any=await hydrateMoviePresentation(env,{tmdb_id:8,poster_path:'/old-p',backdrop_path:'/old-b'},'en',{includeStills:true});
     expect(result.poster_path).toBe('/old-p');expect(result.stills).toEqual(['/old-b']);vi.unstubAllGlobals();
+  });
+});
+
+describe('rich final curation contract',()=>{
+  it('requires a substantive justification without triggering a rewrite call',()=>{
+    expect(curationSchema.properties.justification).toMatchObject({minLength:320,maxLength:950});
+    expect(isWeakJustification('A short generic sentence.')).toBe(true);
+    expect(isWeakJustification('A specific narrative bridge establishes the central conflict and its emotional pressure in concrete terms. A second distinct bridge considers pacing, intimacy, visual scale, and productive contrast without repeating generic adjectives. '.repeat(2))).toBe(false);
+  });
+  it('gives the curator bounded visual style and keyword context',()=>{
+    const candidate:any=compactCandidate({tmdb_id:1,title:'Film',overview:'x'.repeat(900),keywords:['a','b','c','d','e','f','g'],enrichment:{moods:['m'],themes:['t'],atmosphere:['a'],visual_style:['one','two','three','four','five']}});
+    expect(candidate.overview.length).toBeLessThanOrEqual(520);expect(candidate.keywords).toHaveLength(6);expect(candidate.visual_style).toHaveLength(4);expect(JSON.stringify(candidate).length).toBeLessThan(900);
+  });
+  it('demands two bridges, primary-only discussion, paraphrased lyrics and supplied facts',()=>{
+    const system=buildCuratorSystem('Portuguese (Brazil)');
+    expect(system).toMatch(/at least two distinct/i);expect(system).toMatch(/ONLY the primary film/);expect(system).toMatch(/Do not quote lyrics verbatim/);expect(system).toMatch(/Use only facts supplied/);expect(system).toContain('Portuguese (Brazil)');
   });
 });

@@ -1,4 +1,4 @@
-export const RECOMMENDER_VERSION = 'catalog-v4-song-identity';
+export const RECOMMENDER_VERSION = 'catalog-v5-rich-curation';
 export const EMBEDDING_SCHEMA_VERSION = 'movie-v1';
 
 // Candidate generation limits: each channel contributes up to 100 candidates,

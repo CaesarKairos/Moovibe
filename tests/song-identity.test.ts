@@ -32,7 +32,7 @@ describe('canonical identity and lyrics',()=>{
  it('selects the second, correct LRCLIB result with lyrics',()=>{const result=selectLyricsMatch({title:'Everybody Wants to Love You',artist:'Japanese Breakfast'},[{id:1,trackName:'Everybody Wants to Love Everybody',artistName:'Outro Artista',plainLyrics:'wrong'},{id:2,trackName:'Everybody Wants to Love You',artistName:'Japanese Breakfast',plainLyrics:'right'}]);expect(result?.provider_id).toBe('2');expect(result?.plainLyrics).toBe('right')});
  it('selects a matching Genius hit rather than hits[0]',()=>{const result=selectGeniusHit({title:'Everybody Wants to Love You',artist:'Japanese Breakfast'},[{result:{id:1,title:'Wrong',primary_artist:{name:'Other'}}},{result:{id:2,title:'Everybody Wants to Love You',primary_artist:{name:'Japanese Breakfast'}}}]);expect(result?.id).toBe(2)});
  it('preserves The One regression',()=>expect(selectLyricsMatch({title:'The One',artist:'Limp Bizkit'},[{id:1,trackName:'Break Stuff',artistName:'Limp Bizkit',plainLyrics:'wrong'}])).toBeNull());
- it('versions recommendation keys around identity providers',()=>{expect(RECOMMENDER_VERSION).toBe('catalog-v4-song-identity');expect(recommendationCacheKey([{provider:'spotify',provider_id:id,title:'x',artist:'y'}])).not.toBe(recommendationCacheKey([{provider:'lrclib',provider_id:id,title:'x',artist:'y'}]))});
+ it('versions recommendation keys around identity providers',()=>{expect(RECOMMENDER_VERSION).toBe('catalog-v5-rich-curation');expect(recommendationCacheKey([{provider:'spotify',provider_id:id,title:'x',artist:'y'}])).not.toBe(recommendationCacheKey([{provider:'lrclib',provider_id:id,title:'x',artist:'y'}]))});
 });
 
 describe('public boundary',()=>{

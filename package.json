@@ -15,7 +15,7 @@
     "worker:dev": "wrangler dev --config workers/pipeline/wrangler.jsonc",
     "worker:deploy": "wrangler deploy --config workers/pipeline/wrangler.jsonc",
     "worker:tail": "wrangler tail --config workers/pipeline/wrangler.jsonc --format pretty",
-    "pages:dev": "wrangler pages dev . --d1 MOOVIBE_LIBRARY --kv MOOVIBE_DB --binding RECOMMENDER_VERSION=catalog-v4-song-identity",
+    "pages:dev": "wrangler pages dev . --d1 MOOVIBE_LIBRARY --kv MOOVIBE_DB --binding RECOMMENDER_VERSION=catalog-v5-rich-curation",
     "pages:config:download": "wrangler pages download config moovibe",
     "pages:deploy": "wrangler pages deploy . --project-name moovibe"
   },

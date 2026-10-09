@@ -9,7 +9,7 @@ const arr=parse;
 const num=(value,digits=4)=>value==null?null:Number(Number(value).toFixed(digits));
 const truncate=(value,max)=>{const s=String(value||'');return s.length>max?s.slice(0,max-1)+'…':s;};
 const profileSchema={type:'object',properties:{moods:{type:'array',items:{type:'string'}},themes:{type:'array',items:{type:'string'}},atmosphere:{type:'array',items:{type:'string'}},pace:{type:'string'},emotional_valence:{type:'number'},energy:{type:'number'},intimacy:{type:'number'},surrealism:{type:'number'},darkness:{type:'number'},humor:{type:'number'},romanticism:{type:'number'},narrative_density:{type:'number'},melancholy_level:{type:'number'},tension_level:{type:'number'}},required:['moods','themes','atmosphere','pace','emotional_valence','energy','intimacy','surrealism','darkness','humor','romanticism','narrative_density','melancholy_level','tension_level']};
-const curationSchema={type:'object',properties:{primary_tmdb_id:{type:'integer'},alternative_tmdb_ids:{type:'array',items:{type:'integer'},minItems:2,maxItems:2},justification:{type:'string'},vibe_title:{type:'string'},tags:{type:'array',items:{type:'string'},minItems:4,maxItems:4},alternative_calls:{type:'array',items:{type:'string'},minItems:2,maxItems:2}},required:['primary_tmdb_id','alternative_tmdb_ids','justification','vibe_title','tags','alternative_calls']};
+export const curationSchema={type:'object',properties:{primary_tmdb_id:{type:'integer'},alternative_tmdb_ids:{type:'array',items:{type:'integer'},minItems:2,maxItems:2},justification:{type:'string',minLength:320,maxLength:950},vibe_title:{type:'string'},tags:{type:'array',items:{type:'string'},minItems:4,maxItems:4},alternative_calls:{type:'array',items:{type:'string'},minItems:2,maxItems:2}},required:['primary_tmdb_id','alternative_tmdb_ids','justification','vibe_title','tags','alternative_calls']};
 export const D1_ID_CHUNK_SIZE=90;
 
 export async function loadMovies(db,ids) {
@@ -50,7 +50,7 @@ async function numericCandidates(db,profile,limit=NUMERIC_TOP_K) {
 
 // Compact per-candidate representation sent to Gemini: enough for curation,
 // bounded so 100 candidates stay well within a comfortable context window.
-function compactCandidate(movie) {
+export function compactCandidate(movie) {
   const e=movie.enrichment||{};
   const cs=movie.component_scores||{};
   return {
@@ -61,16 +61,29 @@ function compactCandidate(movie) {
     genres:arr(movie.genres).slice(0,6),
     countries:arr(movie.countries).slice(0,4),
     languages:arr(movie.languages).slice(0,4),
-    overview:truncate(movie.overview,300),
+    overview:truncate(movie.overview,520),
+    keywords:arr(movie.keywords).slice(0,6),
     moods:arr(e.moods).slice(0,6),
     themes:arr(e.themes).slice(0,6),
     atmosphere:arr(e.atmosphere).slice(0,6),
+    visual_style:arr(e.visual_style).slice(0,4),
     pace:e.pace||null,
     numeric_vibe_score:num(cs.numeric),
     semantic_score:num(cs.semantic),
     concept_score:num(cs.concepts),
     final_score:num(cs.final)
   };
+}
+
+const GENERIC_JUSTIFICATION_PHRASES=['perfectly captures','perfectly translates','echoes the atmosphere','resonates with','captures the essence','this vibe','unique journey','traduz perfeitamente','captura perfeitamente','ecoa a atmosfera','ressoa com','captura a essência'];
+export function isWeakJustification(text) {
+  const value=String(text||'').trim(),sentences=value.split(/[.!?。！？]+/).filter(part=>part.trim().length>20);
+  const genericHits=GENERIC_JUSTIFICATION_PHRASES.filter(phrase=>value.toLocaleLowerCase().includes(phrase)).length;
+  return value.length<320||sentences.length<2||genericHits>=2||Object.values(FALLBACKS).some(([fallback])=>value===fallback);
+}
+
+export function buildCuratorSystem(languageName) {
+  return `You are Moovibe's final curator: an incisive film critic writing for a stylish independent cinema magazine, not a recommendation chatbot. Choose ONLY supplied tmdb_id values: exactly 1 primary and exactly 2 distinct alternatives. The justification must discuss ONLY the primary film and explain why this particular film belongs to these songs through at least two distinct, concrete bridges. Prefer supplied relationships involving narrative situation, emotional trajectory, themes, pacing, visual language, scale, intimacy, or productive contrast. Do not merely restate matching adjectives. Avoid generic AI phrasing such as "perfectly captures", "perfectly translates", "echoes the atmosphere", "resonates with", "captures the essence", "this vibe", or "unique journey". Use only facts supplied in the candidate data; never invent scenes or cinematic facts. Do not explain the algorithm or mention scores, embeddings, candidates, or AI. Do not quote lyrics verbatim or reproduce long lyric phrases; paraphrase lyrical ideas. Write naturally and confidently, targeting roughly 90–150 words. Write all presentation fields in ${languageName}.`;
 }
 
 const normalizedTitle=value=>String(value||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
@@ -150,9 +163,10 @@ export async function recommendFromCatalog({env,songs,lyrics,context,lang='en'})
   console.log(JSON.stringify({event:'catalog_candidates',lang,semantic_count:diagnostics.semantic_count,numeric_count:diagnostics.numeric_count,union_count:diagnostics.union_count,final_count:diagnostics.final_count,keyword_fallback_count:keywordFallback,ranking:'deterministic',top:diagnostics.top}));
   let curation;
   try {
-    const language=getLanguageConfig(lang); const curatorPrompt=`Music profile:\n${JSON.stringify(analysis.data)}\n\nLyrical evidence:\n${songs.map(s=>`${s.title}: ${String(s.lyrics||'').slice(0,1800)}`).join('\n\n')}\n\nAllowed candidates:\n${JSON.stringify(candidates)}`; const curatorSystem=`You are Moovibe's final curator, restricted to the supplied candidate list. Choose ONLY supplied tmdb_id values; exactly 1 primary and 2 distinct alternatives. Ground the connection in the supplied lyrical evidence and profile, without long lyric quotations. Never invent cinematic facts. Discuss only the primary film in justification. Write presentation fields in ${language.aiName}.`;
+    const language=getLanguageConfig(lang); const curatorPrompt=`Music profile:\n${JSON.stringify(analysis.data)}\n\nLyrical evidence (paraphrase; never quote in the public text):\n${songs.map(s=>`${s.title}: ${String(s.lyrics||'').slice(0,1800)}`).join('\n\n')}\n\nAllowed candidates:\n${JSON.stringify(candidates)}`; const curatorSystem=buildCuratorSystem(language.aiName);
     const result=await gemini.generateJson({system:curatorSystem,prompt:curatorPrompt,schema:curationSchema}); await writeAudit(env,{request_id:requestId,timestamp:new Date().toISOString(),stage:'final_curation',model:result.model,input:curatorPrompt,system_prompt:curatorSystem,output:result.data,success:true});
     curation=keepJustificationPrimaryOnly(validateCuration(result.data,slate),slate,lang);
+    if(isWeakJustification(curation.justification))console.warn(JSON.stringify({event:'weak_justification',request_id:requestId,length:String(curation.justification||'').length}));
   } catch(error) {
     await writeAudit(env,{request_id:requestId,timestamp:new Date().toISOString(),stage:'final_curation',success:false,error:String(error?.message||error)});
     // Deterministic fallback: never search externally for a replacement.
@@ -175,12 +189,18 @@ export function selectBestPoster(posters,{originalLanguage,interfaceLanguage}={}
   return validImages(posters).sort((a,b)=>priority(normalizeLanguage(a.iso_639_1))-priority(normalizeLanguage(b.iso_639_1))||imageQuality(a,b))[0]||null;
 }
 
-export function selectBestStills(backdrops,limit=3) {
-  const stillQuality=(a,b)=>(Number(b.width||0)*Number(b.height||0))-(Number(a.width||0)*Number(a.height||0))||imageQuality(a,b);
+export function selectBestStills(backdrops,limit=3,{posterPath=''}={}) {
+  const stillQuality=(a,b)=>Number(b.vote_count||0)-Number(a.vote_count||0)||Number(b.vote_average||0)-Number(a.vote_average||0)||(Number(b.width||0)*Number(b.height||0))-(Number(a.width||0)*Number(a.height||0))||String(a.file_path).localeCompare(String(b.file_path));
+  const sufficient=image=>Number(image.width||0)>=1280&&Number(image.height||0)>=720;
+  const credibleTagged=image=>sufficient(image)&&Number(image.vote_count||0)>=2&&Number(image.vote_average||0)>=5.5;
   const byPath=new Map();
-  for(const image of validImages(backdrops))if(!byPath.has(image.file_path)||stillQuality(image,byPath.get(image.file_path))<0)byPath.set(image.file_path,image);
-  const unique=[...byPath.values()];
-  return unique.sort(stillQuality).slice(0,limit);
+  for(const image of validImages(backdrops))if(image.file_path!==posterPath){const current=byPath.get(image.file_path);if(!current||(sufficient(image)&&!sufficient(current))||(sufficient(image)===sufficient(current)&&stillQuality(image,current)<0))byPath.set(image.file_path,image);}
+  const spread=pool=>{const sorted=pool.sort(stillQuality).slice(0,20);if(sorted.length<=limit)return sorted;const indexes=limit===1?[0]:Array.from({length:limit},(_,index)=>Math.round(index*(sorted.length-1)/(limit-1)));return indexes.map(index=>sorted[index]);};
+  const unique=[...byPath.values()],allNeutral=unique.filter(image=>normalizeLanguage(image.iso_639_1)==null&&sufficient(image));
+  const credibleNeutral=allNeutral.filter(image=>Number(image.vote_count||0)>=2),neutral=credibleNeutral.length>=limit?credibleNeutral:allNeutral;
+  const selected=spread(neutral).slice(0,limit),selectedPaths=new Set(selected.map(image=>image.file_path));
+  if(selected.length<limit){const tagged=spread(unique.filter(image=>normalizeLanguage(image.iso_639_1)!=null&&credibleTagged(image)&&!selectedPaths.has(image.file_path)));selected.push(...tagged.slice(0,limit-selected.length));}
+  return selected;
 }
 
 const readCache=async(env,key,tmdbId)=>{try{return await env.MOOVIBE_DB?.get(key,'json')||null;}catch{console.warn(JSON.stringify({event:'hydration_cache_read_failed',tmdb_id:tmdbId,key}));return null;}};
@@ -215,7 +235,8 @@ export async function hydrateMoviePresentation(env,movie,lang='en',{includeStill
     const response=await fetch(url);if(!response.ok)throw new Error(`TMDB_IMAGES_${response.status}`);
     const data=await response.json();
     const poster=selectBestPoster(data.posters,{originalLanguage:movie.original_language,interfaceLanguage:lang});
-    images={poster_path:poster?.file_path||images?.poster_path||movie.poster_path||null,stills:selectBestStills(data.backdrops).map(image=>image.file_path),complete:true};
+    const posterPath=poster?.file_path||images?.poster_path||movie.poster_path||null;
+    images={poster_path:posterPath,stills:selectBestStills(data.backdrops,3,{posterPath}).map(image=>image.file_path),complete:true};
     await writeCache(env,imagesKey,images,movie.tmdb_id);
   } catch { console.warn(JSON.stringify({event:'image_hydration_failed',tmdb_id:movie.tmdb_id,error_code:'TMDB_IMAGES_UNAVAILABLE'})); }
 
