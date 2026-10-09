@@ -2,6 +2,7 @@ import {afterAll,beforeAll,describe,expect,it} from 'vitest';
 import {createServer,Server} from 'node:http';
 import {readFile,stat} from 'node:fs/promises';
 import path from 'node:path';
+import {translations} from '../js/i18n/locales.js';
 
 const root=process.cwd();
 let server:Server;
@@ -31,6 +32,7 @@ afterAll(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
 const importsOf=(source:string)=>[...source.matchAll(/(?:import|export)\s+(?:[^'";]+?\s+from\s+)?['"]([^'"]+)['"]/g)].map(match=>match[1]);
 
 describe('public frontend boundary',()=>{
+  it('keeps the personal About story in every supported language',()=>{for(const [code,locale] of Object.entries(translations)){expect(locale.about_p1.length,code).toBeGreaterThan(40);expect(locale.about_p2,code).toContain('Sign of the Times');expect(locale.about_p2.length,code).toBeGreaterThan(80);expect(locale.about_p3.length,code).toBeGreaterThan(40);expect(locale.about_p4.length,code).toBeGreaterThan(40);}});
   it('serves the complete browser module graph as JavaScript, never HTML or /functions',async()=>{
     const html=await (await fetch(origin+'/')).text();
     const entry=html.match(/<script\s+type="module"\s+src="([^"]+)"/)?.[1];
