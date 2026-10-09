@@ -566,9 +566,9 @@ async function buscarContextoMusica(nomeMusica, artista, env, letra, lang = 'en'
  */
 export async function buscarCapaMusica(nomeMusica, artista, canonical = {}) {
   const wanted={title:canonical.trackName||nomeMusica,artist:canonical.artistName||artista,album:canonical.albumName||'',duration:canonical.duration||null};
-  let coverUrl = null;
+  let coverUrl = canonical.provider==='spotify'&&canonical.album_image_url?canonical.album_image_url:null;
   let previewUrl = null;
-  let coverSource = null;
+  let coverSource = coverUrl?'spotify':null;
   let previewSource = null;
 
   // --- Tenta Apple/iTunes ---
@@ -581,7 +581,7 @@ export async function buscarCapaMusica(nomeMusica, artista, canonical = {}) {
     if (resp.ok) {
       const dados = await resp.json();
       const track = selectBestTrack(wanted,(dados?.results||[]).map(item=>({...item,title:item.trackName,artist:item.artistName,album:item.collectionName,duration:item.trackTimeMillis?item.trackTimeMillis/1000:null})));
-      if (track?.artworkUrl100) {
+      if (!coverUrl&&track?.artworkUrl100) {
         coverUrl = track.artworkUrl100.replace('100x100bb', '1000x1000bb');
         coverSource = 'apple';
       }
@@ -1219,7 +1219,7 @@ export async function onRequest(context) {
 
     // Busca capa e preview para cada música extra (até 3 no total)
     const publicLyrics=(item)=>({lyrics_available:Boolean(item?.lyrics),lyrics_source:item?.lyrics_source||null,lyrics_preview:item?.lyrics_source&&item.lyrics_source!=='user'?String(item.lyrics).replace(/\s+/g,' ').trim().slice(0,280):null,lyrics_url:null});
-    const songs = [{...songInputs[0],cover_url:coverUrl,audio_preview_url:previewUrl,...publicLyrics(songData[0])}];
+    const songs = [{...songInputs[0],cover_url:coverUrl,cover_source:coverSource,audio_preview_url:previewUrl,...publicLyrics(songData[0])}];
     if (songInputs.length > 1) {
       for (const extra of songInputs.slice(1)) {
         const extraCapa = await buscarCapaMusica(extra.title, extra.artist||'',extra);
@@ -1228,6 +1228,7 @@ export async function onRequest(context) {
           title: extra.title,
           artist: extra.artist||'',
           cover_url: extraCapa?.coverUrl || '',
+          cover_source: extraCapa?.coverSource || null,
           audio_preview_url: extraCapa?.previewUrl || null,
           ...publicLyrics(songData[songs.length]),
         });

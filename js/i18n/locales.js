@@ -61,7 +61,7 @@ en:['CHANGE','Confirmed song','Choose a song from the suggestions.'],'pt-BR':['T
 });
 
 export const RESULT_COPY=Object.freeze({
-en:['VIEW LYRICS','HIDE LYRICS','LYRICS','SOURCE','VIEW AT SOURCE ↗','OTHER SUGGESTIONS'],
-'pt-BR':['VER LETRA','OCULTAR LETRA','LETRA','FONTE','VER NA FONTE ↗','OUTRAS SUGESTÕES'],
-'zh-CN':['查看歌词','隐藏歌词','歌词','来源','前往来源 ↗','其他推荐'],ru:['ПОКАЗАТЬ ТЕКСТ','СКРЫТЬ ТЕКСТ','ТЕКСТ ПЕСНИ','ИСТОЧНИК','ОТКРЫТЬ ИСТОЧНИК ↗','ДРУГИЕ ВАРИАНТЫ'],es:['VER LETRA','OCULTAR LETRA','LETRA','FUENTE','VER EN LA FUENTE ↗','OTRAS SUGERENCIAS'],de:['SONGTEXT ZEIGEN','SONGTEXT AUSBLENDEN','SONGTEXT','QUELLE','QUELLE ÖFFNEN ↗','WEITERE VORSCHLÄGE'],fr:['VOIR LES PAROLES','MASQUER LES PAROLES','PAROLES','SOURCE','VOIR À LA SOURCE ↗','AUTRES SUGGESTIONS'],ja:['歌詞を見る','歌詞を隠す','歌詞','出典','出典を見る ↗','ほかの候補']
+en:['VIEW LYRICS','HIDE LYRICS','LYRICS','SOURCE','VIEW AT SOURCE ↗','OTHER SUGGESTIONS','OPEN IN SPOTIFY ↗','LISTEN ON SPOTIFY','CLOSE PLAYER','ALBUM'],
+'pt-BR':['VER LETRA','OCULTAR LETRA','LETRA','FONTE','VER NA FONTE ↗','OUTRAS SUGESTÕES','ABRIR NO SPOTIFY ↗','OUVIR NO SPOTIFY','FECHAR PLAYER','ÁLBUM'],
+'zh-CN':['查看歌词','隐藏歌词','歌词','来源','前往来源 ↗','其他推荐','在 SPOTIFY 中打开 ↗','在 SPOTIFY 收听','关闭播放器','专辑'],ru:['ПОКАЗАТЬ ТЕКСТ','СКРЫТЬ ТЕКСТ','ТЕКСТ ПЕСНИ','ИСТОЧНИК','ОТКРЫТЬ ИСТОЧНИК ↗','ДРУГИЕ ВАРИАНТЫ','ОТКРЫТЬ В SPOTIFY ↗','СЛУШАТЬ В SPOTIFY','ЗАКРЫТЬ ПЛЕЕР','АЛЬБОМ'],es:['VER LETRA','OCULTAR LETRA','LETRA','FUENTE','VER EN LA FUENTE ↗','OTRAS SUGERENCIAS','ABRIR EN SPOTIFY ↗','ESCUCHAR EN SPOTIFY','CERRAR REPRODUCTOR','ÁLBUM'],de:['SONGTEXT ZEIGEN','SONGTEXT AUSBLENDEN','SONGTEXT','QUELLE','QUELLE ÖFFNEN ↗','WEITERE VORSCHLÄGE','IN SPOTIFY ÖFFNEN ↗','AUF SPOTIFY ANHÖREN','PLAYER SCHLIESSEN','ALBUM'],fr:['VOIR LES PAROLES','MASQUER LES PAROLES','PAROLES','SOURCE','VOIR À LA SOURCE ↗','AUTRES SUGGESTIONS','OUVRIR DANS SPOTIFY ↗','ÉCOUTER SUR SPOTIFY','FERMER LE LECTEUR','ALBUM'],ja:['歌詞を見る','歌詞を隠す','歌詞','出典','出典を見る ↗','ほかの候補','SPOTIFY で開く ↗','SPOTIFY で聴く','プレーヤーを閉じる','アルバム']
 });

@@ -7,15 +7,15 @@ export function normalizeMusicText(value,{stripVersion=true}={}) {
   return text.replace(/\b(feat(?:uring)?|ft)\.?\s+[^()[\]-]+/g,' ').replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
 }
 const tokens=value=>new Set(normalizeMusicText(value).split(' ').filter(Boolean));
-function similarity(a,b) {
+export function musicTextSimilarity(a,b) {
   const na=normalizeMusicText(a),nb=normalizeMusicText(b); if(!na||!nb)return 0;if(na===nb)return 1;
   const aa=tokens(a),bb=tokens(b),intersection=[...aa].filter(x=>bb.has(x)).length;
   return intersection/Math.max(aa.size,bb.size);
 }
 export function scoreTrackMatch(wanted,candidate) {
-  const title=similarity(wanted.title,candidate.title); const artist=similarity(wanted.artist,candidate.artist);
+  const title=musicTextSimilarity(wanted.title,candidate.title); const artist=musicTextSimilarity(wanted.artist,candidate.artist);
   if(title<0.82||artist<0.72)return 0;
-  const album=wanted.album?similarity(wanted.album,candidate.album):0.75;
+  const album=wanted.album?musicTextSimilarity(wanted.album,candidate.album):0.75;
   const duration=wanted.duration&&candidate.duration?Math.max(0,1-Math.abs(Number(wanted.duration)-Number(candidate.duration))/20):0.75;
   return title*.55+artist*.30+album*.08+duration*.07;
 }

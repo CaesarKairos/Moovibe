@@ -1,6 +1,7 @@
 import { BETA_COPY, IDENTITY_COPY, LANGUAGES, PAGE_METADATA, RESULT_COPY, TRACK_SELECTION_COPY, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
 import { clearTrackSelection, getTrackSelection, resetTrackField, setTrackSelection } from './track-selection.js';
 import { buildMediaSlots } from './result-presentation.js';
+import { spotifyArtwork, spotifyEmbedUrl, spotifyTrackUrl } from './spotify-presentation.js';
 /**
  * Moovibe - Frontend Logic
  * Handles SPA navigation, loading states, and dynamic content injection.
@@ -367,6 +368,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 div.setAttribute('role', 'option');
                 div.dataset.index = String(index);
 
+                const artwork=spotifyArtwork(item);
+                if(artwork){const image=document.createElement('img');image.className='ac-cover spotify-cover';image.src=artwork;image.alt='';div.appendChild(image);}
+                const copy=document.createElement('div');copy.className='ac-copy';
                 const title = document.createElement('div');
                 title.className = 'ac-title';
                 title.textContent = item.title || '';
@@ -374,10 +378,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const artist = document.createElement('div');
                 artist.className = 'ac-artist';
                 const minutes=item.duration?Math.floor(item.duration/60)+':'+String(Math.round(item.duration%60)).padStart(2,'0'):'';
-                artist.textContent = [item.artist,item.album,minutes].filter(Boolean).join(' · ');
+                artist.textContent = [safeArr(item.artists).join(', ')||item.artist,item.album_name||item.album,item.album_release_year,minutes].filter(Boolean).join(' · ');
 
-                div.appendChild(title);
-                div.appendChild(artist);
+                copy.append(title,artist);div.appendChild(copy);
+                const spotifyUrl=spotifyTrackUrl(item.provider,item.provider_id);if(artwork&&spotifyUrl){const attribution=document.createElement('a');attribution.className='ac-spotify-link';attribution.href=spotifyUrl;attribution.target='_blank';attribution.rel='noopener noreferrer';attribution.textContent='Spotify ↗';attribution.addEventListener('click',event=>event.stopPropagation());div.appendChild(attribution);}
                 div.addEventListener('click', () => selectSuggestion(item));
                 div.addEventListener('mousemove', () => {
                     autocompleteIndex = index;
@@ -624,6 +628,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const coverUrl = safeStr(s.cover_url);
                 if (coverUrl) {
                     cover.src = coverUrl;
+                    if(s.cover_source==='spotify')cover.classList.add('spotify-cover');
                 } else {
                     cover.style.display = 'none';
                 }
@@ -642,6 +647,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 info.appendChild(label);
                 info.appendChild(titleEl);
                 info.appendChild(artistEl);
+                const albumMeta=document.createElement('p');albumMeta.className='song-card-album';albumMeta.textContent=[safeStr(s.album_name||s.album),safeStr(s.album_release_year)].filter(Boolean).join(' · ');albumMeta.style.display=albumMeta.textContent?'':'none';info.appendChild(albumMeta);
                 card.appendChild(cover);
                 card.appendChild(info);
                 const actions=document.createElement('div');actions.className='song-card-actions';
@@ -679,6 +685,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     card.appendChild(audio);
                     actions.appendChild(btn);
                 }
+                const resultCopy=RESULT_COPY[lang]||RESULT_COPY.en,spotifyUrl=spotifyTrackUrl(s.provider,s.provider_id),embedUrl=spotifyEmbedUrl(s.provider,s.provider_id);
+                if(spotifyUrl){const link=document.createElement('a');link.className='spotify-open-link';link.href=spotifyUrl;link.target='_blank';link.rel='noopener noreferrer';link.textContent=resultCopy[6];actions.appendChild(link);}
+                if(embedUrl){const player=document.createElement('details');player.className='spotify-embed-panel';const summary=document.createElement('summary');summary.innerHTML=`<span class="spotify-listen-label">${escapeHtml(resultCopy[7])}</span><span class="spotify-close-label">${escapeHtml(resultCopy[8])}</span>`;const container=document.createElement('div');container.className='spotify-embed-container';player.append(summary,container);player.addEventListener('toggle',()=>{if(!player.open||container.firstChild)return;card.querySelector('audio')?.pause();card.querySelector('.audio-preview-btn')?.classList.remove('playing');const iframe=document.createElement('iframe');iframe.src=embedUrl;iframe.title=`Spotify: ${safeStr(s.title)}`;iframe.loading='lazy';iframe.allow='autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture';iframe.setAttribute('allowfullscreen','');container.appendChild(iframe);});card.appendChild(player);}
                 const visibleLyrics=sessionLyrics.get(`${s.title}\u0000${s.artist||''}`)||safeStr(s.lyrics_preview);
                 if(s.lyrics_available&&visibleLyrics){
                     const copy=RESULT_COPY[lang]||RESULT_COPY.en,details=document.createElement('details');details.className='song-lyrics';
@@ -691,7 +700,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if(s.lyrics_url){const link=document.createElement('a');link.className='song-lyrics-source-link';link.href=s.lyrics_url;link.target='_blank';link.rel='noopener noreferrer';link.textContent=copy[4];content.appendChild(link);}
                     details.append(summary,content);card.appendChild(details);
                 }
-                if(actions.children.length)card.insertBefore(actions,card.querySelector('.song-lyrics'));
+                if(actions.children.length)card.insertBefore(actions,card.querySelector('.spotify-embed-panel, .song-lyrics'));
                 songsList.appendChild(card);
             });
         }

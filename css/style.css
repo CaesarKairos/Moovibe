@@ -334,11 +334,15 @@ h1, h2, h3, h4, .font-display {
 }
 
 .autocomplete-item {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
     padding: 10px 12px;
     cursor: pointer;
     border-bottom: 1px solid rgba(0,0,0,0.08);
     transition: background-color 0.15s;
 }
+.ac-cover{width:48px;height:48px;aspect-ratio:1;object-fit:contain;border:2px solid var(--text-dark);background:#fff;flex:0 0 48px}.ac-copy{min-width:0;flex:1}.ac-spotify-link{align-self:flex-end;color:var(--text-dark);font:700 .62rem var(--font-mono);white-space:nowrap}
 
 .autocomplete-item:last-child {
     border-bottom: none;
@@ -628,6 +632,7 @@ h1, h2, h3, h4, .font-display {
     border: var(--brutalist-border);
     flex-shrink: 0;
 }
+.song-card-cover.spotify-cover{object-fit:contain;background:#fff}.song-card-album{font-family:var(--font-mono);font-size:.68rem;color:#555;overflow-wrap:anywhere}.spotify-open-link{display:inline-flex;align-items:center;justify-content:center;border:2px solid var(--text-dark);background:var(--paper-bg);color:var(--text-dark);padding:.45rem .65rem;font-family:var(--font-mono);font-size:.66rem;font-weight:700;text-decoration:none}.spotify-embed-panel{flex-basis:100%;min-width:0;border-top:1px dashed var(--text-dark);padding-top:.65rem}.spotify-embed-panel summary{display:inline-flex;align-items:center;gap:.5rem;cursor:pointer;list-style:none;border:2px solid var(--text-dark);background:var(--paper-bg);padding:.4rem .6rem;font-family:var(--font-mono);font-size:.68rem;font-weight:700}.spotify-embed-panel summary::-webkit-details-marker{display:none}.spotify-embed-panel summary::after{content:'↓';color:var(--accent-red)}.spotify-embed-panel[open] summary::after{content:'↑'}.spotify-close-label{display:none}.spotify-embed-panel[open] .spotify-listen-label{display:none}.spotify-embed-panel[open] .spotify-close-label{display:inline}.spotify-embed-container{margin-top:.75rem;border:2px solid var(--text-dark);box-shadow:4px 4px 0 var(--text-dark);background:#fff;padding:.5rem}.spotify-embed-container iframe{display:block;width:100%;height:152px;border:0}.spotify-embed-panel summary:focus-visible,.spotify-open-link:focus-visible,.ac-spotify-link:focus-visible{outline:2px dashed var(--accent-red);outline-offset:3px}
 
 .song-card-info {
     flex: 1;

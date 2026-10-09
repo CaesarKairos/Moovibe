@@ -33,6 +33,7 @@ const importsOf=(source:string)=>[...source.matchAll(/(?:import|export)\s+(?:[^'
 
 describe('public frontend boundary',()=>{
   it('keeps the personal About story in every supported language',()=>{for(const [code,locale] of Object.entries(translations)){expect(locale.about_p1.length,code).toBeGreaterThan(40);expect(locale.about_p2,code).toContain('Sign of the Times');expect(locale.about_p2.length,code).toBeGreaterThan(80);expect(locale.about_p3.length,code).toBeGreaterThan(40);expect(locale.about_p4.length,code).toBeGreaterThan(40);}});
+  it('ships localized Spotify actions in every result locale',async()=>{const {RESULT_COPY}=await import('../js/i18n/locales.js');for(const [code,copy] of Object.entries(RESULT_COPY)){expect(copy[6],code).toBeTruthy();expect(copy[7],code).toBeTruthy();expect(copy[8],code).toBeTruthy();expect(copy[9],code).toBeTruthy();}});
   it('serves the complete browser module graph as JavaScript, never HTML or /functions',async()=>{
     const html=await (await fetch(origin+'/')).text();
     const entry=html.match(/<script\s+type="module"\s+src="([^"]+)"/)?.[1];
@@ -82,6 +83,11 @@ describe('public frontend boundary',()=>{
     expect(source).toContain('exactSpotify?0:1000');
     expect(source).toContain("startLoadingSequence(requestRecommendation(payload))");
     expect(source).toContain("document.createElement('details')");
+    expect(source).toContain("player.className='spotify-embed-panel'");
+    expect(source).toContain("player.addEventListener('toggle'");
+    expect(source.indexOf("document.createElement('iframe')")).toBeGreaterThan(source.indexOf("player.addEventListener('toggle'"));
+    expect(source).toContain("iframe.src=embedUrl");
+    expect(source).toContain("card.querySelector('audio')?.pause()");
     expect(source).toContain('buildMediaSlots(safeArr(movie.stills),safeStr(movie.poster_url))');
     expect(source).toContain("safeArr(movie.alternatives).slice(0,2)");
     const selectionSource=await readFile(path.join(root,'js','track-selection.js'),'utf8');
