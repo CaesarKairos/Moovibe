@@ -60,8 +60,19 @@ export const TRACK_SELECTION_COPY=Object.freeze({
 en:['CHANGE','Confirmed song','Choose a song from the suggestions.'],'pt-BR':['TROCAR','Música confirmada','Escolha uma música nas sugestões.'],'zh-CN':['更换','已确认歌曲','请从建议中选择歌曲。'],ru:['ИЗМЕНИТЬ','Песня подтверждена','Выберите песню из подсказок.'],es:['CAMBIAR','Canción confirmada','Elige una canción de las sugerencias.'],de:['ÄNDERN','Song bestätigt','Wähle einen Song aus den Vorschlägen.'],fr:['CHANGER','Chanson confirmée','Choisissez une chanson parmi les suggestions.'],ja:['変更','確認済みの曲','候補から曲を選んでください。']
 });
 
+export const AUTOCOMPLETE_COPY=Object.freeze({
+en:{loading:['SEARCHING TRACKS...',''],empty:['NO TRACKS FOUND','Try title + artist.'],error:['COULD NOT SEARCH RIGHT NOW','Try again in a few seconds.']},
+'pt-BR':{loading:['BUSCANDO FAIXAS...',''],empty:['NENHUMA FAIXA ENCONTRADA','Tente título + artista.'],error:['NÃO FOI POSSÍVEL BUSCAR AGORA','Tente novamente em alguns segundos.']},
+'zh-CN':{loading:['正在搜索歌曲…',''],empty:['未找到歌曲','请尝试“歌名 + 艺人”。'],error:['目前无法搜索','请几秒后重试。']},
+ru:{loading:['ИЩЕМ ТРЕКИ…',''],empty:['ТРЕКИ НЕ НАЙДЕНЫ','Попробуйте название + исполнитель.'],error:['СЕЙЧАС ПОИСК НЕДОСТУПЕН','Повторите попытку через несколько секунд.']},
+es:{loading:['BUSCANDO CANCIONES...',''],empty:['NO SE ENCONTRARON CANCIONES','Prueba título + artista.'],error:['NO SE PUEDE BUSCAR AHORA','Inténtalo de nuevo en unos segundos.']},
+de:{loading:['TITEL WERDEN GESUCHT...',''],empty:['KEINE TITEL GEFUNDEN','Versuche Titel + Interpret.'],error:['SUCHE GERADE NICHT MÖGLICH','Versuche es in einigen Sekunden erneut.']},
+fr:{loading:['RECHERCHE DE TITRES...',''],empty:['AUCUN TITRE TROUVÉ','Essayez titre + artiste.'],error:['RECHERCHE IMPOSSIBLE POUR LE MOMENT','Réessayez dans quelques secondes.']},
+ja:{loading:['曲を検索中…',''],empty:['曲が見つかりませんでした','曲名 + アーティスト名をお試しください。'],error:['現在検索できません','数秒後にもう一度お試しください。']}
+});
+
 export const RESULT_COPY=Object.freeze({
-en:['VIEW LYRICS','HIDE LYRICS','LYRICS','SOURCE','VIEW AT SOURCE ↗','OTHER SUGGESTIONS','OPEN IN SPOTIFY ↗','LISTEN ON SPOTIFY','CLOSE PLAYER','ALBUM'],
-'pt-BR':['VER LETRA','OCULTAR LETRA','LETRA','FONTE','VER NA FONTE ↗','OUTRAS SUGESTÕES','ABRIR NO SPOTIFY ↗','OUVIR NO SPOTIFY','FECHAR PLAYER','ÁLBUM'],
-'zh-CN':['查看歌词','隐藏歌词','歌词','来源','前往来源 ↗','其他推荐','在 SPOTIFY 中打开 ↗','在 SPOTIFY 收听','关闭播放器','专辑'],ru:['ПОКАЗАТЬ ТЕКСТ','СКРЫТЬ ТЕКСТ','ТЕКСТ ПЕСНИ','ИСТОЧНИК','ОТКРЫТЬ ИСТОЧНИК ↗','ДРУГИЕ ВАРИАНТЫ','ОТКРЫТЬ В SPOTIFY ↗','СЛУШАТЬ В SPOTIFY','ЗАКРЫТЬ ПЛЕЕР','АЛЬБОМ'],es:['VER LETRA','OCULTAR LETRA','LETRA','FUENTE','VER EN LA FUENTE ↗','OTRAS SUGERENCIAS','ABRIR EN SPOTIFY ↗','ESCUCHAR EN SPOTIFY','CERRAR REPRODUCTOR','ÁLBUM'],de:['SONGTEXT ZEIGEN','SONGTEXT AUSBLENDEN','SONGTEXT','QUELLE','QUELLE ÖFFNEN ↗','WEITERE VORSCHLÄGE','IN SPOTIFY ÖFFNEN ↗','AUF SPOTIFY ANHÖREN','PLAYER SCHLIESSEN','ALBUM'],fr:['VOIR LES PAROLES','MASQUER LES PAROLES','PAROLES','SOURCE','VOIR À LA SOURCE ↗','AUTRES SUGGESTIONS','OUVRIR DANS SPOTIFY ↗','ÉCOUTER SUR SPOTIFY','FERMER LE LECTEUR','ALBUM'],ja:['歌詞を見る','歌詞を隠す','歌詞','出典','出典を見る ↗','ほかの候補','SPOTIFY で開く ↗','SPOTIFY で聴く','プレーヤーを閉じる','アルバム']
+en:['VIEW LYRICS','HIDE LYRICS','LYRICS','SOURCE','VIEW AT SOURCE ↗','OTHER SUGGESTIONS','OPEN IN SPOTIFY ↗','ALBUM'],
+'pt-BR':['VER LETRA','OCULTAR LETRA','LETRA','FONTE','VER NA FONTE ↗','OUTRAS SUGESTÕES','ABRIR NO SPOTIFY ↗','ÁLBUM'],
+'zh-CN':['查看歌词','隐藏歌词','歌词','来源','前往来源 ↗','其他推荐','在 SPOTIFY 中打开 ↗','专辑'],ru:['ПОКАЗАТЬ ТЕКСТ','СКРЫТЬ ТЕКСТ','ТЕКСТ ПЕСНИ','ИСТОЧНИК','ОТКРЫТЬ ИСТОЧНИК ↗','ДРУГИЕ ВАРИАНТЫ','ОТКРЫТЬ В SPOTIFY ↗','АЛЬБОМ'],es:['VER LETRA','OCULTAR LETRA','LETRA','FUENTE','VER EN LA FUENTE ↗','OTRAS SUGERENCIAS','ABRIR EN SPOTIFY ↗','ÁLBUM'],de:['SONGTEXT ZEIGEN','SONGTEXT AUSBLENDEN','SONGTEXT','QUELLE','QUELLE ÖFFNEN ↗','WEITERE VORSCHLÄGE','IN SPOTIFY ÖFFNEN ↗','ALBUM'],fr:['VOIR LES PAROLES','MASQUER LES PAROLES','PAROLES','SOURCE','VOIR À LA SOURCE ↗','AUTRES SUGGESTIONS','OUVRIR DANS SPOTIFY ↗','ALBUM'],ja:['歌詞を見る','歌詞を隠す','歌詞','出典','出典を見る ↗','ほかの候補','SPOTIFY で開く ↗','アルバム']
 });

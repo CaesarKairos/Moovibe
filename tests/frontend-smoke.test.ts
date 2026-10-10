@@ -33,7 +33,7 @@ const importsOf=(source:string)=>[...source.matchAll(/(?:import|export)\s+(?:[^'
 
 describe('public frontend boundary',()=>{
   it('keeps the personal About story in every supported language',()=>{for(const [code,locale] of Object.entries(translations)){expect(locale.about_p1.length,code).toBeGreaterThan(40);expect(locale.about_p2,code).toContain('Sign of the Times');expect(locale.about_p2.length,code).toBeGreaterThan(80);expect(locale.about_p3.length,code).toBeGreaterThan(40);expect(locale.about_p4.length,code).toBeGreaterThan(40);}});
-  it('ships localized Spotify actions in every result locale',async()=>{const {RESULT_COPY}=await import('../js/i18n/locales.js');for(const [code,copy] of Object.entries(RESULT_COPY)){expect(copy[6],code).toBeTruthy();expect(copy[7],code).toBeTruthy();expect(copy[8],code).toBeTruthy();expect(copy[9],code).toBeTruthy();}});
+  it('ships localized Spotify links and autocomplete states in every locale',async()=>{const {AUTOCOMPLETE_COPY,RESULT_COPY}=await import('../js/i18n/locales.js');for(const [code,copy] of Object.entries(RESULT_COPY))expect(copy[6],code).toBeTruthy();for(const [code,copy] of Object.entries(AUTOCOMPLETE_COPY)){expect(copy.loading[0],code).toBeTruthy();expect(copy.empty.join(' '),code).toBeTruthy();expect(copy.error.join(' '),code).toBeTruthy();}});
   it('serves the complete browser module graph as JavaScript, never HTML or /functions',async()=>{
     const html=await (await fetch(origin+'/')).text();
     const entry=html.match(/<script\s+type="module"\s+src="([^"]+)"/)?.[1];
@@ -80,14 +80,13 @@ describe('public frontend boundary',()=>{
     expect(source.indexOf('setTrackSelection(input,item')).toBeLessThan(source.indexOf("track('recommend_started')"));
     expect(source).toContain("fetch('/music-search?q='");
     expect(source).toContain("data.mode==='exact'&&items[0]");
-    expect(source).toContain('exactSpotify?0:1000');
+    expect(source).toContain('exactSpotify?0:350');
     expect(source).toContain("startLoadingSequence(requestRecommendation(payload))");
     expect(source).toContain("document.createElement('details')");
-    expect(source).toContain("player.className='spotify-embed-panel'");
-    expect(source).toContain("player.addEventListener('toggle'");
-    expect(source.indexOf("document.createElement('iframe')")).toBeGreaterThan(source.indexOf("player.addEventListener('toggle'"));
-    expect(source).toContain("iframe.src=embedUrl");
-    expect(source).toContain("card.querySelector('audio')?.pause()");
+    expect(source).not.toContain('spotify-embed-panel');
+    expect(source).not.toContain("document.createElement('iframe')");
+    expect(source).toContain("link.className='spotify-open-link'");
+    expect(source).toContain("btn.className = 'audio-preview-btn'");
     expect(source).toContain('buildMediaSlots(safeArr(movie.stills),safeStr(movie.poster_url))');
     expect(source).toContain("safeArr(movie.alternatives).slice(0,2)");
     const selectionSource=await readFile(path.join(root,'js','track-selection.js'),'utf8');
@@ -96,7 +95,8 @@ describe('public frontend boundary',()=>{
     expect(source).toContain("errorData.error?.code==='NOT_A_TRACK'?copy[5]:copy[4]");
     expect(source).not.toContain('resolverArtistaViaLrclib');
     expect(source).toContain('fetchSuggestions(termo, requestId)');
-    expect(source).toMatch(/fetchSuggestions\(termo, requestId\);\s*\}, exactSpotify\?0:1000\);/);
+    expect(source).toMatch(/renderSuggestionState\('loading'\);\s*fetchSuggestions\(termo, requestId\);\s*\}, exactSpotify\?0:350\);/);
+    for(const state of ['loading','empty','error'])expect(source).toContain(`renderSuggestionState('${state}')`);
     expect(source).toContain('requestId !== autocompleteRequest || input.value.trim() !== termo');
     expect(source).toContain("window.addEventListener('popstate'");
     expect(source).toMatch(/fetch\('\/analytics'[\s\S]+?\.catch\(\(\)=>\{\}\)/);

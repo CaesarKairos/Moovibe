@@ -1,6 +1,6 @@
 import {describe,expect,it} from 'vitest';
 import {POSTER_CROP_POSITIONS,buildMediaSlots} from '../js/result-presentation.js';
-import {spotifyArtwork,spotifyEmbedUrl,spotifyTrackUrl} from '../js/spotify-presentation.js';
+import {spotifyArtwork,spotifyTrackUrl} from '../js/spotify-presentation.js';
 
 describe('editorial result media',()=>{
   const poster='/poster.jpg';
@@ -10,6 +10,6 @@ describe('editorial result media',()=>{
 
 describe('safe Spotify presentation',()=>{
   const id='4uLU6hMCjMI75M1A2tKUQC';
-  it('builds open and embed URLs only from a validated canonical id',()=>{expect(spotifyTrackUrl('spotify',id)).toBe(`https://open.spotify.com/track/${id}`);expect(spotifyEmbedUrl('spotify',id)).toBe(`https://open.spotify.com/embed/track/${id}`);for(const invalid of ['https://evil.test/x','short','../../x'])expect(spotifyEmbedUrl('spotify',invalid)).toBeNull();expect(spotifyEmbedUrl('lrclib',id)).toBeNull()});
+  it('builds open URLs only from a validated canonical id',()=>{expect(spotifyTrackUrl('spotify',id)).toBe(`https://open.spotify.com/track/${id}`);for(const invalid of ['https://evil.test/x','short','../../x'])expect(spotifyTrackUrl('spotify',invalid)).toBeNull();expect(spotifyTrackUrl('lrclib',id)).toBeNull()});
   it('uses exact Spotify artwork only for Spotify tracks',()=>{expect(spotifyArtwork({provider:'spotify',album_image_url:'exact.jpg'})).toBe('exact.jpg');expect(spotifyArtwork({provider:'lrclib',album_image_url:'wrong.jpg'})).toBe('')});
 });

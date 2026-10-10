@@ -10,6 +10,7 @@ import { selectBestTrack } from './_lib/music-match.js';
 import { canonicalSongKey,findSong, persistLyricsBestEffort, validateUserLyrics } from './_lib/song-library.js';
 import { getLanguageConfig, normalizeLanguage } from './_lib/languages.js';
 import { resolveCanonicalSong,selectGeniusHit,selectLyricsMatch } from './_lib/song-identity.js';
+import { formatLyricsPreview } from './_lib/lyrics-preview.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TMDB_BUSCA_URL = 'https://api.themoviedb.org/3/search/movie';
@@ -1218,7 +1219,7 @@ export async function onRequest(context) {
     const previewSource = capaDados?.previewSource || null;
 
     // Busca capa e preview para cada música extra (até 3 no total)
-    const publicLyrics=(item)=>({lyrics_available:Boolean(item?.lyrics),lyrics_source:item?.lyrics_source||null,lyrics_preview:item?.lyrics_source&&item.lyrics_source!=='user'?String(item.lyrics).replace(/\s+/g,' ').trim().slice(0,280):null,lyrics_url:null});
+    const publicLyrics=(item)=>({lyrics_available:Boolean(item?.lyrics),lyrics_source:item?.lyrics_source||null,lyrics_preview:item?.lyrics_source&&item.lyrics_source!=='user'?formatLyricsPreview(item.lyrics,280):null,lyrics_url:null});
     const songs = [{...songInputs[0],cover_url:coverUrl,cover_source:coverSource,audio_preview_url:previewUrl,...publicLyrics(songData[0])}];
     if (songInputs.length > 1) {
       for (const extra of songInputs.slice(1)) {
