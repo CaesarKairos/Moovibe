@@ -45,3 +45,11 @@ History reads and writes are best-effort: a D1 quota or availability failure is 
 Two simultaneous requests can read the same pre-write history and may still choose the same film. D1 persistence substantially reduces repetition across requests, instances, deploys, and days, but this design intentionally avoids locks and extra coordination writes.
 
 Final recommendation responses are no longer cached or replayed. Lyrics, acoustic features, profiles, individual and multi-song combination embeddings, TMDb hydration, posters, and stills remain cached. Share payloads remain immutable reads, and new share slugs include the recommendation request identifier so later interpretations cannot overwrite an earlier share.
+
+## Control Room pipeline productivity
+
+The Overview derives discovery, completed detail sheets, enrichment, and vectorization counts directly from `movies.created_at`, `details_fetched_at`, `enriched_at`, and `embedded_at`. “Today” uses the calendar day in `America/Sao_Paulo`; the 24-hour and 7-day choices are moving windows. JavaScript calculates timezone-aware UTC boundaries and D1 receives semi-open `>= ? AND < ?` comparisons.
+
+One read-only aggregate query produces all three windows and the seven daily chart buckets. Its in-memory result is shared by concurrent requests and cached for 90 seconds, so the 15-second dashboard polling does not repeatedly scan `movies`. No KV/D1 cache writes, triggers, timestamp indexes, jobs, external APIs, Gemini calls, or Vectorize operations are involved. `EXPLAIN QUERY PLAN` reports a single `SCAN movies`; adding four timestamp indexes would increase every pipeline write and would not help this multi-column aggregate enough to justify a migration.
+
+Zero is displayed as a valid measurement. A query failure is reported as unavailable; if a previously generated snapshot exists, it is explicitly marked as stale cached data. These timestamps describe the current completion state, not an immutable event ledger: reprocessing can move a film into a later day and alter earlier chart counts.
