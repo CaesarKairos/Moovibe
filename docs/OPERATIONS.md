@@ -12,7 +12,7 @@ The dashboard is read-only. Pipeline mutation endpoints remain separate Worker t
 
 ## Gemini Control Center
 
-The `09 / CENTRAL DE IA` dashboard section reads a cached health snapshot during normal polling. Only **VERIFICAR AGORA** makes four small Gemini calls: generation and embedding from Pages, plus generation and embedding from the Pipeline Worker. This action has a 60-second cooldown and the snapshot expires from KV after 15 minutes.
+The `09 / CENTRAL DE IA` dashboard section reads the last persisted health snapshot during normal polling; opening the tab and its 15-second refresh never probe Gemini. **VERIFICAR PAGES** and **VERIFICAR WORKER** are independent explicit actions. Each tests generation and embedding only in its selected runtime, has its own 60-second cooldown, and does not block a check of the other runtime. Results become visibly stale after 15 minutes and the compact snapshot/history is retained in KV for 30 days.
 
 Configure these values without committing credentials:
 
@@ -30,7 +30,9 @@ npx wrangler pages secret put GEMINI_API_KEY --project-name moovibe
 npx wrangler secret put GEMINI_API_KEY --config workers/pipeline/wrangler.jsonc
 ```
 
-After a manual change, use **VERIFICAR AGORA** to confirm both capabilities in both runtimes. A successful minimal check does not prove that long production workloads will fit within provider quotas.
+After a manual change, use the corresponding runtime's verification button. A successful minimal check does not prove that long production workloads will fit within provider quotas. Network, timeout, Worker URL, and Pages-to-Worker authentication failures are reported as communication/configuration failures, never as proof that the Gemini credential itself is invalid.
+
+The dashboard has one navigation/render controller and one active-tab polling timer. Navigation aborts obsolete requests and ignores late responses by generation number. Polling patches only the live region when data changes, preserving an open drawer, focus, scroll position, selected productivity period, search, filters, and pagination. No `MutationObserver` is used to repair replaced markup.
 
 ## Recommendation diversity
 

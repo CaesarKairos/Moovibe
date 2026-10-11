@@ -2,8 +2,8 @@ import {beforeEach,describe,expect,it,vi} from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import {cachedProductivity,productivitySql,productivityTimeBounds,queryProductivity,resetProductivityCache} from '../functions/_lib/admin-productivity.js';
-import {adminProductivityScript,adminProductivityStyles} from '../functions/_lib/admin-productivity-ui.js';
-import {adminOverviewExtrasScript} from '../functions/_lib/admin-overview-extras-ui.js';
+import {adminProductivityStyles} from '../functions/_lib/admin-productivity-ui.js';
+import {adminControlRoomScript} from '../functions/_lib/admin-control-room.js';
 
 class Statement{values:any[]=[];constructor(private db:Database.Database,private sql:string){}bind(...values:any[]){this.values=values;return this}async first(){return this.db.prepare(this.sql).get(...this.values)}}
 const d1=(db:Database.Database)=>({prepare:(sql:string)=>new Statement(db,sql)});
@@ -29,7 +29,7 @@ describe('short cache and failure behavior',()=>{
 });
 
 describe('Control Room presentation',()=>{
-  it('provides persistent period controls, three chart series and textual accessibility',()=>{const ui=adminProductivityScript+adminProductivityStyles;expect(()=>new Function(adminProductivityScript)).not.toThrow();for(const text of ['HOJE','24 HORAS','7 DIAS','DESCOBERTA','ENRIQUECIMENTO','VETORIZAÇÃO','Dados textuais do gráfico','aria-pressed'])expect(ui).toContain(text);expect(ui).toContain("let period='today'");expect(ui).toContain('viewBox="0 0 690 250"');});
+  it('provides persistent period controls, three chart series and textual accessibility',()=>{const ui=adminControlRoomScript+adminProductivityStyles;expect(()=>new Function(adminControlRoomScript)).not.toThrow();for(const text of ['HOJE','24 HORAS','7 DIAS','DESCOBERTA','ENRIQUECIMENTO','VETORIZAÇÃO','Dados textuais do gráfico','aria-pressed'])expect(ui).toContain(text);expect(ui).toContain("period:'today'");expect(ui).toContain('viewBox="0 0 690 250"');});
   it('has responsive breakpoints without changing the public frontend',()=>{expect(adminProductivityStyles).toContain('@media(max-width:760px)');expect(adminProductivityStyles).toContain('@media(max-width:390px)');expect(fs.readFileSync('js/script.js','utf8')).not.toContain('productivity-panel');});
-  it('preserves the recommendations and music overview sections',()=>{expect(()=>new Function(adminOverviewExtrasScript)).not.toThrow();expect(adminOverviewExtrasScript).toContain('RECOMENDAÇÕES');expect(adminOverviewExtrasScript).toContain('INTELIGÊNCIA MUSICAL');});
+  it('preserves the recommendations and music overview sections',()=>{expect(adminControlRoomScript).toContain('RECOMENDAÇÕES');expect(adminControlRoomScript).toContain('INTELIGÊNCIA MUSICAL');});
 });
