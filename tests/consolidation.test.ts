@@ -3,11 +3,12 @@ import fs from 'node:fs';
 import {detectLanguage,LANGUAGES,normalizeLanguage} from '../functions/_lib/languages.js';
 import {LOCALE_KEYS,localeKeysMatch,translations} from '../js/i18n/locales.js';
 import {normalizeMusicText,selectBestTrack} from '../functions/_lib/music-match.js';
-import {createAdminSession,safeEqual,verifyAdminSession} from '../functions/_lib/admin-auth.js';
+import {createAdminSession,createCsrfToken,safeEqual,verifyAdminSession,verifyCsrfToken} from '../functions/_lib/admin-auth.js';
 import {sanitizeAudit,writeAudit} from '../functions/_lib/audit.js';
 import {canonicalSongKey,validateUserLyrics} from '../functions/_lib/song-library.js';
 import {overview} from '../functions/admin/[secret]/[[path]].js';
 import {adminScript,dashboardMarkup,loginMarkup} from '../functions/_lib/admin-ui.js';
+import {adminAiScript} from '../functions/_lib/admin-ai-ui.js';
 
 describe('internationalization',()=>{
   it('defines every base key explicitly in all eight locales',()=>{expect(Object.keys(LANGUAGES)).toHaveLength(8);expect(Object.keys(translations).sort()).toEqual(Object.keys(LANGUAGES).sort());expect(localeKeysMatch()).toBe(true);for(const value of Object.values(translations))expect(Object.keys(value).sort()).toEqual([...LOCALE_KEYS].sort());});
@@ -22,10 +23,13 @@ describe('track identity',()=>{
 });
 describe('admin security',()=>{
   it('creates valid, expiring signed sessions and rejects tampering',async()=>{const token=await createAdminSession('long-admin-key',10);expect(await verifyAdminSession('long-admin-key',token)).toBe(true);expect(await verifyAdminSession('other-key',token)).toBe(false);expect(await verifyAdminSession('long-admin-key',await createAdminSession('long-admin-key',-1))).toBe(false);expect(safeEqual('a','b')).toBe(false);});
+  it('binds CSRF tokens to the authenticated session',async()=>{const token=await createAdminSession('admin',10),csrf=await createCsrfToken('admin',token);expect(await verifyCsrfToken('admin',token,csrf)).toBe(true);expect(await verifyCsrfToken('admin',token+'x',csrf)).toBe(false);});
  it('redacts secret-shaped audit fields and values',()=>{const safe:any=sanitizeAudit({Authorization:'Bearer abcdefghijklmnop',nested:{api_key:'secret'},text:'sk-abcdefghijklmnop'});expect(JSON.stringify(safe)).not.toContain('abcdefghijklmnop');expect(safe.Authorization).toBe('[REDACTED]');});
  it('emits sanitized structured AI traces without storage bindings',async()=>{const lines:string[]=[];const spy=vi.spyOn(console,'log').mockImplementation(value=>lines.push(String(value)));await writeAudit({}, {stage:'song_profile',Authorization:'Bearer abcdefghijklmnop',success:true});spy.mockRestore();const trace=JSON.parse(lines[0]);expect(trace).toMatchObject({service:'moovibe',event:'ai_trace',stage:'song_profile',success:true,Authorization:'[REDACTED]'});expect(lines[0]).not.toContain('abcdefghijklmnop');});
  it('requires no R2 binding in either deployment',()=>{const config=fs.readFileSync('wrangler.toml','utf8')+fs.readFileSync('workers/pipeline/wrangler.jsonc','utf8');expect(config).not.toMatch(/AI_AUDIT_LOGS|r2_buckets|moovibe-ai-audit/i);});
- it('keeps the secret path out of embedded public UI and preserves all controls',()=>{const ui=dashboardMarkup()+loginMarkup()+adminScript;expect(ui).not.toContain('ADMIN_PATH_SECRET');for(const tab of ['overview','catalog','pipeline','recommendations','songs','traces','traffic','system'])expect(ui).toContain(`data-tab="${tab}"`);for(const behavior of ['logout','toolbar','filter','prev','next','drawer','setInterval'])expect(ui).toContain(behavior);});
+ it('keeps the secret path out of embedded public UI and preserves all controls',()=>{const ui=dashboardMarkup('csrf')+loginMarkup()+adminScript+adminAiScript;expect(ui).not.toContain('ADMIN_PATH_SECRET');for(const tab of ['overview','catalog','pipeline','recommendations','songs','traces','traffic','system','ai'])expect(ui).toContain(`data-tab="${tab}"`);for(const behavior of ['logout','toolbar','filter','prev','next','drawer','setInterval'])expect(ui).toContain(behavior);expect(ui).toContain('SUBSTITUIÇÃO AUTOMÁTICA NÃO CONFIGURADA');expect(ui).not.toContain('CLOUDFLARE_ROTATION_TOKEN');});
+ it('keeps the lock favicon private to the admin document',()=>{const publicHtml=fs.readFileSync('index.html','utf8'),adminRoute=fs.readFileSync('functions/admin/[secret]/[[path]].js','utf8'),lock=fs.readFileSync('assets/moovibe-admin-lock.svg','utf8');expect(publicHtml).not.toContain('moovibe-admin-lock.svg');expect(adminRoute).toContain('/assets/moovibe-admin-lock.svg');expect(lock).toContain('<svg');});
+ it('keeps background AI refresh cache-only',()=>{expect(adminAiScript).toContain("api('ai')");expect(adminAiScript).toContain("api('ai/check',{method:'POST'");expect(adminAiScript).toContain('O polling exibe somente o último resultado armazenado');});
  it('normalizes empty aggregate metrics to zero in SQL and output',async()=>{const rows=[{total:0,complete:0,enriched:0,embedded:0,added_today:0,added_7d:0},{queued:0,running:0,done:0,errors:0,errors_24h:0,retries:0},{recommendations:0,last_24h:0,successes:0,cache_hits:0},{songs:0,with_lyrics:0,with_profiles:0,with_embeddings:0}];let index=0;const sql:string[]=[];const db={prepare:(query:string)=>{sql.push(query);return {first:async()=>rows[index++]}}};const result=await overview(db as any);expect(Object.values(result)).not.toContain(null);expect(result).toMatchObject({recommendations:0,last_24h:0,successes:0,cache_hits:0,songs:0,with_lyrics:0,with_profiles:0,with_embeddings:0});expect(sql.join(' ')).toContain('COALESCE');});
 });
 describe('song persistence invariants',()=>{

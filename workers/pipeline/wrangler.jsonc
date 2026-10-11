@@ -8,7 +8,8 @@
   "vars": {
     "EMBEDDING_MODEL": "gemini-embedding-2",
     "EMBEDDING_DIMENSIONS": "768",
-    "EMBEDDING_SCHEMA_VERSION": "movie-v1"
+    "EMBEDDING_SCHEMA_VERSION": "movie-v1",
+    "GEMINI_PROJECT_LABEL": "Moovibe Pipeline"
   },
   "d1_databases": [{
     "binding": "MOOVIBE_LIBRARY",

@@ -8,6 +8,9 @@ compatibility_date = "2026-07-18"
 EMBEDDING_MODEL = "gemini-embedding-2"
 EMBEDDING_DIMENSIONS = "768"
 RECOMMENDER_VERSION = "catalog-v5-rich-curation"
+GEMINI_PROJECT_LABEL = "Moovibe Recommendations"
+# Defina PIPELINE_WORKER_URL no ambiente Pages. PIPELINE_ADMIN_TOKEN deve ser
+# um secret e ter o mesmo valor de ADMIN_TOKEN no Worker.
 
 # KV já existente do Moovibe.
 # Continua responsável por cache, histórico e compartilhamentos.
