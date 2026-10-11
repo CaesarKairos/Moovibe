@@ -109,12 +109,12 @@ export async function recommendFromCatalog({env,songs,lyrics,context,lang='en',h
   if(!env.MOOVIBE_LIBRARY) throw new Error('MOOVIBE_LIBRARY D1 binding is missing');
   const gemini=new GeminiClient(env.GEMINI_API_KEY);
   const requestId=crypto.randomUUID(), embeddingModel=env.EMBEDDING_MODEL||'gemini-embedding-2',dimensions=Number(env.EMBEDDING_DIMENSIONS||768);
-  const perSong=[];let profileCacheHits=0;
+  const perSong=[];let profileCacheHits=0,embeddingCacheHits=0;
   for(const song of songs){
     const basis=song.analysis_basis||'LYRICAL';
     const signaturePayload={identity:{provider:song.provider,provider_id:song.provider_id,title:song.title,artist:song.artist},analysis_basis:basis,lyrics_hash:basis==='LYRICAL'?(song.lyrics_hash||await sha256(song.lyrics||'')):null,audio_source:song.acoustic_source||null,audio_features:song.acoustic_features||null,schema:SONG_PROFILE_SCHEMA_VERSION,document:SONG_EMBEDDING_DOCUMENT_VERSION};
     const lyricsHash=await sha256(JSON.stringify(signaturePayload)); let cached=await loadProfile(env.MOOVIBE_LIBRARY,song.song_id,{lyricsHash,schemaVersion:SONG_PROFILE_SCHEMA_VERSION,embeddingModel,dimensions});
-    if(cached){profileCacheHits++;perSong.push({profile:cached.profile,embedding:cached.embedding,model:cached.model});continue;}
+    if(cached){profileCacheHits++;embeddingCacheHits++;perSong.push({profile:cached.profile,embedding:cached.embedding,model:cached.model});continue;}
     const acoustic=JSON.stringify(song.acoustic_features||{});
     const prompt=basis==='INSTRUMENTAL_ACOUSTIC'
       ?`Instrumental track: ${song.title} — ${song.artist||'unknown'}\nAcoustic estimates: ${acoustic}\nSupported context:\n${String(song.context||'').slice(0,2000)}`
@@ -133,7 +133,13 @@ export async function recommendFromCatalog({env,songs,lyrics,context,lang='en',h
   /** @type {any} */ const combined={}; for(const key of ['moods','themes','atmosphere'])combined[key]=[...new Set(perSong.flatMap(x=>x.profile[key]||[]))].slice(0,12); combined.pace=perSong.map(x=>x.profile.pace).filter(Boolean).join(' / '); for(const key of numericKeys)combined[key]=perSong.reduce((sum,x)=>sum+Number(x.profile[key]||0),0)/perSong.length;
   const analysis={data:combined};
   const semantic=`Music profile\nSongs: ${songs.map(s=>s.analysis_basis==='INSTRUMENTAL_ACOUSTIC'?`${s.title} — ${s.artist||''}\nInstrumental acoustic analysis: ${JSON.stringify(s.acoustic_features||{})}\nContext: ${String(s.context||'').slice(0,800)}`:`${s.title} — ${s.artist||''}\nLyrics: ${String(s.lyrics||'').slice(0,2500)}\nAcoustic features: ${JSON.stringify(s.acoustic_features||{})}\nContext: ${String(s.context||'').slice(0,800)}`).join('\n\n')}\nProfile: ${JSON.stringify(analysis.data)}`;
-  const vector=songs.length===1?perSong[0].embedding:await gemini.embed(semantic,{model:embeddingModel,dimensions,taskType:'RETRIEVAL_QUERY'});
+  let vector=perSong[0].embedding;
+  if(songs.length>1){
+    const combinationKey=`music-combination-embedding:${SONG_EMBEDDING_DOCUMENT_VERSION}:${embeddingModel}:${dimensions}:${await sha256(semantic)}`;
+    let cachedCombination=null;try{cachedCombination=await env.MOOVIBE_DB?.get(combinationKey,'json');}catch{}
+    if(Array.isArray(cachedCombination?.values)&&cachedCombination.values.length===dimensions){vector=cachedCombination.values;embeddingCacheHits++;}
+    else {vector=await gemini.embed(semantic,{model:embeddingModel,dimensions,taskType:'RETRIEVAL_QUERY'});try{await env.MOOVIBE_DB?.put(combinationKey,JSON.stringify({values:vector}),{expirationTtl:60*60*24*30});}catch{}}
+  }
 
   // CANAL A — semantic: music-profile embedding against Vectorize (top 100).
   let semanticMatches=[];
@@ -172,11 +178,11 @@ export async function recommendFromCatalog({env,songs,lyrics,context,lang='en',h
     history_global_penalized_count:historical.globally_penalized,
     history_relaxed:historical.relaxed,
     profile_cache_hits:profileCacheHits,
-    embedding_cache_hits:profileCacheHits,
+    embedding_cache_hits:embeddingCacheHits,
     new_curation:true,
     top:ranked.slice(0,5).map(c=>({tmdb_id:c.tmdb_id,final_score:num(c.deterministic_score),components:{numeric:num(c.component_scores?.numeric),semantic:num(c.component_scores?.semantic),concepts:num(c.component_scores?.concepts),quality:num(c.component_scores?.quality),final:num(c.component_scores?.final)},channels:c.channels}))
   };
-  console.log(JSON.stringify({event:'catalog_candidates',lang,semantic_count:diagnostics.semantic_count,numeric_count:diagnostics.numeric_count,union_count:diagnostics.union_count,final_count:diagnostics.final_count,keyword_fallback_count:keywordFallback,history_specific_count:diagnostics.history_specific_count,history_excluded_count:diagnostics.history_excluded_count,history_global_penalized_count:diagnostics.history_global_penalized_count,history_relaxed:diagnostics.history_relaxed,history_available:diagnostics.history_available,profile_cache_hits:profileCacheHits,embedding_cache_hits:profileCacheHits,new_curation:true,ranking:'deterministic',top:diagnostics.top}));
+  console.log(JSON.stringify({event:'catalog_candidates',lang,semantic_count:diagnostics.semantic_count,numeric_count:diagnostics.numeric_count,union_count:diagnostics.union_count,final_count:diagnostics.final_count,keyword_fallback_count:keywordFallback,history_specific_count:diagnostics.history_specific_count,history_excluded_count:diagnostics.history_excluded_count,history_global_penalized_count:diagnostics.history_global_penalized_count,history_relaxed:diagnostics.history_relaxed,history_available:diagnostics.history_available,profile_cache_hits:profileCacheHits,embedding_cache_hits:embeddingCacheHits,new_curation:true,ranking:'deterministic',top:diagnostics.top}));
   let curation;
   try {
     const language=getLanguageConfig(lang); const allInstrumental=songs.every(s=>s.analysis_basis==='INSTRUMENTAL_ACOUSTIC'); const evidence=songs.map(s=>s.analysis_basis==='INSTRUMENTAL_ACOUSTIC'?`${s.title}: instrumental acoustic estimates ${JSON.stringify(s.acoustic_features||{})}`:`${s.title}: lyrical evidence ${String(s.lyrics||'').slice(0,1800)}`).join('\n\n'); const curatorPrompt=`Music profile:\n${JSON.stringify(analysis.data)}\n\nMusic evidence:\n${evidence}\n\nAllowed candidates:\n${JSON.stringify(candidates)}`; const curatorSystem=buildCuratorSystem(language.aiName)+(allInstrumental?' All selected tracks are instrumental. Never mention lyrics, verses, a lyrical speaker, vocals, instruments, tempo changes, or structures not explicitly supported. Connect film through supported rhythm, intensity, scale, quietness, tension, emotional character, or productive contrast.':' Treat each song according to its stated evidence; never attribute lyrics to an instrumental track.');

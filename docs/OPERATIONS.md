@@ -44,4 +44,4 @@ History reads and writes are best-effort: a D1 quota or availability failure is 
 
 Two simultaneous requests can read the same pre-write history and may still choose the same film. D1 persistence substantially reduces repetition across requests, instances, deploys, and days, but this design intentionally avoids locks and extra coordination writes.
 
-Final recommendation responses are no longer cached or replayed. Lyrics, acoustic features, profiles, embeddings, TMDb hydration, posters, and stills remain cached. Share payloads remain immutable reads, and new share slugs include the recommendation request identifier so later interpretations cannot overwrite an earlier share.
+Final recommendation responses are no longer cached or replayed. Lyrics, acoustic features, profiles, individual and multi-song combination embeddings, TMDb hydration, posters, and stills remain cached. Share payloads remain immutable reads, and new share slugs include the recommendation request identifier so later interpretations cannot overwrite an earlier share.
