@@ -31,3 +31,17 @@ npx wrangler secret put GEMINI_API_KEY --config workers/pipeline/wrangler.jsonc
 ```
 
 After a manual change, use **VERIFICAR AGORA** to confirm both capabilities in both runtimes. A successful minimal check does not prove that long production workloads will fit within provider quotas.
+
+## Recommendation diversity
+
+Apply migration `0006_recommendation_diversity.sql` before deploying the matching Pages code. It adds a nullable `music_key` to the existing `recommendation_events` ledger and one composite history index; it performs no backfill and does not alter old rows.
+
+Each successful new recommendation still writes one `recommendation_events` row. There is no additional history-row write. The row now carries a SHA-256 key derived from sorted canonical song identities. The recommender reads at most 64 recent indexed rows for the combination and 64 recent successful rows globally, then retains 10 and 20 distinct primary TMDb IDs respectively.
+
+The combination-specific window is a strong primary exclusion while at least three eligible catalog candidates remain. Global recency applies a deterministic penalty of at most `0.025` after the hybrid score, without changing the numeric/semantic/concept/quality weights. If the specific window exhausts the slate, the oldest exclusions are relaxed first and the immediately previous primary remains prohibited whenever three candidates can still be formed.
+
+History reads and writes are best-effort: a D1 quota or availability failure is emitted as `recommendation_history_degraded`, while the recommendation continues without claiming that diversity was enforced. Candidate logs also include history availability, excluded and penalized counts, profile/embedding cache hits, whether restrictions were relaxed, and confirmation of a new curation.
+
+Two simultaneous requests can read the same pre-write history and may still choose the same film. D1 persistence substantially reduces repetition across requests, instances, deploys, and days, but this design intentionally avoids locks and extra coordination writes.
+
+Final recommendation responses are no longer cached or replayed. Lyrics, acoustic features, profiles, embeddings, TMDb hydration, posters, and stills remain cached. Share payloads remain immutable reads, and new share slugs include the recommendation request identifier so later interpretations cannot overwrite an earlier share.

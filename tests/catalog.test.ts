@@ -119,6 +119,17 @@ describe('hybrid recommendation flow',()=>{
     expect(result.candidate_ids.length).toBeLessThanOrEqual(100);
     expect(result.diagnostics.final_count).toBe(result.candidate_count);
   });
+  it('filters recent primary ids before Gemini and keeps the deterministic fallback eligible',async()=>{
+    const {env}=makeEnv(db);
+    generateJson.mockImplementation(async({schema}:any)=>schema?.properties?.primary_tmdb_id?{model:'m',data:{primary_tmdb_id:1,alternative_tmdb_ids:[2,3],justification:'attempted repeat',vibe_title:'V',tags:['a','b','c','d'],alternative_calls:['x','y']}}:validProfile());
+    const result=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'en',history:{specific:[1],global:[],available:true} as any});
+    const prompt=generateJson.mock.calls.find(c=>c[0]?.schema?.properties?.primary_tmdb_id)?.[0].prompt as string;
+    expect(result.candidate_ids).not.toContain(1);
+    expect(result.primary.tmdb_id).not.toBe(1);
+    expect(result.alternatives.map((movie:any)=>movie.tmdb_id)).toHaveLength(2);
+    expect(prompt).not.toContain('"tmdb_id":1,');
+    expect(result.diagnostics).toMatchObject({history_available:true,history_specific_count:1,history_excluded_count:1,new_curation:true});
+  });
   it('works with one, two and three songs',async()=>{
     const {env}=makeEnv(db);
     for(const songs of [[{title:'A',artist:'X'}],[{title:'A',artist:'X'},{title:'B',artist:'Y'}],[{title:'A',artist:'X'},{title:'B',artist:'Y'},{title:'C',artist:'Z'}]]){
