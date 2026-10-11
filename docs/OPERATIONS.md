@@ -55,3 +55,15 @@ The Overview derives discovery, completed detail sheets, enrichment, and vectori
 One read-only aggregate query produces all three windows and the seven daily chart buckets. Its in-memory result is shared by concurrent requests and cached for 90 seconds, so the 15-second dashboard polling does not repeatedly scan `movies`. No KV/D1 cache writes, triggers, timestamp indexes, jobs, external APIs, Gemini calls, or Vectorize operations are involved. `EXPLAIN QUERY PLAN` reports a single `SCAN movies`; adding four timestamp indexes would increase every pipeline write and would not help this multi-column aggregate enough to justify a migration.
 
 Zero is displayed as a valid measurement. A query failure is reported as unavailable; if a previously generated snapshot exists, it is explicitly marked as stale cached data. These timestamps describe the current completion state, not an immutable event ledger: reprocessing can move a film into a later day and alter earlier chart counts.
+
+## Pipeline discovery control
+
+The Pipeline tab can pause recent and historical TMDb discovery independently, or both together. The state is stored as the `pipeline_control` JSON value in the existing D1 `system_state` table. Missing or malformed state defaults both lanes to enabled, preserving the previous behavior. An idempotent request that already matches the stored state performs no write.
+
+The Cron reads this control after scheduling the existing movie backlog. Paused lanes do not run their due-query lookup or enqueue new `DISCOVER_QUERY` messages; enrichment and embedding retain the existing `PIPELINE_BUDGET=20`. `/admin/run` uses the same scheduler and therefore cannot bypass the pause. `/admin/seed` only synchronizes query definitions.
+
+A discovery message already in the Queue is checked before its job claim. If its lane is paused, its `pipeline_jobs` row becomes `paused` without incrementing attempts, the Queue message is acknowledged, and the corresponding `collection_queries` row remains pending with its `next_page` unchanged. On resume, the ordinary Cron changes that row back to queued and sends one message within the original lane budget. This avoids retries, DLQ traffic, duplicates, and bursts. A job that observes a pause between TMDb pages finishes its current page and persists the following `next_page` before stopping.
+
+The authenticated Worker endpoint is `GET|POST /admin/pipeline-control`; Pages proxies it only through the authenticated Control Room route with Origin and CSRF checks on mutations. Payloads accept only boolean `historical_enabled` and `recent_enabled` fields. Changes emit structured logs containing previous, requested, and confirmed state but no credentials or authorization headers.
+
+Backlog figures are read from current movie lifecycle states. Collection, enrichment, and embedding waiting counts are mutually exclusive stages; errors are displayed separately and are not added to those stages. The aggregate is cached in the Worker isolate for 60 seconds, while the one-row operational control is always reread. No additional Worker, Queue, Cron, migration, or per-film write is introduced.
