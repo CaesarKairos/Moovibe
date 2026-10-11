@@ -38,6 +38,12 @@ describe('Spotify input safety',()=>{
 });
 
 describe('canonical identity and lyrics',()=>{
+  it('preserves a matched LRCLIB instrumental signal without inventing lyrics',()=>{
+    const match=selectLyricsMatch({title:'Delusions of Saviour',artist:'Slayer',album:'Repentless',duration:115},[{id:99,trackName:'Delusions of Saviour',artistName:'Slayer',albumName:'Repentless',duration:115,instrumental:true,plainLyrics:null}]);
+    expect(match).toMatchObject({instrumental:true,plainLyrics:null,title:'Delusions of Saviour'});
+    const wrong=selectLyricsMatch({title:'Delusions of Saviour',artist:'Slayer'},[{id:100,trackName:'Delusion',artistName:'Another Artist',instrumental:true}]);
+    expect(wrong).toBeNull();
+  });
  it('rebuilds browser metadata from provider id',async()=>{vi.stubGlobal('fetch',spotifyFetch());const result=await resolveCanonicalSong(env,{provider:'spotify',provider_id:id,title:'tampered',artist:'wrong'},'req');expect(result.track).toMatchObject({title:'Everybody Wants to Love You',artist:'Japanese Breakfast',identity_confirmed:true})});
  it('never advances ambiguous free text as title with an empty artist',async()=>{vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({access_token:'token',expires_in:3600}))).mockResolvedValueOnce(new Response(JSON.stringify({tracks:{items:[spotify]}}))));const result=await resolveCanonicalSong(env,{title:'Everybody Wants to Love You Japanese Breakfast',artist:''},'req');expect(result.track).toBeUndefined();expect(result.unresolved?.candidates[0]).toMatchObject({title:'Everybody Wants to Love You',artist:'Japanese Breakfast'})});
  it('resolves one to three tracks and permits mixed providers',async()=>{const second={...spotify,id:id2,name:'Second Song'};vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({access_token:'token',expires_in:3600}))).mockResolvedValueOnce(new Response(JSON.stringify(spotify))).mockResolvedValueOnce(new Response(JSON.stringify({id:42,trackName:'LR Song',artistName:'LR Artist',albumName:'LR Album',duration:180}))).mockResolvedValueOnce(new Response(JSON.stringify(second))));const inputs=[{provider:'spotify',provider_id:id},{provider:'lrclib',provider_id:'42'},{provider:'spotify',provider_id:id2}];const tracks=[];for(const input of inputs)tracks.push((await resolveCanonicalSong(env,input,'req')).track);expect(tracks).toHaveLength(3);expect(tracks.map(x=>x?.provider)).toEqual(['spotify','lrclib','spotify'])});

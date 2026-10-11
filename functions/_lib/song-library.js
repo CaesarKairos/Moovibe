@@ -1,6 +1,7 @@
 import { normalizeMusicText } from './music-match.js';
 
-export const SONG_PROFILE_SCHEMA_VERSION='song-v2-identity';
+export const SONG_PROFILE_SCHEMA_VERSION='song-v3-acoustic';
+export const SONG_EMBEDDING_DOCUMENT_VERSION='music-document-v2-acoustic';
 export function isD1WriteQuotaError(error) {
   const message=String(error?.message||error||'').toLowerCase();
   return /d1/.test(message)&&/(quota|limit|too many writes|row writes|exceeded)/.test(message);
@@ -25,10 +26,14 @@ export async function findSong(db,song) {
   if(!db)return null;
   return db.prepare(`SELECT s.*,l.lyrics,l.source lyrics_source,l.source_reference,l.content_hash FROM songs s LEFT JOIN song_lyrics l ON l.song_id=s.id WHERE s.canonical_key=? OR (? IS NOT NULL AND s.lrclib_id=?) ORDER BY s.lrclib_id IS NOT NULL DESC LIMIT 1`).bind(canonicalSongKey(song),song.lrclib_id||null,song.lrclib_id||null).first();
 }
+export async function ensureSong(db,song) {
+  if(!db)return null; const key=canonicalSongKey(song);
+  await db.prepare(`INSERT INTO songs(canonical_key,lrclib_id,title,artist,album,duration) VALUES(?,?,?,?,?,?) ON CONFLICT(canonical_key) DO UPDATE SET lrclib_id=COALESCE(excluded.lrclib_id,songs.lrclib_id),title=excluded.title,artist=excluded.artist,album=COALESCE(excluded.album,songs.album),duration=COALESCE(excluded.duration,songs.duration),updated_at=CURRENT_TIMESTAMP`).bind(key,song.lrclib_id||null,song.title,song.artist||'',song.album||null,song.duration||null).run();
+  return findSong(db,song);
+}
 export async function persistLyrics(db,song,lyrics,source,sourceReference=null) {
   if(!db||!lyrics)return null; const clean=String(lyrics).trim().slice(0,MAX_LYRICS); const hash=await sha256(clean); const key=canonicalSongKey(song);
-  await db.prepare(`INSERT INTO songs(canonical_key,lrclib_id,title,artist,album,duration) VALUES(?,?,?,?,?,?) ON CONFLICT(canonical_key) DO UPDATE SET lrclib_id=COALESCE(excluded.lrclib_id,songs.lrclib_id),title=excluded.title,artist=excluded.artist,album=COALESCE(excluded.album,songs.album),duration=COALESCE(excluded.duration,songs.duration),updated_at=CURRENT_TIMESTAMP`).bind(key,song.lrclib_id||null,song.title,song.artist||'',song.album||null,song.duration||null).run();
-  const row=await findSong(db,song);
+  const row=await ensureSong(db,song);
   await db.prepare(`INSERT INTO song_lyrics(song_id,lyrics,source,source_reference,content_hash) VALUES(?,?,?,?,?) ON CONFLICT(song_id) DO UPDATE SET lyrics=excluded.lyrics,source=excluded.source,source_reference=excluded.source_reference,content_hash=excluded.content_hash,updated_at=CURRENT_TIMESTAMP WHERE song_lyrics.content_hash<>excluded.content_hash OR song_lyrics.source<>excluded.source`).bind(row.id,clean,source,sourceReference,hash).run();
   return {...row,lyrics:clean,lyrics_source:source,content_hash:hash};
 }
