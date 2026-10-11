@@ -36,7 +36,7 @@ After a manual change, use **VERIFICAR AGORA** to confirm both capabilities in b
 
 Apply migration `0006_recommendation_diversity.sql` before deploying the matching Pages code. It adds a nullable `music_key` to the existing `recommendation_events` ledger and one composite history index; it performs no backfill and does not alter old rows.
 
-Each successful new recommendation still writes one `recommendation_events` row. There is no additional history-row write. The row now carries a SHA-256 key derived from sorted canonical song identities. The recommender reads at most 64 recent indexed rows for the combination and 64 recent successful rows globally, then retains 10 and 20 distinct primary TMDb IDs respectively.
+Each successful new recommendation still writes one `recommendation_events` row. There is no additional history-row write. The row now carries a SHA-256 key derived from sorted canonical song identities. Indexed aggregate queries return only the 10 most recently seen distinct primary TMDb IDs for the combination and the 20 most recently seen distinct primary IDs globally.
 
 The combination-specific window is a strong primary exclusion while at least three eligible catalog candidates remain. Global recency applies a deterministic penalty of at most `0.025` after the hybrid score, without changing the numeric/semantic/concept/quality weights. If the specific window exhausts the slate, the oldest exclusions are relaxed first and the immediately previous primary remains prohibited whenever three candidates can still be formed.
 

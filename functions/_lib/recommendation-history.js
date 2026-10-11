@@ -3,27 +3,22 @@ import { canonicalSongKey,sha256 } from './song-library.js';
 export const SPECIFIC_HISTORY_LIMIT=10;
 export const GLOBAL_HISTORY_LIMIT=20;
 export const GLOBAL_REPEAT_PENALTY=.025;
-const HISTORY_SCAN_LIMIT=64;
 
 export async function musicHistoryKey(songs) {
   const identities=songs.map(song=>song.song_id?`song:${song.song_id}`:canonicalSongKey({...song,identity_confirmed:true})).sort();
   return `music:${await sha256(identities.join('|'))}`;
 }
 
-const distinctIds=(rows,limit)=>{
-  const ids=[];
-  for(const row of rows||[]){const id=Number(row.primary_tmdb_id);if(id&&!ids.includes(id))ids.push(id);if(ids.length===limit)break;}
-  return ids;
-};
+const ids=rows=>(rows||[]).map(row=>Number(row.primary_tmdb_id)).filter(Boolean);
 
 export async function readRecommendationHistory(db,musicKey) {
   if(!db)return {specific:[],global:[],available:false,error_code:'D1_HISTORY_UNAVAILABLE'};
   try{
     const [specific,global]=await Promise.all([
-      db.prepare(`SELECT primary_tmdb_id FROM recommendation_events WHERE music_key=? AND success=1 AND primary_tmdb_id IS NOT NULL ORDER BY created_at DESC LIMIT ?`).bind(musicKey,HISTORY_SCAN_LIMIT).all(),
-      db.prepare(`SELECT primary_tmdb_id FROM recommendation_events WHERE success=1 AND primary_tmdb_id IS NOT NULL ORDER BY created_at DESC LIMIT ?`).bind(HISTORY_SCAN_LIMIT).all()
+      db.prepare(`SELECT primary_tmdb_id,MAX(created_at) last_seen FROM recommendation_events WHERE music_key=? AND success=1 AND primary_tmdb_id IS NOT NULL GROUP BY primary_tmdb_id ORDER BY last_seen DESC LIMIT ?`).bind(musicKey,SPECIFIC_HISTORY_LIMIT).all(),
+      db.prepare(`SELECT primary_tmdb_id,MAX(created_at) last_seen FROM recommendation_events WHERE success=1 AND primary_tmdb_id IS NOT NULL GROUP BY primary_tmdb_id ORDER BY last_seen DESC LIMIT ?`).bind(GLOBAL_HISTORY_LIMIT).all()
     ]);
-    return {specific:distinctIds(specific.results,SPECIFIC_HISTORY_LIMIT),global:distinctIds(global.results,GLOBAL_HISTORY_LIMIT),available:true,error_code:null};
+    return {specific:ids(specific.results),global:ids(global.results),available:true,error_code:null};
   }catch(error){
     console.warn(JSON.stringify({event:'recommendation_history_degraded',stage:'history_read',error_code:'D1_HISTORY_READ_FAILED',error_class:error?.constructor?.name||'Error'}));
     return {specific:[],global:[],available:false,error_code:'D1_HISTORY_READ_FAILED'};
