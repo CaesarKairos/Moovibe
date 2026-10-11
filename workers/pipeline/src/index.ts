@@ -1,6 +1,7 @@
 import { GeminiClient, RetryableError } from '../../../functions/_lib/gemini.js';
 import { buildMovieDocument, EMBEDDING_SCHEMA_VERSION } from '../../../functions/_lib/recommender.js';
 import { writeAudit } from '../../../functions/_lib/audit.js';
+import { runGeminiHealth } from '../../../functions/_lib/gemini-health.js';
 import { discoveryQueries, splitDateInterval } from './queries';
 import { HISTORICAL_DISCOVERY_BUDGET,HISTORICAL_DISCOVERY_DUE_SQL,MOVIE_BACKLOG_SQL,PIPELINE_BUDGET,RECENT_DISCOVERY_BUDGET,RECENT_DISCOVERY_DUE_SQL,STALE_JOBS_SQL,STALE_JOB_MINUTES,retryDelaySeconds,shouldRetry,stableDiscoveryKey } from './job-policy';
 
@@ -8,11 +9,11 @@ type JobType='DISCOVER_QUERY'|'INDEX_MOVIE'|'FETCH_MOVIE'|'ENRICH_MOVIE'|'EMBED_
 type Job={ type:JobType; key:string; payload:Record<string,unknown> };
 interface Env {
   MOOVIBE_LIBRARY:D1Database; MOVIE_VECTORS:VectorizeIndex; PIPELINE_QUEUE:Queue<Job>;
-  GEMINI_API_KEY:string; TMDB_API_KEY:string; ADMIN_TOKEN?:string;
+  GEMINI_API_KEY:string; TMDB_API_KEY:string; ADMIN_TOKEN?:string; GEMINI_PROJECT_LABEL?:string;
   EMBEDDING_MODEL:string; EMBEDDING_DIMENSIONS:string; EMBEDDING_SCHEMA_VERSION:string;
 }
 const TMDB='https://api.themoviedb.org/3';
-const json=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json'}});
+const json=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json','cache-control':'no-store','x-content-type-options':'nosniff'}});
 const log=(event:string,data:Record<string,unknown>={})=>console.log(JSON.stringify({service:'moovibe-pipeline',event,at:new Date().toISOString(),...data}));
 const audit=async(env:Env,trace:Record<string,unknown>)=>{try{await writeAudit(env,trace);}catch(error:any){log('audit_log_failed',{stage:trace.stage,error:String(error?.message||error).slice(0,300)});}};
 
@@ -383,7 +384,9 @@ async function health(env:Env) {
 export default {
   async scheduled(_controller:ScheduledController,env:Env,ctx:ExecutionContext){ctx.waitUntil(schedule(env));},
   async queue(batch:MessageBatch<Job>,env:Env){for(const message of batch.messages){const outcome=await processJob(env,message.body);if(outcome.retry)message.retry({delaySeconds:outcome.delaySeconds});else message.ack();}},
-  async fetch(request:Request,env:Env){const url=new URL(request.url);if(url.pathname==='/health')return json({ok:true,service:'moovibe-pipeline'});if(url.pathname==='/admin/status'){if(!env.ADMIN_TOKEN||request.headers.get('authorization')!==`Bearer ${env.ADMIN_TOKEN}`)return json({error:'unauthorized'},401);return json(await health(env));}if(url.pathname==='/admin/run'){if(!env.ADMIN_TOKEN||request.headers.get('authorization')!==`Bearer ${env.ADMIN_TOKEN}`)return json({error:'unauthorized'},401);await schedule(env);return json({ok:true});}if(url.pathname==='/admin/seed'){if(!env.ADMIN_TOKEN||request.headers.get('authorization')!==`Bearer ${env.ADMIN_TOKEN}`)return json({error:'unauthorized'},401);return json(await syncDiscoverySeed(env,true));}if(url.pathname==='/admin/requeue-known-failures'){if(!env.ADMIN_TOKEN||request.headers.get('authorization')!==`Bearer ${env.ADMIN_TOKEN}`)return json({error:'unauthorized'},401);if(request.method!=='POST')return json({error:'method_not_allowed'},405);return json(await requeueKnownFailures(env));}return json({service:'moovibe-pipeline',ok:true});}
+  // Runtime validation below constrains the only accepted body field.
+  // @ts-ignore catch() widens the generic JSON result to an empty-object union.
+  async fetch(request:Request,env:Env){const url=new URL(request.url);const admin=()=>Boolean(env.ADMIN_TOKEN&&request.headers.get('authorization')===`Bearer ${env.ADMIN_TOKEN}`);if(url.pathname==='/health')return json({ok:true,service:'moovibe-pipeline'});if(url.pathname==='/admin/gemini-health'){if(!admin())return json({error:'unauthorized'},401);if(request.method!=='POST')return json({error:'method_not_allowed'},405);const result=await runGeminiHealth(env.GEMINI_API_KEY,{embeddingModel:env.EMBEDDING_MODEL||'gemini-embedding-2',dimensions:Number(env.EMBEDDING_DIMENSIONS||768)});return json({service:'worker',project_label:env.GEMINI_PROJECT_LABEL||'Moovibe Pipeline',quota_remaining:'unavailable',...result});}if(url.pathname==='/admin/gemini-validate'){if(!admin())return json({error:'unauthorized'},401);if(request.method!=='POST')return json({error:'method_not_allowed'},405);if(Number(request.headers.get('content-length')||0)>8192)return json({error:'payload_too_large'},413);const body=await request.json<{api_key?:string}>().catch(()=>({}));const candidate=String(body.api_key||'');if(candidate.length<20||candidate.length>512)return json({error:'invalid_candidate'},422);const result=await runGeminiHealth(candidate,{embeddingModel:env.EMBEDDING_MODEL||'gemini-embedding-2',dimensions:Number(env.EMBEDDING_DIMENSIONS||768)});return json({service:'worker',...result});}if(url.pathname==='/admin/status'){if(!admin())return json({error:'unauthorized'},401);return json(await health(env));}if(url.pathname==='/admin/run'){if(!admin())return json({error:'unauthorized'},401);await schedule(env);return json({ok:true});}if(url.pathname==='/admin/seed'){if(!admin())return json({error:'unauthorized'},401);return json(await syncDiscoverySeed(env,true));}if(url.pathname==='/admin/requeue-known-failures'){if(!admin())return json({error:'unauthorized'},401);if(request.method!=='POST')return json({error:'method_not_allowed'},405);return json(await requeueKnownFailures(env));}return json({service:'moovibe-pipeline',ok:true});}
 };
 
 export { enqueue,processJob,schedule,seedQueries,discover,fetchMovie,indexMovie,replaceRelations,requeueKnownFailures,splitOversizedQuery };

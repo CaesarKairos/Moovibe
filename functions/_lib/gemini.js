@@ -20,15 +20,18 @@ const invokeFetch = (fetcher, url, init) => {
 };
 
 export class GeminiClient {
-  constructor(apiKey, fetcher = null) {
+  constructor(apiKey, fetcher = null, {maxAttempts=3} = {}) {
     if (!apiKey) throw new Error('GEMINI_API_KEY is required');
     if (fetcher != null && typeof fetcher !== 'function') throw new TypeError('fetcher must be a function');
     this.apiKey = apiKey;
     this.fetcher = fetcher;
+    this.maxAttempts = Math.max(1, Math.min(3, Number(maxAttempts) || 3));
+    this.maxModels = this.maxAttempts === 1 ? 1 : 4;
     this.cachedModels = null;
   }
 
   async request(path, init = {}, maxAttempts = 3) {
+    maxAttempts = Math.min(maxAttempts, this.maxAttempts);
     let last;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
@@ -37,11 +40,11 @@ export class GeminiClient {
         const body = (await response.text()).slice(0, 500);
         if (!TRANSIENT.has(response.status)) throw new Error(`Gemini ${response.status}: ${body}`);
         const retryAfter = Number(response.headers.get('Retry-After') || 0);
-        last = new RetryableError(`Gemini transient ${response.status}`, retryAfter);
+        last = new RetryableError(`Gemini transient ${response.status}: ${body}`, retryAfter);
         // Queue consumers must yield long server-requested delays back to the Queue;
         // never hold a Worker invocation open for minutes or hours.
         if (retryAfter > 60) throw last;
-        await sleep((retryAfter ? retryAfter * 1000 : 250 * 2 ** attempt) + Math.random() * 200);
+        if (attempt + 1 < maxAttempts) await sleep((retryAfter ? retryAfter * 1000 : 250 * 2 ** attempt) + Math.random() * 200);
       } catch (error) {
         if (error instanceof RetryableError && error.retryAfter > 60) throw error;
         if (error instanceof Error && error.message.startsWith('Gemini 4') && !error.message.includes('429')) throw error;
@@ -70,7 +73,7 @@ export class GeminiClient {
   async generateJson({ system, prompt, schema, temperature = 0.2 }) {
     const models = await this.listGenerativeModels().catch(() => BOOTSTRAP_MODELS);
     let last;
-    for (const model of models.slice(0, 4)) {
+    for (const model of models.slice(0, this.maxModels)) {
       try {
         const data = await this.request(`/models/${model}:generateContent`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
