@@ -5,7 +5,7 @@
 
 import { LRCLIB_URL, LRCLIB_GET_URL, LRCLIB_SEARCH_URL, lrclibHeaders, lrclibThrottle } from './_lib/lrclib.js';
 import { recommendFromCatalog, movieToLegacy } from './_lib/catalog.js';
-import { recommendationCacheKey, RECOMMENDER_VERSION } from './_lib/recommender.js';
+import { musicHistoryKey,readRecommendationHistory } from './_lib/recommendation-history.js';
 import { selectBestTrack } from './_lib/music-match.js';
 import { canonicalSongKey,ensureSong,findSong, persistLyricsBestEffort, validateUserLyrics } from './_lib/song-library.js';
 import { getLanguageConfig, normalizeLanguage } from './_lib/languages.js';
@@ -1210,14 +1210,12 @@ export async function onRequest(context) {
     }
     if(missing.length)return jsonResponse({error:{code:'LYRICS_REQUIRED',message:'Lyrics could not be found for one or more tracks.',missing_songs:missing}},422);
     const letra=songData[0].lyrics; const contextoExtra=songData[0].context;
-    const cacheBasis=songData.map(s=>`${s.provider}:${s.provider_id}:${s.analysis_basis}:${s.instrumental_evidence||''}`).join('|');
-    const finalCacheKey = `${recommendationCacheKey(songInputs, lang, env.RECOMMENDER_VERSION || RECOMMENDER_VERSION)}:${cacheBasis}`;
-    const cachedRecommendation = env.MOOVIBE_DB ? await env.MOOVIBE_DB.get(finalCacheKey, 'json') : null;
-    if (cachedRecommendation) { await recordRecommendation(env,{request_id:crypto.randomUUID(),language:lang,songs:songInputs,primary_tmdb_id:cachedRecommendation.movie?.tmdb_id,alternatives:cachedRecommendation.movie?.alternatives||[],duration_ms:Date.now()-startedAt,cache_hit:1,success:1}); return jsonResponse(cachedRecommendation, 200); }
+    const musicKey=await musicHistoryKey(songData);
+    const recommendationHistory=await readRecommendationHistory(env.MOOVIBE_LIBRARY,musicKey);
 
     const hasInstrumental=songData.some(song=>song.analysis_basis==='INSTRUMENTAL_ACOUSTIC');
     if(hasInstrumental)console.log(JSON.stringify({event:'instrumental_analysis_started',request_id:failureEvent.request_id,status:'started'}));
-    const catalog = await recommendFromCatalog({ env, songs: songData, lyrics: letra, context: contextoExtra, lang });
+    const catalog = await recommendFromCatalog({ env, songs: songData, lyrics: letra, context: contextoExtra, lang, history:recommendationHistory });
     if(hasInstrumental)console.log(JSON.stringify({event:'instrumental_analysis_completed',request_id:catalog.request_id,status:'completed'}));
     const dadosFilme = movieToLegacy(catalog.primary);
     const nomeFilme = dadosFilme.titulo_pt;
@@ -1296,6 +1294,7 @@ export async function onRequest(context) {
         const altAno = alt?.ano || (altDetalhes?.ano || '');
         alternativasComPoster.push({
           chamada: alt?.chamada || '',
+          tmdb_id: altDetalhes?.id_tmdb || null,
           titulo: altTitulo,
           ano: altAno,
           diretor: alt?.diretor || (altDetalhes?.diretor || ''),
@@ -1310,7 +1309,7 @@ export async function onRequest(context) {
       }
     }
 
-    const slug = slugify(nomeFilme + '-' + nome_musica);
+    const slug = slugify(nomeFilme + '-' + nome_musica + '-' + catalog.request_id.slice(0,8));
     const resposta = {
       request_id: catalog.request_id,
       song: songInputs[0].title,
@@ -1341,10 +1340,9 @@ export async function onRequest(context) {
         tiktok_url: `https://www.tiktok.com/search?q=${encodeURIComponent(nomeFilme + ' edit')}`,
       },
     };
-    await recordRecommendation(env,{request_id:catalog.request_id,language:lang,songs:songData.map(s=>({title:s.title,artist:s.artist,lyrics_source:s.lyrics_source})),primary_tmdb_id:dadosFilme?.id_tmdb,alternatives:alternativasComPoster,candidate_count:catalog.candidate_count,...catalog.diagnostics,duration_ms:Date.now()-startedAt,cache_hit:0,success:1});
+    await recordRecommendation(env,{request_id:catalog.request_id,music_key:musicKey,language:lang,songs:songData.map(s=>({title:s.title,artist:s.artist,provider:s.provider,provider_id:s.provider_id,lrclib_id:s.lrclib_id,lyrics_source:s.lyrics_source})),primary_tmdb_id:dadosFilme?.id_tmdb,alternatives:alternativasComPoster,candidate_count:catalog.candidate_count,...catalog.diagnostics,duration_ms:Date.now()-startedAt,cache_hit:0,success:1});
     await storeHistory({ song:songInputs[0].title,artist:songInputs[0].artist,movie:resposta.movie }, env);
     await storeShare(slug, resposta, env);
-    if (env.MOOVIBE_DB) await env.MOOVIBE_DB.put(finalCacheKey, JSON.stringify(resposta), { expirationTtl: 60 * 60 * 24 });
     console.log('\n=== PIPELINE CONCLUÍDA COM SUCESSO ===');
     console.log(`[SHARE] Slug gerado: ${slug}`);
     return jsonResponse(resposta, 200);
@@ -1371,14 +1369,14 @@ export function classifyRecommendationError(error){
 
 async function recordRecommendation(env,event) {
   if(!env.MOOVIBE_LIBRARY)return;
-  try { await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO recommendation_events(request_id,language,songs_json,primary_tmdb_id,alternatives_json,candidate_count,semantic_count,numeric_count,union_count,final_count,keyword_fallback_count,duration_ms,cache_hit,success,error_code,error_message,top_candidates_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(event.request_id,event.language,JSON.stringify(event.songs||[]),event.primary_tmdb_id||null,JSON.stringify(event.alternatives||[]),event.candidate_count||null,event.semantic_count||null,event.numeric_count||null,event.union_count||null,event.final_count||null,event.keyword_fallback_count||0,event.duration_ms||null,event.cache_hit||0,event.success?1:0,event.error_code||null,event.error_message||null,JSON.stringify(event.top||[]).slice(0,20000)).run(); } catch(error) { console.error('[OBSERVABILITY] recommendation event failed:',String(error?.message||error)); }
+  try { await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO recommendation_events(request_id,music_key,language,songs_json,primary_tmdb_id,alternatives_json,candidate_count,semantic_count,numeric_count,union_count,final_count,keyword_fallback_count,duration_ms,cache_hit,success,error_code,error_message,top_candidates_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(event.request_id,event.music_key||null,event.language,JSON.stringify(event.songs||[]),event.primary_tmdb_id||null,JSON.stringify(event.alternatives||[]),event.candidate_count||null,event.semantic_count||null,event.numeric_count||null,event.union_count||null,event.final_count||null,event.keyword_fallback_count||0,event.duration_ms||null,event.cache_hit||0,event.success?1:0,event.error_code||null,event.error_message||null,JSON.stringify(event.top||[]).slice(0,20000)).run(); } catch(error) { console.error(JSON.stringify({event:'recommendation_history_degraded',stage:'history_write',error_code:'D1_HISTORY_WRITE_FAILED',error_class:error?.constructor?.name||'Error'})); }
 }
 
 async function storeHistory(payload, env) {
   try {
     const kv = env.MOOVIBE_DB;
     if (!kv) return;
-    const key = `history:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    const key = `history:${Date.now()}:${crypto.randomUUID().slice(0,8)}`;
     await kv.put(key, JSON.stringify(payload), { expirationTtl: 60 * 60 * 24 * 30 });
   } catch (err) {
     console.error('[HISTORY] Falha ao salvar:', err);
