@@ -475,9 +475,11 @@ h1, h2, h3, h4, .font-display {
     flex-direction: column;
     justify-content: center;
     align-items: center;
-    height: 60vh;
+    min-height: 60vh;
+    padding: 2rem 1rem;
     text-align: center;
 }
+.loading-container.waiting .film-reel-loader,.loading-container.waiting .loading-progress{display:none}.loading-container.waiting .loading-text{animation:none;margin-bottom:1rem;color:var(--accent-red);font:700 .72rem var(--font-mono);letter-spacing:.18em}.loading-interaction{width:min(680px,100%);box-sizing:border-box;background:var(--bg-paper);color:var(--text-dark);border:3px solid var(--text-dark);box-shadow:10px 10px 0 var(--accent-gold);padding:clamp(1.1rem,4vw,2.2rem);text-align:left;position:relative}.loading-interaction::before{content:'';position:absolute;width:74px;height:17px;background:var(--accent-blue);top:-10px;left:50%;transform:translateX(-50%) rotate(-2deg);opacity:.8}.loading-interaction h2{font-family:var(--font-display);font-size:clamp(1.7rem,5vw,3rem);line-height:.95;margin:.5rem 0 1rem;border-bottom:5px solid var(--accent-red);padding-bottom:.8rem}.loading-track{font:700 .8rem var(--font-mono);margin:1rem 0}.loading-track strong{display:block;font-family:var(--font-display);font-size:1.35rem}.loading-interaction p{max-width:52ch}.loading-choice{display:grid;gap:.65rem;margin-top:1.2rem}.loading-choice button{width:100%;border:2px solid var(--text-dark);background:var(--bg-paper);color:var(--text-dark);font:700 .74rem var(--font-mono);letter-spacing:.04em;padding:.85rem;text-align:left;cursor:pointer}.loading-choice button:first-child{background:var(--text-dark);color:var(--bg-paper)}.loading-choice button:hover,.loading-choice button:focus-visible{box-shadow:4px 4px 0 var(--accent-blue);transform:translate(-2px,-2px)}.loading-interaction textarea{width:100%;min-height:180px;box-sizing:border-box;border:2px solid var(--text-dark);padding:1rem;background:#fff;color:var(--text-dark);resize:vertical}.loading-status{margin-top:1.2rem;padding-top:.8rem;border-top:1px dashed currentColor;font:700 .65rem var(--font-mono);letter-spacing:.14em}.loading-choice .link-choice{border:0;text-align:center;text-decoration:underline;background:transparent;color:inherit;box-shadow:none}@media(max-width:390px){.loading-container{padding-inline:.65rem}.loading-interaction{box-shadow:6px 6px 0 var(--accent-gold)}.loading-choice button{font-size:.68rem}.loading-interaction h2{font-size:1.65rem}}
 
 .loading-text {
     font-size: 2rem;

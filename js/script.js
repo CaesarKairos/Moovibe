@@ -1,4 +1,4 @@
-import { AUTOCOMPLETE_COPY, BETA_COPY, IDENTITY_COPY, LANGUAGES, PAGE_METADATA, RESULT_COPY, TRACK_SELECTION_COPY, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
+import { AUTOCOMPLETE_COPY, BETA_COPY, IDENTITY_COPY, LANGUAGES, LOADING_INTERACTION_COPY, PAGE_METADATA, RESULT_COPY, TRACK_SELECTION_COPY, detectLanguage, normalizeLanguage, translations } from './i18n/locales.js';
 import { clearTrackSelection, getTrackSelection, resetTrackField, setTrackSelection } from './track-selection.js';
 import { buildMediaSlots } from './result-presentation.js';
 import { spotifyArtwork, spotifyTrackUrl } from './spotify-presentation.js';
@@ -125,6 +125,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const viewError = document.getElementById('view-error');
     const viewHallOfFame = document.getElementById('view-hall-of-fame');
     const loadingText = document.getElementById('loading-text');
+    const loadingContainer=document.querySelector('.loading-container');
+    const loadingInteraction=document.getElementById('loading-interaction');
     const errorMessage = document.getElementById('error-message');
     const btnRetry = document.getElementById('btn-retry');
     const btnAddSong = document.getElementById('btn-add-song');
@@ -134,8 +136,9 @@ document.addEventListener('DOMContentLoaded', () => {
     let extraSongInputs = [];
     const sessionLyrics=new Map();
 
-    // Loading strings for cinematic feel
-    const getLoadingMessages = () => [i18n[lang].loading_initial, i18n[lang].step1_title, i18n[lang].step3_title, i18n[lang].step4_title];
+    const PROCESSING_STATES=Object.freeze({IDLE:'IDLE',IDENTIFYING:'IDENTIFYING',CHECKING_LYRICS:'CHECKING_LYRICS',CHECKING_AUDIO:'CHECKING_AUDIO',WAITING_FOR_USER:'WAITING_FOR_USER',BUILDING_PROFILE:'BUILDING_PROFILE',GENERATING_EMBEDDING:'GENERATING_EMBEDDING',RECOMMENDING:'RECOMMENDING',COMPLETED:'COMPLETED',FAILED:'FAILED',CANCELLED:'CANCELLED'});
+    let processingState=PROCESSING_STATES.IDLE;
+    const setProcessingState=(state,message)=>{processingState=state;if(message)loadingText.textContent=message;const waiting=state===PROCESSING_STATES.WAITING_FOR_USER;loadingContainer?.classList.toggle('waiting',waiting);if(!waiting&&loadingInteraction){loadingInteraction.hidden=true;loadingInteraction.innerHTML='';}};
     applyLanguage();
 
     // --- Randomização leve de rotação (fitas e polaroids) ---
@@ -201,21 +204,13 @@ document.addEventListener('DOMContentLoaded', () => {
         stopLoading();
         const run=loadingRun;
         switchView(viewLoading);
-        const loadingMessages = getLoadingMessages();
-        let messageIndex = 0;
-        loadingText.textContent = loadingMessages[0];
-        
-        loadingInterval = setInterval(() => {
-            messageIndex++;
-            if (messageIndex < loadingMessages.length) {
-                loadingText.textContent = loadingMessages[messageIndex];
-            }
-        }, 1500);
+        setProcessingState(PROCESSING_STATES.IDENTIFYING,i18n[lang].loading_initial);
 
         fetchPromise
             .then(data => {
                 if(run!==loadingRun)return;
                 stopLoading();
+                setProcessingState(PROCESSING_STATES.COMPLETED);
                 if (data?.cancelled) {
                     returnHomePreservingSearch();
                 } else if (data && data.error && data.error.message) {
@@ -232,6 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .catch(error => {
                 if(run!==loadingRun)return;
                 stopLoading();
+                setProcessingState(PROCESSING_STATES.FAILED);
                 console.error('Erro na requisição:', error);
                 showError(i18n[lang]?.error_message || 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.');
             });
@@ -240,8 +236,26 @@ document.addEventListener('DOMContentLoaded', () => {
     let loadingRun = 0;
     let loadingInterval = null;
     function stopLoading(){loadingRun++;if(loadingInterval){clearInterval(loadingInterval);loadingInterval=null;}}
-    function pauseLoadingForDialog(){if(loadingInterval){clearInterval(loadingInterval);loadingInterval=null;}switchView(viewHome);}
-    function resumeLoadingAfterDialog(){switchView(viewLoading);loadingText.textContent=getLoadingMessages()[1];}
+    function pauseLoadingForDialog(){if(loadingInterval){clearInterval(loadingInterval);loadingInterval=null;}}
+    function resumeLoadingAfterDialog(){switchView(viewLoading);setProcessingState(PROCESSING_STATES.CHECKING_LYRICS,i18n[lang].step1_title);}
+
+    function waitForLyricsDecision(missing) {
+      const copy=LOADING_INTERACTION_COPY[lang]||LOADING_INTERACTION_COPY.en;
+      const song=missing[0]; setProcessingState(PROCESSING_STATES.WAITING_FOR_USER,copy.paused); loadingInteraction.hidden=false;
+      const renderOptions=()=>{
+        loadingInteraction.innerHTML=`<h2>${escapeHtml(song.lyrics_status==='PROVIDER_UNAVAILABLE'?copy.provider:copy.not_found)}</h2><p class="loading-track"><strong>${escapeHtml(song.title)}</strong>${escapeHtml(song.artist||'')}</p><p>${escapeHtml(copy.explain)}</p><div class="loading-choice"><button type="button" data-action="provide">${escapeHtml(copy.provide)}</button><button type="button" data-action="instrumental" ${song.acoustic_available?'':'disabled'}>${escapeHtml(copy.instrumental)}</button><button type="button" class="link-choice" data-action="retry">${escapeHtml(copy.retry)}</button><button type="button" class="link-choice" data-action="cancel">${escapeHtml(copy.cancel)}</button></div>${!song.acoustic_available?`<p>${escapeHtml(copy.insufficient)}</p>`:''}<p class="loading-status">${escapeHtml(copy.waiting)}</p>`;
+      };
+      renderOptions();
+      return new Promise(resolve=>loadingInteraction.addEventListener('click',event=>{
+        const action=event.target.closest('[data-action]')?.dataset.action;if(!action)return;
+        if(action==='provide'){
+          loadingInteraction.innerHTML=`<h2>${escapeHtml(copy.provide)}</h2><p class="loading-track"><strong>${escapeHtml(song.title)}</strong>${escapeHtml(song.artist||'')}</p><textarea minlength="80" maxlength="20000" required aria-label="${escapeHtml(copy.provide)}"></textarea><div class="loading-choice"><button type="button" data-action="submit-lyrics">${escapeHtml(copy.continue)}</button><button type="button" class="link-choice" data-action="back">${escapeHtml(copy.back)}</button><button type="button" class="link-choice" data-action="cancel">${escapeHtml(copy.cancel)}</button></div>`;loadingInteraction.querySelector('textarea')?.focus();return;
+        }
+        if(action==='back'){renderOptions();return;}
+        if(action==='submit-lyrics'){const textarea=loadingInteraction.querySelector('textarea');if(!textarea?.checkValidity()){textarea?.reportValidity();return;}resolve({action:'lyrics',song,value:textarea.value});return;}
+        resolve({action,song});
+      }));
+    }
 
     function resetSearch() {
         stopLoading();
@@ -899,15 +913,15 @@ document.addEventListener('DOMContentLoaded', () => {
           }
           if(response.status===422&&data.error?.code==='LYRICS_REQUIRED'){
             track('lyrics_required');
-            pauseLoadingForDialog();
-            const dialog=document.getElementById('lyrics-dialog'),fields=document.getElementById('lyrics-fields');
-            fields.innerHTML=data.error.missing_songs.map((missing,index)=>`<label>${missing.title} — ${missing.artist||''}<textarea required minlength="80" maxlength="20000" data-song-key="${missing.song_key.replace(/"/g,'&quot;')}"></textarea></label>`).join('');
-            const accepted=await new Promise(resolve=>{dialog.addEventListener('close',()=>resolve(dialog.returnValue==='default'),{once:true});dialog.showModal();});
-            if(!accepted){track('lyrics_cancelled');return {cancelled:true};}
-            const textareas=[...fields.querySelectorAll('textarea')];
-            body.user_lyrics=Object.fromEntries(textareas.map(x=>[x.dataset.songKey,x.value]));
-            textareas.forEach((field,index)=>{const missing=data.error.missing_songs[index];if(missing)sessionLyrics.set(`${missing.title}\u0000${missing.artist||''}`,field.value);}); track('lyrics_submitted');
-            resumeLoadingAfterDialog(); return requestRecommendation(body);
+            const decision=await waitForLyricsDecision(data.error.missing_songs);
+            if(decision.action==='cancel'){track('lyrics_cancelled');setProcessingState(PROCESSING_STATES.CANCELLED);return {cancelled:true};}
+            if(decision.action==='lyrics'){body.user_lyrics={...(body.user_lyrics||{}),[decision.song.song_key]:decision.value};sessionLyrics.set(`${decision.song.title}\u0000${decision.song.artist||''}`,decision.value);track('lyrics_submitted');}
+            if(decision.action==='instrumental'){body.user_instrumental={...(body.user_instrumental||{}),[decision.song.song_key]:true};track('instrumental_declared');}
+            setProcessingState(PROCESSING_STATES.CHECKING_AUDIO,(LOADING_INTERACTION_COPY[lang]||LOADING_INTERACTION_COPY.en).resume);return requestRecommendation(body);
+          }
+          if(response.status===422&&data.error?.code==='INSUFFICIENT_MUSIC_EVIDENCE'){
+            const copy=LOADING_INTERACTION_COPY[lang]||LOADING_INTERACTION_COPY.en;setProcessingState(PROCESSING_STATES.WAITING_FOR_USER,copy.paused);loadingInteraction.hidden=false;loadingInteraction.innerHTML=`<h2>${escapeHtml(copy.insufficient)}</h2><div class="loading-choice"><button type="button" data-insufficient-cancel>${escapeHtml(copy.cancel)}</button></div>`;
+            await new Promise(resolve=>loadingInteraction.querySelector('[data-insufficient-cancel]')?.addEventListener('click',resolve,{once:true}));return {cancelled:true};
           }
           if(!response.ok)throw new Error(data.error?.message||`HTTP ${response.status}`);
           track('recommend_success'); return data;
