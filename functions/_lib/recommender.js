@@ -90,6 +90,7 @@ export function rerank(candidates, profile) {
 
 export function diversify(ranked, limit = CANDIDATE_LIMIT) {
   const selected=[];
+  const baseScore=candidate=>candidate.history_adjusted_score??candidate.deterministic_score;
   for (const candidate of ranked) {
     if (!selected.length) { selected.push(candidate); continue; }
     const decade = candidate.release_year ? Math.floor(candidate.release_year/10) : null;
@@ -101,8 +102,8 @@ export function diversify(ranked, limit = CANDIDATE_LIMIT) {
       const sameDecade = decade && prior.release_year && decade === Math.floor(prior.release_year/10) ? 1 : 0;
       similarity = Math.max(similarity, sameCountry*.3 + sameGenre*.35 + sameDirector*.2 + sameDecade*.15);
     }
-    candidate.diversified_score = candidate.deterministic_score - similarity*.12;
-    const insertAt = selected.findIndex(x => (x.diversified_score ?? x.deterministic_score) < candidate.diversified_score);
+    candidate.diversified_score = baseScore(candidate) - similarity*.12;
+    const insertAt = selected.findIndex(x => (x.diversified_score ?? baseScore(x)) < candidate.diversified_score);
     if (insertAt < 0) selected.push(candidate); else selected.splice(insertAt,0,candidate);
     if (selected.length > limit) selected.pop();
   }
@@ -113,7 +114,7 @@ export function diversify(ranked, limit = CANDIDATE_LIMIT) {
 // the supplied candidate set, there must be exactly 2 distinct alternatives and
 // all ids must be integers. Any violation throws and triggers the
 // deterministic fallback in catalog.js.
-export function validateCuration(curation, candidates) {
+export function validateCuration(curation, candidates, forbiddenPrimaryIds=[]) {
   const allowed = new Set(candidates.map(c => Number(c.tmdb_id)));
   const primary = Number(curation?.primary_tmdb_id);
   const alternatives = Array.isArray(curation?.alternative_tmdb_ids) ? curation.alternative_tmdb_ids.map(Number) : [];
@@ -121,6 +122,8 @@ export function validateCuration(curation, candidates) {
     throw new Error('Gemini curation rejected: expected 1 primary and 2 alternative integer ids');
   if (!allowed.has(primary) || alternatives.some(id => !allowed.has(id)))
     throw new Error('Gemini selected a movie outside candidate set');
+  if (new Set([...forbiddenPrimaryIds].map(Number)).has(primary))
+    throw new Error('Gemini selected a recently recommended primary movie');
   if (new Set([primary, ...alternatives]).size !== 3)
     throw new Error('Gemini curation rejected: primary and alternatives must be distinct');
   return { ...curation, primary_tmdb_id: primary, alternative_tmdb_ids: alternatives };

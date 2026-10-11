@@ -3,6 +3,7 @@ import { CANDIDATE_LIMIT, NUMERIC_TOP_K, SEMANTIC_TOP_K, diversify, mergeCandida
 import { getLanguageConfig } from './languages.js';
 import { isTransientPersistenceError, loadProfile, saveProfile, SONG_PROFILE_SCHEMA_VERSION, SONG_EMBEDDING_DOCUMENT_VERSION, sha256 } from './song-library.js';
 import { writeAudit } from './audit.js';
+import { applyRecommendationHistory } from './recommendation-history.js';
 
 const parse=value=>{try{return Array.isArray(value)?value:JSON.parse(value||'[]')}catch{return[]}};
 const arr=parse;
@@ -104,16 +105,16 @@ function keepJustificationPrimaryOnly(curation,slate,lang) {
   return {...curation,justification:primaryOnlyJustification(lang)};
 }
 
-export async function recommendFromCatalog({env,songs,lyrics,context,lang='en'}) {
+export async function recommendFromCatalog({env,songs,lyrics,context,lang='en',history={specific:[],global:[],available:false}}) {
   if(!env.MOOVIBE_LIBRARY) throw new Error('MOOVIBE_LIBRARY D1 binding is missing');
   const gemini=new GeminiClient(env.GEMINI_API_KEY);
   const requestId=crypto.randomUUID(), embeddingModel=env.EMBEDDING_MODEL||'gemini-embedding-2',dimensions=Number(env.EMBEDDING_DIMENSIONS||768);
-  const perSong=[];
+  const perSong=[];let profileCacheHits=0;
   for(const song of songs){
     const basis=song.analysis_basis||'LYRICAL';
     const signaturePayload={identity:{provider:song.provider,provider_id:song.provider_id,title:song.title,artist:song.artist},analysis_basis:basis,lyrics_hash:basis==='LYRICAL'?(song.lyrics_hash||await sha256(song.lyrics||'')):null,audio_source:song.acoustic_source||null,audio_features:song.acoustic_features||null,schema:SONG_PROFILE_SCHEMA_VERSION,document:SONG_EMBEDDING_DOCUMENT_VERSION};
     const lyricsHash=await sha256(JSON.stringify(signaturePayload)); let cached=await loadProfile(env.MOOVIBE_LIBRARY,song.song_id,{lyricsHash,schemaVersion:SONG_PROFILE_SCHEMA_VERSION,embeddingModel,dimensions});
-    if(cached){perSong.push({profile:cached.profile,embedding:cached.embedding,model:cached.model});continue;}
+    if(cached){profileCacheHits++;perSong.push({profile:cached.profile,embedding:cached.embedding,model:cached.model});continue;}
     const acoustic=JSON.stringify(song.acoustic_features||{});
     const prompt=basis==='INSTRUMENTAL_ACOUSTIC'
       ?`Instrumental track: ${song.title} — ${song.artist||'unknown'}\nAcoustic estimates: ${acoustic}\nSupported context:\n${String(song.context||'').slice(0,2000)}`
@@ -155,7 +156,8 @@ export async function recommendFromCatalog({env,songs,lyrics,context,lang='en'})
     movie.channels=ch.channels||[];
   }
   const ranked=rerank(movies,analysis.data);
-  const slate=diversify(ranked,CANDIDATE_LIMIT);
+  const historical=applyRecommendationHistory(ranked,history);
+  const slate=diversify(historical.ranked,CANDIDATE_LIMIT);
   if(slate.length<3) throw new Error('CATALOG_TOO_SMALL');
   const candidates=slate.map(compactCandidate);
   const diagnostics={
@@ -164,14 +166,22 @@ export async function recommendFromCatalog({env,songs,lyrics,context,lang='en'})
     union_count:merged.length,
     final_count:slate.length,
     keyword_fallback_count:keywordFallback,
+    history_available:history.available,
+    history_specific_count:history.specific.length,
+    history_excluded_count:historical.excluded_count,
+    history_global_penalized_count:historical.globally_penalized,
+    history_relaxed:historical.relaxed,
+    profile_cache_hits:profileCacheHits,
+    embedding_cache_hits:profileCacheHits,
+    new_curation:true,
     top:ranked.slice(0,5).map(c=>({tmdb_id:c.tmdb_id,final_score:num(c.deterministic_score),components:{numeric:num(c.component_scores?.numeric),semantic:num(c.component_scores?.semantic),concepts:num(c.component_scores?.concepts),quality:num(c.component_scores?.quality),final:num(c.component_scores?.final)},channels:c.channels}))
   };
-  console.log(JSON.stringify({event:'catalog_candidates',lang,semantic_count:diagnostics.semantic_count,numeric_count:diagnostics.numeric_count,union_count:diagnostics.union_count,final_count:diagnostics.final_count,keyword_fallback_count:keywordFallback,ranking:'deterministic',top:diagnostics.top}));
+  console.log(JSON.stringify({event:'catalog_candidates',lang,semantic_count:diagnostics.semantic_count,numeric_count:diagnostics.numeric_count,union_count:diagnostics.union_count,final_count:diagnostics.final_count,keyword_fallback_count:keywordFallback,history_specific_count:diagnostics.history_specific_count,history_excluded_count:diagnostics.history_excluded_count,history_global_penalized_count:diagnostics.history_global_penalized_count,history_relaxed:diagnostics.history_relaxed,history_available:diagnostics.history_available,profile_cache_hits:profileCacheHits,embedding_cache_hits:profileCacheHits,new_curation:true,ranking:'deterministic',top:diagnostics.top}));
   let curation;
   try {
     const language=getLanguageConfig(lang); const allInstrumental=songs.every(s=>s.analysis_basis==='INSTRUMENTAL_ACOUSTIC'); const evidence=songs.map(s=>s.analysis_basis==='INSTRUMENTAL_ACOUSTIC'?`${s.title}: instrumental acoustic estimates ${JSON.stringify(s.acoustic_features||{})}`:`${s.title}: lyrical evidence ${String(s.lyrics||'').slice(0,1800)}`).join('\n\n'); const curatorPrompt=`Music profile:\n${JSON.stringify(analysis.data)}\n\nMusic evidence:\n${evidence}\n\nAllowed candidates:\n${JSON.stringify(candidates)}`; const curatorSystem=buildCuratorSystem(language.aiName)+(allInstrumental?' All selected tracks are instrumental. Never mention lyrics, verses, a lyrical speaker, vocals, instruments, tempo changes, or structures not explicitly supported. Connect film through supported rhythm, intensity, scale, quietness, tension, emotional character, or productive contrast.':' Treat each song according to its stated evidence; never attribute lyrics to an instrumental track.');
     const result=await gemini.generateJson({system:curatorSystem,prompt:curatorPrompt,schema:curationSchema}); await writeAudit(env,{request_id:requestId,timestamp:new Date().toISOString(),stage:'final_curation',model:result.model,input:curatorPrompt,system_prompt:curatorSystem,output:result.data,success:true});
-    curation=keepJustificationPrimaryOnly(validateCuration(result.data,slate),slate,lang);
+    curation=keepJustificationPrimaryOnly(validateCuration(result.data,slate,historical.forbidden_primary_ids),slate,lang);
     if(isWeakJustification(curation.justification))console.warn(JSON.stringify({event:'weak_justification',request_id:requestId,length:String(curation.justification||'').length}));
   } catch(error) {
     await writeAudit(env,{request_id:requestId,timestamp:new Date().toISOString(),stage:'final_curation',success:false,error:String(error?.message||error)});
