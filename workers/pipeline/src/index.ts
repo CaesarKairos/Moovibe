@@ -3,7 +3,7 @@ import { buildMovieDocument, EMBEDDING_SCHEMA_VERSION } from '../../../functions
 import { writeAudit } from '../../../functions/_lib/audit.js';
 import { runGeminiHealth } from '../../../functions/_lib/gemini-health.js';
 import { discoveryQueries, splitDateInterval } from './queries';
-import { HISTORICAL_DISCOVERY_BUDGET, HISTORICAL_DISCOVERY_DUE_SQL, MOVIE_BACKLOG_SQL, PIPELINE_BUDGET, RECENT_DISCOVERY_BUDGET, RECENT_DISCOVERY_DUE_SQL, STALE_JOBS_SQL, STALE_JOB_MINUTES, retryDelaySeconds, shouldRetry, stableDiscoveryKey } from './job-policy';
+import { COLLECTION_BACKLOG_BUDGET, EMBEDDING_BACKLOG_BUDGET, ENRICHMENT_BACKLOG_BUDGET, HISTORICAL_DISCOVERY_BUDGET, HISTORICAL_DISCOVERY_DUE_SQL, MOVIE_BACKLOG_SQL, PIPELINE_BUDGET, RECENT_DISCOVERY_BUDGET, RECENT_DISCOVERY_DUE_SQL, STALE_JOBS_SQL, STALE_JOB_MINUTES, retryDelaySeconds, shouldRetry, stableDiscoveryKey } from './job-policy';
 import { laneEnabled, queryDiscoveryLane, readPipelineControl, updatePipelineControl } from './pipeline-control';
 
 type JobType = 'DISCOVER_QUERY' | 'INDEX_MOVIE' | 'FETCH_MOVIE' | 'ENRICH_MOVIE' | 'EMBED_MOVIE' | 'REFRESH_MOVIE' | 'REEMBED_MOVIE';
@@ -141,36 +141,33 @@ async function recoverJobs(env: Env) {
   const stale = await env.MOOVIBE_LIBRARY.prepare(STALE_JOBS_SQL).bind(`-${STALE_JOB_MINUTES} minutes`, 100).all<Job & { job_key: string; payload_json: string; attempts: number }>();
   let recovered = 0;
   for (const row of stale.results) {
-    const error = `stale lease recovered after ${STALE_JOB_MINUTES} minutes`;
-    const changed = await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='queued',last_error=?,available_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='running' AND updated_at < datetime('now',?)`).bind(error, row.job_key, `-${STALE_JOB_MINUTES} minutes`).run();
-    if (changed.meta.changes) {
-      const payload = JSON.parse(row.payload_json);
-      if (row.type === 'DISCOVER_QUERY') await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET status='pending',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE query_id=? AND is_executable=1 AND status='running'`).bind(error, String(payload.query_id)).run();
-      await env.PIPELINE_QUEUE.send({
-        type: row.type as JobType,
-        key: row.job_key,
-        payload
-      });
-      recovered++;
-      log('job_retry', {
-        job_key: row.job_key,
-        type: row.type,
-        attempt: row.attempts,
-        error
-      });
+    try {
+      const error = `stale lease recovered after ${STALE_JOB_MINUTES} minutes`;
+      const changed = await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='queued',last_error=?,available_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='running' AND updated_at < datetime('now',?)`).bind(error, row.job_key, `-${STALE_JOB_MINUTES} minutes`).run();
+      if (changed.meta.changes) {
+        const payload = JSON.parse(row.payload_json);
+        if (row.type === 'DISCOVER_QUERY') await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET status='pending',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE query_id=? AND is_executable=1 AND status='running'`).bind(error, String(payload.query_id)).run();
+        await env.PIPELINE_QUEUE.send({ type: row.type as JobType, key: row.job_key, payload });
+        recovered++;
+        log('job_retry', { job_key: row.job_key, type: row.type, attempt: row.attempts, error });
+      }
+    } catch (error: any) {
+      log('job_recovery_failed', { stage: 'stale_job', job_key: row.job_key, type: row.type, error: String(error?.message || error).slice(0, 300) });
     }
   }
   // Outbox repair: a crash between the D1 insert and Queue.send must not strand work.
   const stranded = await env.MOOVIBE_LIBRARY.prepare(`SELECT job_key,type,payload_json FROM pipeline_jobs WHERE status='queued' AND updated_at<datetime('now','-5 minutes') AND (available_at IS NULL OR available_at<=CURRENT_TIMESTAMP) ORDER BY updated_at LIMIT 100`).all<any>();
+  let repaired = 0;
   for (const row of stranded.results) {
-    await env.PIPELINE_QUEUE.send({
-      type: row.type,
-      key: row.job_key,
-      payload: JSON.parse(row.payload_json)
-    });
-    await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='queued'`).bind(row.job_key).run();
+    try {
+      await env.PIPELINE_QUEUE.send({ type: row.type, key: row.job_key, payload: JSON.parse(row.payload_json) });
+      await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='queued'`).bind(row.job_key).run();
+      repaired++;
+    } catch (error: any) {
+      log('job_recovery_failed', { stage: 'queued_outbox', job_key: row.job_key, type: row.type, error: String(error?.message || error).slice(0, 300) });
+    }
   }
-  return { stale: recovered, stranded: stranded.results.length };
+  return { stale: recovered, stranded: repaired };
 }
 
 // Failures caused by bugs that are already fixed in code. Only these exact
@@ -240,6 +237,7 @@ async function requeueKnownFailures(env: Env) {
 }
 
 async function schedule(env: Env) {
+  log('cron_started');
   // Version-gated bootstrap/sync: one 1-row read per cron and zero row writes
   // while definitions are unchanged. A seed failure must not stall the cron.
   try {
@@ -249,12 +247,25 @@ async function schedule(env: Env) {
       error: String(error?.message || error).slice(0, 300)
     });
   }
-  const recovery = await recoverJobs(env);
+  let recovery = { stale: 0, stranded: 0 };
+  try {
+    recovery = await recoverJobs(env);
+  } catch (error: any) {
+    log('cron_stage_failed', { stage: 'recover_jobs', classification: 'infrastructure', error: String(error?.message || error).slice(0, 300) });
+  }
   // Existing library work is enqueued first and receives almost all of each cron budget.
-  const pending = await env.MOOVIBE_LIBRARY.prepare(MOVIE_BACKLOG_SQL).bind(PIPELINE_BUDGET).all<any>();
+  const pending = await env.MOOVIBE_LIBRARY.prepare(MOVIE_BACKLOG_SQL).bind(COLLECTION_BACKLOG_BUDGET, ENRICHMENT_BACKLOG_BUDGET, EMBEDDING_BACKLOG_BUDGET, PIPELINE_BUDGET).all<any>();
   let pipelineQueued = 0;
   for (const movie of pending.results) {
-    if (movie.enrichment_status !== 'complete')
+    if (movie.collection_status === 'discovered')
+      pipelineQueued += Number(
+        await enqueue(env, {
+          type: 'INDEX_MOVIE',
+          key: `index:${movie.tmdb_id}:v1`,
+          payload: { tmdb_id: movie.tmdb_id }
+        })
+      );
+    else if (movie.enrichment_status !== 'complete')
       pipelineQueued += Number(
         await enqueue(env, {
           type: 'ENRICH_MOVIE',
@@ -807,7 +818,13 @@ async function pipelineBacklog(env: Env) {
   return value;
 }
 async function pipelineControlStatus(env: Env) {
-  const [control, backlog] = await Promise.all([readPipelineControl(env.MOOVIBE_LIBRARY), pipelineBacklog(env)]);
+  const [control, backlog, activity, jobs, cron] = await Promise.all([
+    readPipelineControl(env.MOOVIBE_LIBRARY),
+    pipelineBacklog(env),
+    env.MOOVIBE_LIBRARY.prepare(`SELECT MAX(created_at) last_discovery_at,MAX(details_fetched_at) last_details_at,MAX(enriched_at) last_enriched_at,MAX(embedded_at) last_embedded_at FROM movies`).first<any>(),
+    env.MOOVIBE_LIBRARY.prepare(`SELECT MAX(CASE WHEN status='done' THEN completed_at END) last_job_completed_at,MAX(started_at) last_job_started_at,COALESCE(SUM(status='queued'),0) queued,COALESCE(SUM(status='running'),0) running,COALESCE(SUM(status='paused'),0) paused,COALESCE(SUM(status='error'),0) errors FROM pipeline_jobs`).first<any>(),
+    env.MOOVIBE_LIBRARY.prepare(`SELECT value,updated_at FROM system_state WHERE key='last_cron_at'`).first<any>()
+  ]);
   return {
     control,
     backlog: {
@@ -818,7 +835,16 @@ async function pipelineControlStatus(env: Env) {
       vectorized: Number(backlog?.vectorized) || 0,
       blocked_errors: Number(backlog?.blocked_errors) || 0
     },
-    processing: { enrichment_enabled: true, embedding_enabled: true },
+    activity: {
+      last_discovery_at: activity?.last_discovery_at || null,
+      last_details_at: activity?.last_details_at || null,
+      last_enriched_at: activity?.last_enriched_at || null,
+      last_embedded_at: activity?.last_embedded_at || null,
+      last_job_completed_at: jobs?.last_job_completed_at || null,
+      last_job_started_at: jobs?.last_job_started_at || null
+    },
+    jobs: { queued: Number(jobs?.queued) || 0, running: Number(jobs?.running) || 0, paused: Number(jobs?.paused) || 0, errors: Number(jobs?.errors) || 0 },
+    health: { worker: 'RESPONDING', checked_at: new Date().toISOString(), last_cron_completed_at: cron?.value || cron?.updated_at || null },
     resume_timing: 'next_cron',
     budgets: {
       recent: RECENT_DISCOVERY_BUDGET,
@@ -830,7 +856,7 @@ async function pipelineControlStatus(env: Env) {
 
 export default {
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(schedule(env));
+    ctx.waitUntil(schedule(env).catch((error: any) => log('cron_failed', { stage: 'scheduler', classification: 'critical', error: String(error?.message || error).slice(0, 300) })));
   },
   async queue(batch: MessageBatch<Job>, env: Env) {
     for (const message of batch.messages) {
@@ -878,7 +904,14 @@ export default {
     }
     if (url.pathname === '/admin/pipeline-control') {
       if (!admin()) return json({ error: 'unauthorized' }, 401);
-      if (request.method === 'GET') return json(await pipelineControlStatus(env));
+      if (request.method === 'GET') {
+        try {
+          return json(await pipelineControlStatus(env));
+        } catch (error: any) {
+          log('pipeline_control_read_failed', { classification: 'd1', error: String(error?.message || error).slice(0, 300) });
+          return json({ error: 'pipeline_control_d1_failure' }, 503);
+        }
+      }
       if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
       if (Number(request.headers.get('content-length') || 0) > 1024) return json({ error: 'payload_too_large' }, 413);
       const body: Record<string, unknown> = await request.json<Record<string, unknown>>().catch(() => ({}));
@@ -903,7 +936,7 @@ export default {
           success: false,
           error: String(error?.message || error).slice(0, 300)
         });
-        return json({ error: 'pipeline_control_unavailable' }, 503);
+        return json({ error: 'pipeline_control_d1_failure' }, 503);
       }
     }
     if (url.pathname === '/admin/run') {
