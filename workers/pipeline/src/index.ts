@@ -214,16 +214,23 @@ async function pilotCountToday(db: D1Database): Promise<number> {
     return v.day === today ? Number(v.count) || 0 : 0;
   } catch { return 0; }
 }
+// Pilot cap atomico (2 escritas, decisao em 1 UPDATE condicional):
+// 1) INSERT OR IGNORE cria a linha do contador (count=0) se inexistente.
+// 2) UPDATE incrementa count+1 SOMENTE se (dia<>hoje => reseta p/1) OU
+//    (mesmo dia E count<limite). O D1 serializa escritas na mesma linha, logo
+//    N workers concorrentes produzem no maximo `cap` UPDATEs com changes=1.
+//    Quem recebe changes=0 foi adiado — nunca ultrapassa o limite.
+// Virada de dia UTC: dia<>hoje reinicia em 1 automaticamente.
 async function pilotConsume(db: D1Database, limit: number): Promise<boolean> {
   const day = new Date().toISOString().slice(0, 10);
+  const cap = Math.max(1, Math.min(10000, Number(limit) || 25));
   try {
-    const row = await db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).first<{ value: string }>();
-    let count = 0;
-    if (row?.value) { try { const v = JSON.parse(row.value); count = v.day === day ? Number(v.count) || 0 : 0; } catch { count = 0; } }
-    if (count >= limit) return false;
-    await db.prepare(`INSERT INTO system_state(key,value,updated_at) VALUES('gen_pilot_count',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP`)
-      .bind(JSON.stringify({ day, count: count + 1 })).run();
-    return true;
+    await db.prepare(`INSERT INTO system_state(key,value,updated_at) VALUES('gen_pilot_count',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO NOTHING`)
+      .bind(JSON.stringify({ day: '', count: 0 })).run();
+    const r = await db.prepare(
+      `UPDATE system_state SET value=CASE WHEN COALESCE(json_extract(value,'$.day'),'')<>? THEN ? ELSE json_set(value,'$.count',CAST(COALESCE(json_extract(value,'$.count'),0) AS INTEGER)+1) END, updated_at=CURRENT_TIMESTAMP WHERE key='gen_pilot_count' AND (COALESCE(json_extract(value,'$.day'),'')<>? OR CAST(COALESCE(json_extract(value,'$.count'),0) AS INTEGER)<?)`
+    ).bind(day, JSON.stringify({ day, count: 1 }), day, cap).run();
+    return Boolean(r.meta.changes);
   } catch { return false; }
 }
 
@@ -243,35 +250,48 @@ export async function recoverGenerationBacklog(env: Env, limit = 25, dryRun = fa
     `SELECT j.job_key,j.payload_json,m.collection_status,m.enrichment_status,m.embedding_status FROM pipeline_jobs j JOIN movies m ON m.tmdb_id=CAST(json_extract(j.payload_json,'$.tmdb_id') AS INTEGER)
      WHERE j.status='error' AND j.type='INDEX_MOVIE' AND m.embedding_status<>'complete' AND ${GEN_ERROR_LIKE}
      ORDER BY j.updated_at ASC LIMIT ?`).bind(cap).all<any>();
-  const plan: { job_key: string; type: string; payload: any }[] = [];
-  for (const r of enrichRows.results) plan.push({ job_key: r.job_key, type: 'ENRICH_MOVIE', payload: JSON.parse(r.payload_json) });
+  // Plano por tipo com budgets separados: os ENRICH diretos nunca consomem a
+  // cota dos INDEX derivados (antes os 25 primeiros ENRICH bloqueavam INDEX).
+  const enrichPlan: { job_key: string; type: string; payload: any }[] = [];
+  const indexPlan: { job_key: string; type: string; payload: any }[] = [];
+  for (const r of enrichRows.results) enrichPlan.push({ job_key: r.job_key, type: 'ENRICH_MOVIE', payload: JSON.parse(r.payload_json) });
   for (const r of indexRows.results) {
     const p = JSON.parse(r.payload_json);
-    if (r.collection_status !== 'complete') plan.push({ job_key: r.job_key, type: 'INDEX_MOVIE', payload: p });
-    else if (r.enrichment_status !== 'complete') plan.push({ job_key: (r.job_key as string).startsWith('enrich:') ? r.job_key : `enrich:${p.tmdb_id}:v2`, type: 'ENRICH_MOVIE', payload: p });
-    else plan.push({ job_key: `embed:${p.tmdb_id}:movie-v1`, type: 'EMBED_MOVIE', payload: p });
+    if (r.collection_status !== 'complete') indexPlan.push({ job_key: r.job_key, type: 'INDEX_MOVIE', payload: p });
+    else if (r.enrichment_status !== 'complete') indexPlan.push({ job_key: `enrich:${p.tmdb_id}:v2`, type: 'ENRICH_MOVIE', payload: p });
+    else indexPlan.push({ job_key: `embed:${p.tmdb_id}:movie-v1`, type: 'EMBED_MOVIE', payload: p });
   }
-  const bounded = plan.slice(0, cap);
+  // Dedup: mesma chave derivada de dois INDEX (ou de ENRICH+INDEX) aparece 1x.
+  const seen = new Set(enrichPlan.map((p) => p.type + ':' + p.job_key));
+  const dedupedIndex = indexPlan.filter((p) => (seen.has(p.type + ':' + p.job_key) ? false : (seen.add(p.type + ':' + p.job_key), true)));
+  const half = Math.max(1, Math.floor(cap / 2));
+  const bounded = [...enrichPlan.slice(0, half), ...dedupedIndex.slice(0, cap - Math.min(half, enrichPlan.length))].slice(0, cap);
   if (dryRun) {
     const byType: Record<string, number> = {};
     for (const p of bounded) byType[p.type] = (byType[p.type] || 0) + 1;
     return { dry_run: true, eligible: bounded.length, by_type: byType, enrich_error: enrichRows.results.length, index_error: indexRows.results.length };
   }
   let requeued = 0;
+  const skipped: string[] = [];
   for (const p of bounded) {
-    const changed = await env.MOOVIBE_LIBRARY.prepare(
+    // Reativa SOMENTE job em 'error'. INSERT derivado so cria se a chave nao
+    // existir; o send() e o contador dependem de mudanca real (changes>0).
+    // done/running/queued existentes => sem send, sem contagem (idempotente).
+    const reactivated = await env.MOOVIBE_LIBRARY.prepare(
       `UPDATE pipeline_jobs SET status='queued',attempts=0,last_error=NULL,available_at=CURRENT_TIMESTAMP,started_at=NULL,completed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='error'`).bind(p.job_key).run();
-    if (!changed.meta.changes) {
-      // Target key may not exist yet (e.g. derived enrich:/embed: keys): insert.
-      if (p.type !== 'ENRICH_MOVIE' && p.type !== 'EMBED_MOVIE') continue;
-      await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,available_at) VALUES(?,?,?,'queued',CURRENT_TIMESTAMP) ON CONFLICT(job_key) DO NOTHING`)
+    let created = false;
+    if (!reactivated.meta.changes) {
+      if (p.type !== 'ENRICH_MOVIE' && p.type !== 'EMBED_MOVIE') { skipped.push(p.job_key); continue; }
+      const ins = await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,available_at) VALUES(?,?,?,'queued',CURRENT_TIMESTAMP) ON CONFLICT(job_key) DO NOTHING`)
         .bind(p.job_key, p.type, JSON.stringify(p.payload)).run();
+      created = Boolean(ins.meta.changes);
+      if (!created) { skipped.push(p.job_key); continue; }
     }
     await env.PIPELINE_QUEUE.send({ type: p.type as any, key: p.job_key, payload: p.payload });
     requeued++;
   }
-  log('recover_generation_backlog', { eligible: bounded.length, requeued });
-  return { eligible: bounded.length, requeued };
+  log('recover_generation_backlog', { eligible: bounded.length, requeued, skipped: skipped.length });
+  return { eligible: bounded.length, requeued, skipped: skipped.length };
 }
 
 export async function providerStatus(env: Env) {
@@ -713,29 +733,34 @@ async function enrich(env: Env, job: Job) {
   // Idempotency: a complete enrichment is never regenerated (compat with old Gemini rows).
   const existing = await env.MOOVIBE_LIBRARY.prepare(`SELECT model FROM movie_enrichments WHERE movie_id=?`).bind(movie.id).first<{ model: string }>();
   if (movie.enrichment_status === 'complete' && existing) { log('movie_enrich_skipped', { tmdb_id: id, reason: 'already_complete' }); return; }
-  // Safe mode: without explicit admin activation, NEVER call a paid provider.
-  // The message is not lost and the job is not marked as error: it waits with
-  // a long cooldown and is retried by the queue/scheduler after activation.
+  // Ordem das checagens (piloto = ULTIMO, so representa chamada real):
+  // 1) idempotencia (gratis), 2) modo seguro (gratis, sem consumir nada),
+  // 3) credencial ausente (gratis, terminal), 4) circuito aberto (gratis),
+  // 5) piloto atomico (reserva = tentativa real de geracao).
+  // Safe mode aqui e redundancia de defesa (processJob ja adia antes do claim).
   if (!isMovieGenerationEnabled(env as any)) {
     const err: any = new Error('movie generation disabled (MOVIE_GENERATION_ENABLED=false); awaiting admin activation');
     err.retryAfter = 43200;
+    (err as any).deferred = true;
     throw err;
   }
-  // Pilot cap: global daily bound on new paid generations, including
-  // concurrently pre-queued messages (counter row consumed atomically-ish).
-  const pilotLimit = Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 25);
-  if (!(await pilotConsume(env.MOOVIBE_LIBRARY, pilotLimit))) {
-    const err: any = new Error(`pilot limit reached (${pilotLimit}/day); deferred`);
-    err.retryAfter = 43200;
-    throw err;
-  }
-  // Circuit breaker: an open xAI circuit defers the job without burning quota.
   const providerName = String(env.MOVIE_GENERATION_PROVIDER || 'xai').toLowerCase();
   const circuitKey = providerName === 'gemini' ? 'generation-gemini' : 'generation-xai';
+  if (providerName === 'xai' && !env.XAI_API_KEY) throw new Error('XAI_API_KEY is required');
+  if (providerName === 'gemini' && !env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is required');
+  // Circuit breaker: an open xAI circuit defers the job without burning quota.
   const circuit = await circuitState(env.MOOVIBE_LIBRARY, circuitKey);
   if (circuit.open) {
     const err: any = new Error(`${providerName} circuit open until ${circuit.until}`);
     err.retryAfter = 600;
+    throw err;
+  }
+  // Pilot cap por ultimo: a reserva representa uma tentativa real de geracao.
+  const pilotLimit = Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 25);
+  if (!(await pilotConsume(env.MOOVIBE_LIBRARY, pilotLimit))) {
+    const err: any = new Error(`pilot limit reached (${pilotLimit}/day); deferred`);
+    err.retryAfter = 43200;
+    (err as any).deferred = true;
     throw err;
   }
   const provider = createMovieGenerationProvider(env as any);
@@ -900,7 +925,8 @@ async function embed(env: Env, job: Job) {
   log('movie_embedded', { tmdb_id: id, model, dimensions });
 }
 
-type JobOutcome = { retry: boolean; delaySeconds?: number };
+type JobOutcome = { retry: boolean; delaySeconds?: number; deferred?: boolean };
+export const GENERATION_DEFERRED = 'GENERATION_DEFERRED';
 async function processJob(env: Env, job: Job): Promise<JobOutcome> {
   if (job.type === 'DISCOVER_QUERY') {
     const lane = await queryDiscoveryLane(env.MOOVIBE_LIBRARY, String(job.payload.query_id));
@@ -913,6 +939,16 @@ async function processJob(env: Env, job: Job): Promise<JobOutcome> {
       });
       return { retry: false };
     }
+  }
+  // Adiamento administrativo (modo seguro / piloto esgotado): tem semantica
+  // propria e NAO consome tentativa. Ocorre ANTES do claim (attempts+1), sem
+  // marcar erro: job volta a 'queued' com cooldown longo, mesmos attempts,
+  // retomavel apos ativacao. Repetivel indefinidamente sem degradar o job.
+  if (job.type === 'ENRICH_MOVIE' && !isMovieGenerationEnabled(env as any)) {
+    await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='queued',last_error=?,available_at=datetime('now','+43200 seconds'),updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='queued'`)
+      .bind(`[${GENERATION_DEFERRED}] movie generation disabled; awaiting admin activation`, job.key).run();
+    log('job_deferred', { job_key: job.key, type: job.type, reason: 'generation_disabled' });
+    return { retry: true, delaySeconds: 43200, deferred: true };
   }
   const claim = await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='running',attempts=attempts+1,started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='queued' AND (available_at IS NULL OR available_at<=CURRENT_TIMESTAMP)`).bind(job.key).run();
   if (!claim.meta.changes) return { retry: false };
@@ -929,6 +965,17 @@ async function processJob(env: Env, job: Job): Promise<JobOutcome> {
     log('job_completed', { job_key: job.key, type: job.type, attempt });
     return { retry: false };
   } catch (error: any) {
+    // Adiamento administrativo vindo de enrich() (piloto esgotado ou defesa
+    // de modo seguro): reverte o claim (attempts-1), mantem 'queued' com
+    // cooldown longo, sem erro permanente. Repetivel sem degradar o job.
+    if ((error as any)?.deferred === true) {
+      const msg = `[${GENERATION_DEFERRED}] ` + String(error?.message || error).slice(0, 900);
+      const delay = Number(error?.retryAfter) || 43200;
+      await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='queued',attempts=MAX(0,attempts-1),last_error=?,available_at=datetime('now',?),started_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE job_key=?`)
+        .bind(msg, `+${delay} seconds`, job.key).run();
+      log('job_deferred', { job_key: job.key, type: job.type, attempt, error: msg.slice(0, 300) });
+      return { retry: true, delaySeconds: delay, deferred: true };
+    }
     const classified = classifyProviderError(error);
     const message = `[${classified.code}] ` + String(error?.message || error).slice(0, 900);
     // Terminal provider states never retry at job level: they wait for admin/circuit.
