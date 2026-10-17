@@ -39,6 +39,9 @@ SELECT tmdb_id,collection_status,enrichment_status,embedding_status FROM ranked
 WHERE (stage='collection' AND stage_rank<=?) OR (stage='enrichment' AND stage_rank<=?) OR (stage='embedding' AND stage_rank<=?)
 ORDER BY CASE stage WHEN 'collection' THEN 0 WHEN 'embedding' THEN 1 ELSE 2 END,stage_rank LIMIT ?`;
 
+export const ENRICHMENT_BACKLOG_SQL = `SELECT tmdb_id,collection_status,enrichment_status,embedding_status FROM movies WHERE collection_status='complete' AND enrichment_status IN ('pending','error') ORDER BY updated_at,tmdb_id LIMIT ?`;
+export const EMBEDDING_BACKLOG_SQL = `SELECT tmdb_id,collection_status,enrichment_status,embedding_status FROM movies WHERE collection_status='complete' AND enrichment_status='complete' AND embedding_status IN ('pending','error') ORDER BY updated_at,tmdb_id LIMIT ?`;
+export const COLLECTION_BACKLOG_SQL = `SELECT tmdb_id,collection_status,enrichment_status,embedding_status FROM movies WHERE collection_status='discovered' ORDER BY updated_at,tmdb_id LIMIT ?`;
 export const stableDiscoveryKey=(queryId:string)=>`discover:${queryId}:v1`;
 export const retryDelaySeconds=(attempt:number,retryAfter=0)=>retryAfter
   ?Math.min(43200,Math.max(60,retryAfter))

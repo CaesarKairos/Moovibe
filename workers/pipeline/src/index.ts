@@ -3,7 +3,10 @@ import { buildMovieDocument, EMBEDDING_SCHEMA_VERSION } from '../../../functions
 import { writeAudit } from '../../../functions/_lib/audit.js';
 import { runGeminiHealth } from '../../../functions/_lib/gemini-health.js';
 import { discoveryQueries, splitDateInterval } from './queries';
-import { COLLECTION_BACKLOG_BUDGET, EMBEDDING_BACKLOG_BUDGET, ENRICHMENT_BACKLOG_BUDGET, HISTORICAL_DISCOVERY_BUDGET, HISTORICAL_DISCOVERY_DUE_SQL, MOVIE_BACKLOG_SQL, PIPELINE_BUDGET, RECENT_DISCOVERY_BUDGET, RECENT_DISCOVERY_DUE_SQL, STALE_JOBS_SQL, STALE_JOB_MINUTES, retryDelaySeconds, shouldRetry, stableDiscoveryKey } from './job-policy';
+import { COLLECTION_BACKLOG_BUDGET, COLLECTION_BACKLOG_SQL, EMBEDDING_BACKLOG_BUDGET, EMBEDDING_BACKLOG_SQL, ENRICHMENT_BACKLOG_BUDGET, ENRICHMENT_BACKLOG_SQL, HISTORICAL_DISCOVERY_BUDGET, HISTORICAL_DISCOVERY_DUE_SQL, PIPELINE_BUDGET, RECENT_DISCOVERY_BUDGET, RECENT_DISCOVERY_DUE_SQL, STALE_JOBS_SQL, STALE_JOB_MINUTES, retryDelaySeconds, shouldRetry, stableDiscoveryKey } from './job-policy';
+import { classifyProviderError } from './provider-errors';
+import { closeCircuit, circuitState, openCircuit, validateEnrichment } from './generation-provider';
+import { createMovieGenerationProvider } from './generation-factory';
 import { laneEnabled, queryDiscoveryLane, readPipelineControl, updatePipelineControl } from './pipeline-control';
 
 type JobType = 'DISCOVER_QUERY' | 'INDEX_MOVIE' | 'FETCH_MOVIE' | 'ENRICH_MOVIE' | 'EMBED_MOVIE' | 'REFRESH_MOVIE' | 'REEMBED_MOVIE';
@@ -19,6 +22,9 @@ interface Env {
   EMBEDDING_MODEL: string;
   EMBEDDING_DIMENSIONS: string;
   EMBEDDING_SCHEMA_VERSION: string;
+  MOVIE_GENERATION_PROVIDER?: string;
+  MOVIE_GENERATION_MODEL?: string;
+  XAI_API_KEY?: string;
 }
 const TMDB = 'https://api.themoviedb.org/3';
 const json = (data: unknown, status = 200) =>
@@ -63,7 +69,9 @@ async function tmdb(env: Env, path: string, params: Record<string, unknown> = {}
 }
 
 async function enqueue(env: Env, job: Job) {
-  const result = await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,available_at) VALUES(?,?,?,'queued',CURRENT_TIMESTAMP) ON CONFLICT(job_key) DO UPDATE SET type=excluded.type,payload_json=excluded.payload_json,status='queued',attempts=CASE WHEN pipeline_jobs.status='paused' THEN pipeline_jobs.attempts ELSE 0 END,last_error=NULL,available_at=CURRENT_TIMESTAMP,started_at=NULL,completed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE pipeline_jobs.status='paused' OR (pipeline_jobs.status IN ('done','error') AND (pipeline_jobs.available_at IS NULL OR pipeline_jobs.available_at<=CURRENT_TIMESTAMP))`).bind(job.key, job.type, JSON.stringify(job.payload)).run();
+  // Never reset attempts on error->queued: the job keeps its retry budget so a
+  // persistent cause cannot loop forever. Explicit recovery resets attempts.
+  const result = await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,available_at) VALUES(?,?,?,'queued',CURRENT_TIMESTAMP) ON CONFLICT(job_key) DO UPDATE SET type=excluded.type,payload_json=excluded.payload_json,status='queued',last_error=NULL,available_at=CURRENT_TIMESTAMP,started_at=NULL,completed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE pipeline_jobs.status='paused' OR (pipeline_jobs.status='done' AND (pipeline_jobs.available_at IS NULL OR pipeline_jobs.available_at<=CURRENT_TIMESTAMP))`).bind(job.key, job.type, JSON.stringify(job.payload)).run();
   if (result.meta.changes) await env.PIPELINE_QUEUE.send(job);
   return Boolean(result.meta.changes);
 }
@@ -190,6 +198,39 @@ const KNOWN_FAILURE_RULES: {
   }
 ];
 
+// Controlled migration recovery: only Gemini-generation failures that are now
+// actionable under xAI become eligible. Bounded, deterministic, idempotent:
+// skips movies already enriched, caps attempts, never touches done jobs.
+export async function recoverGenerationBacklog(env: Env, limit = 25) {
+  const cap = Math.max(1, Math.min(100, Number(limit) || 25));
+  const rows = await env.MOOVIBE_LIBRARY.prepare(
+    `SELECT j.job_key,j.payload_json FROM pipeline_jobs j JOIN movies m ON m.tmdb_id=CAST(json_extract(j.payload_json,'$.tmdb_id') AS INTEGER)
+     WHERE j.status='error' AND j.type='ENRICH_MOVIE' AND m.enrichment_status<>'complete'
+     AND (j.last_error LIKE '%Gemini%' OR j.last_error LIKE '%RATE_LIMITED%' OR j.last_error LIKE '%QUOTA%' OR j.last_error LIKE '%Illegal invocation%' OR j.last_error LIKE '%Empty response%')
+     ORDER BY j.updated_at ASC LIMIT ?`).bind(cap).all<{ job_key: string; payload_json: string }>();
+  let requeued = 0;
+  for (const row of rows.results) {
+    const changed = await env.MOOVIBE_LIBRARY.prepare(
+      `UPDATE pipeline_jobs SET status='queued',attempts=0,last_error=NULL,available_at=CURRENT_TIMESTAMP,started_at=NULL,completed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='error'`).bind(row.job_key).run();
+    if (!changed.meta.changes) continue;
+    await env.PIPELINE_QUEUE.send({ type: 'ENRICH_MOVIE', key: row.job_key, payload: JSON.parse(row.payload_json) });
+    requeued++;
+  }
+  log('recover_generation_backlog', { eligible: rows.results.length, requeued });
+  return { eligible: rows.results.length, requeued };
+}
+
+export async function providerStatus(env: Env) {
+  const [gen, emb] = await Promise.all([
+    circuitState(env.MOOVIBE_LIBRARY, 'generation-xai'),
+    circuitState(env.MOOVIBE_LIBRARY, 'embedding-gemini')
+  ]);
+  return {
+    generation: { provider: String((env as any).MOVIE_GENERATION_PROVIDER || 'xai'), model: String((env as any).MOVIE_GENERATION_MODEL || 'grok-4-1-fast-non-reasoning'), state: (gen as any).open ? 'LIMITADO' : 'OPERACIONAL', cooldown_until: (gen as any).until || null },
+    embedding: { provider: 'gemini', model: String((env as any).EMBEDDING_MODEL || 'gemini-embedding-2'), dimensions: Number((env as any).EMBEDDING_DIMENSIONS || 768), state: (emb as any).open ? 'LIMITADO' : 'OPERACIONAL', cooldown_until: (emb as any).until || null }
+  };
+}
+
 // Idempotent, authenticated recovery of known fixed failures: conditional
 // status='error' → 'queued' transition (never duplicates an active job), zeroed
 // attempts, cleared last_error, available_at=now, a Queue message per job and —
@@ -253,8 +294,19 @@ async function schedule(env: Env) {
   } catch (error: any) {
     log('cron_stage_failed', { stage: 'recover_jobs', classification: 'infrastructure', error: String(error?.message || error).slice(0, 300) });
   }
-  // Existing library work is enqueued first and receives almost all of each cron budget.
-  const pending = await env.MOOVIBE_LIBRARY.prepare(MOVIE_BACKLOG_SQL).bind(COLLECTION_BACKLOG_BUDGET, ENRICHMENT_BACKLOG_BUDGET, EMBEDDING_BACKLOG_BUDGET, PIPELINE_BUDGET).all<any>();
+  // Per-stage indexed backlogs: three small ordered scans replace the old
+  // CTE + ROW_NUMBER() window over the whole movies table. Deterministic
+  // (updated_at,tmdb_id) order keeps fairness without starvation.
+  // Embedding backlog is capped by enrichment progress so a stuck Gemini
+  // embedding stage cannot build an unbounded queue.
+  const genCircuit = await circuitState(env.MOOVIBE_LIBRARY, 'generation-xai').catch(() => ({ open: false }));
+  const embCircuit = await circuitState(env.MOOVIBE_LIBRARY, 'embedding-gemini').catch(() => ({ open: false }));
+  const [collection, enrichment, embedding] = await Promise.all([
+    env.MOOVIBE_LIBRARY.prepare(COLLECTION_BACKLOG_SQL).bind(COLLECTION_BACKLOG_BUDGET).all<any>(),
+    (genCircuit as any).open ? Promise.resolve({ results: [] as any[] }) : env.MOOVIBE_LIBRARY.prepare(ENRICHMENT_BACKLOG_SQL).bind(ENRICHMENT_BACKLOG_BUDGET).all<any>(),
+    (embCircuit as any).open ? Promise.resolve({ results: [] as any[] }) : env.MOOVIBE_LIBRARY.prepare(EMBEDDING_BACKLOG_SQL).bind(EMBEDDING_BACKLOG_BUDGET).all<any>()
+  ]);
+  const pending = { results: [...collection.results, ...embedding.results, ...enrichment.results].slice(0, PIPELINE_BUDGET) };
   let pipelineQueued = 0;
   for (const movie of pending.results) {
     if (movie.collection_status === 'discovered')
@@ -622,7 +674,19 @@ async function enrich(env: Env, job: Job) {
     traceId = crypto.randomUUID();
   const movie = await movieRecord(env, id);
   if (!movie) return;
-  const client = new GeminiClient(env.GEMINI_API_KEY);
+  // Idempotency: a complete enrichment is never regenerated (compat with old Gemini rows).
+  const existing = await env.MOOVIBE_LIBRARY.prepare(`SELECT model FROM movie_enrichments WHERE movie_id=?`).bind(movie.id).first<{ model: string }>();
+  if (movie.enrichment_status === 'complete' && existing) { log('movie_enrich_skipped', { tmdb_id: id, reason: 'already_complete' }); return; }
+  // Circuit breaker: an open xAI circuit defers the job without burning quota.
+  const providerName = String(env.MOVIE_GENERATION_PROVIDER || 'xai').toLowerCase();
+  const circuitKey = providerName === 'gemini' ? 'generation-gemini' : 'generation-xai';
+  const circuit = await circuitState(env.MOOVIBE_LIBRARY, circuitKey);
+  if (circuit.open) {
+    const err: any = new Error(`${providerName} circuit open until ${circuit.until}`);
+    err.retryAfter = 600;
+    throw err;
+  }
+  const provider = createMovieGenerationProvider(env as any);
   const sparse = String(movie.overview || '').trim().length < 80;
   const wiki = sparse ? await wikipediaFallback(movie.title, movie.release_year) : null;
   const context = `Title: ${movie.title}\nYear: ${movie.release_year}\nDirector: ${movie.director || 'unknown'}\nCountries: ${movie.countries}\nGenres: ${movie.genres}\nKeywords: ${movie.keywords}\nOverview: ${movie.overview || ''}\nTagline: ${movie.tagline || ''}${wiki ? `\nVerified Wikipedia fallback: ${wiki.text}` : ''}`;
@@ -630,16 +694,20 @@ async function enrich(env: Env, job: Job) {
     started = Date.now();
   let result;
   try {
-    result = await client.generateJson({
+    result = await provider.generateJson({
       system,
       prompt: context,
       schema: enrichmentSchema
     });
+    const v = validateEnrichment(result.data);
+    if (!v.ok) throw new Error(`INVALID_GENERATION_OUTPUT ${v.error}`);
+    await closeCircuit(env.MOOVIBE_LIBRARY, circuitKey);
     await audit(env, {
       request_id: traceId,
       timestamp: new Date().toISOString(),
       stage: 'movie_enrichment',
       model: result.model,
+      provider: result.provider,
       input: context,
       system_prompt: system,
       output: result.data,
@@ -652,6 +720,7 @@ async function enrich(env: Env, job: Job) {
       request_id: traceId,
       timestamp: new Date().toISOString(),
       stage: 'movie_enrichment',
+      provider: provider.name,
       input: context,
       system_prompt: system,
       duration_ms: Date.now() - started,
@@ -659,11 +728,20 @@ async function enrich(env: Env, job: Job) {
       status: 'error',
       error: String(error?.message || error)
     });
+    // Coordinated cooldown: quota/rate-limit opens the circuit so the next
+    // jobs defer instead of storming the provider.
+    const classified = classifyProviderError(error);
+    if (classified.code === 'QUOTA_EXHAUSTED' || classified.code === 'RATE_LIMITED') {
+      await openCircuit(env.MOOVIBE_LIBRARY, circuitKey, classified.retryAfterSeconds || 600, classified.message.slice(0, 200));
+    }
+    if (classified.code === 'INVALID_CREDENTIAL' || classified.code === 'INSUFFICIENT_CREDITS') {
+      await openCircuit(env.MOOVIBE_LIBRARY, circuitKey, 43200, classified.message.slice(0, 200));
+    }
     throw error;
   }
   const e = result.data as any;
   await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO movie_enrichments(movie_id,moods_json,themes_json,atmosphere_json,visual_style_json,pace,emotional_valence,energy,intimacy,surrealism,darkness,humor,romanticism,narrative_density,melancholy_level,tension_level,confidence,model,schema_version,source_context,provenance_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(movie_id) DO UPDATE SET moods_json=excluded.moods_json,themes_json=excluded.themes_json,atmosphere_json=excluded.atmosphere_json,visual_style_json=excluded.visual_style_json,pace=excluded.pace,emotional_valence=excluded.emotional_valence,energy=excluded.energy,intimacy=excluded.intimacy,surrealism=excluded.surrealism,darkness=excluded.darkness,humor=excluded.humor,romanticism=excluded.romanticism,narrative_density=excluded.narrative_density,melancholy_level=excluded.melancholy_level,tension_level=excluded.tension_level,confidence=excluded.confidence,model=excluded.model,source_context=excluded.source_context,provenance_json=excluded.provenance_json,updated_at=CURRENT_TIMESTAMP`)
-    .bind(movie.id, JSON.stringify(e.moods), JSON.stringify(e.themes), JSON.stringify(e.atmosphere), JSON.stringify(e.visual_style), e.pace, e.emotional_valence, e.energy, e.intimacy, e.surrealism, e.darkness, e.humor, e.romanticism, e.narrative_density, e.melancholy_level, e.tension_level, e.confidence, result.model, 'style-v2', context, JSON.stringify(wiki ? ['tmdb', { source: 'wikipedia', url: wiki.url }] : ['tmdb']))
+    .bind(movie.id, JSON.stringify(e.moods), JSON.stringify(e.themes), JSON.stringify(e.atmosphere), JSON.stringify(e.visual_style), e.pace, e.emotional_valence, e.energy, e.intimacy, e.surrealism, e.darkness, e.humor, e.romanticism, e.narrative_density, e.melancholy_level, e.tension_level, e.confidence, result.model, 'style-v2', context, JSON.stringify({ provider: result.provider, wiki: wiki ? ['tmdb', { source: 'wikipedia', url: wiki.url }] : ['tmdb'] }))
     .run();
   await env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET enrichment_status='complete',enriched_at=CURRENT_TIMESTAMP,embedding_status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(movie.id).run();
   if (!job.payload.inline)
@@ -705,17 +783,27 @@ async function embed(env: Env, job: Job) {
   const model = env.EMBEDDING_MODEL || 'gemini-embedding-2',
     dimensions = Number(env.EMBEDDING_DIMENSIONS || 768),
     started = Date.now();
+  // Idempotency: same document hash + same model/dims never re-embeds.
+  if (movie.embedding_status === 'complete' && movie.semantic_document_hash === digest && movie.embedding_model === model && Number(movie.embedding_dimensions) === dimensions) {
+    log('movie_embed_skipped', { tmdb_id: id, reason: 'already_embedded' });
+    return;
+  }
+  // Separate Gemini-embedding circuit: enrichment (xAI) keeps flowing.
+  const embCircuit = await circuitState(env.MOOVIBE_LIBRARY, 'embedding-gemini');
+  if (embCircuit.open) { const e: any = new Error(`gemini embedding circuit open until ${embCircuit.until}`); e.retryAfter = 600; throw e; }
   let values: number[];
   try {
-    values = await new GeminiClient(env.GEMINI_API_KEY).embed(document, {
+    values = await new GeminiClient(env.GEMINI_API_KEY, null, { maxAttempts: 1 }).embed(document, {
       model,
       dimensions
     });
+    await closeCircuit(env.MOOVIBE_LIBRARY, 'embedding-gemini');
     await audit(env, {
       request_id: traceId,
       timestamp: new Date().toISOString(),
       stage: 'movie_embedding',
       model,
+      provider: 'gemini',
       input: document,
       input_hash: digest,
       dimensions,
@@ -729,6 +817,7 @@ async function embed(env: Env, job: Job) {
       timestamp: new Date().toISOString(),
       stage: 'movie_embedding',
       model,
+      provider: 'gemini',
       input: document,
       input_hash: digest,
       dimensions,
@@ -737,6 +826,9 @@ async function embed(env: Env, job: Job) {
       status: 'error',
       error: String(error?.message || error)
     });
+    const c = classifyProviderError(error);
+    if (c.code === 'QUOTA_EXHAUSTED' || c.code === 'RATE_LIMITED') await openCircuit(env.MOOVIBE_LIBRARY, 'embedding-gemini', c.retryAfterSeconds || 600, c.message.slice(0, 200));
+    if (c.code === 'INVALID_CREDENTIAL') await openCircuit(env.MOOVIBE_LIBRARY, 'embedding-gemini', 43200, c.message.slice(0, 200));
     throw error;
   }
   await env.MOVIE_VECTORS.upsert([
@@ -785,9 +877,13 @@ async function processJob(env: Env, job: Job): Promise<JobOutcome> {
     log('job_completed', { job_key: job.key, type: job.type, attempt });
     return { retry: false };
   } catch (error: any) {
-    const message = String(error?.message || error).slice(0, 1000);
-    const retry = shouldRetry(attempt);
-    const delay = retryDelaySeconds(attempt, error instanceof RetryableError ? error.retryAfter : 0);
+    const classified = classifyProviderError(error);
+    const message = `[${classified.code}] ` + String(error?.message || error).slice(0, 900);
+    // Terminal provider states never retry at job level: they wait for admin/circuit.
+    const terminal = classified.code === 'INVALID_CREDENTIAL' || classified.code === 'INSUFFICIENT_CREDITS' || classified.code === 'INVALID_GENERATION_OUTPUT';
+    const retry = !terminal && shouldRetry(attempt) && (classified.retryable || classified.code === 'UNKNOWN');
+    const requestedDelay = retryDelaySeconds(attempt, (error instanceof RetryableError ? error.retryAfter : 0) || classified.retryAfterSeconds || 0);
+    const delay = classified.code === 'QUOTA_EXHAUSTED' ? Math.max(requestedDelay, 3600) : requestedDelay;
     await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status=?,last_error=?,available_at=datetime('now',?),updated_at=CURRENT_TIMESTAMP WHERE job_key=?`)
       .bind(retry ? 'queued' : 'error', message, `+${delay} seconds`, job.key)
       .run();
@@ -952,6 +1048,16 @@ export default {
       if (!admin()) return json({ error: 'unauthorized' }, 401);
       if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
       return json(await requeueKnownFailures(env));
+    }
+    if (url.pathname === '/admin/providers') {
+      if (!admin()) return json({ error: 'unauthorized' }, 401);
+      return json(await providerStatus(env));
+    }
+    if (url.pathname === '/admin/recover-generation') {
+      if (!admin()) return json({ error: 'unauthorized' }, 401);
+      if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+      const body: any = await request.json().catch(() => ({}));
+      return json(await recoverGenerationBacklog(env, Number(body?.limit) || 25));
     }
     return json({ service: 'moovibe-pipeline', ok: true });
   }
