@@ -9,7 +9,9 @@
     "EMBEDDING_MODEL": "gemini-embedding-2",
     "EMBEDDING_DIMENSIONS": "768",
     "EMBEDDING_SCHEMA_VERSION": "movie-v1",
-    "GEMINI_PROJECT_LABEL": "Moovibe Pipeline"
+    "GEMINI_PROJECT_LABEL": "Moovibe Pipeline",
+    "MOVIE_GENERATION_PROVIDER": "xai",
+    "MOVIE_GENERATION_MODEL": "grok-4-1-fast-non-reasoning"
   },
   "d1_databases": [{
     "binding": "MOOVIBE_LIBRARY",
