@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { classifyProviderError } from '../workers/pipeline/src/provider-errors';
-import { circuitState, closeCircuit, openCircuit, validateEnrichment } from '../workers/pipeline/src/generation-provider';
-import { createMovieGenerationProvider } from '../workers/pipeline/src/generation-factory';
+import { circuitState, closeCircuit, openCircuit, validateEnrichment, ENRICHMENT_JSON_SCHEMA } from '../workers/pipeline/src/generation-provider';
+import { createMovieGenerationProvider, isMovieGenerationEnabled, DEFAULT_XAI_MODEL } from '../workers/pipeline/src/generation-factory';
 import { XaiClient } from '../workers/pipeline/src/xai-client';
 
 const good = { moods: ['tense'], themes: ['revenge'], atmosphere: ['dark'], pace: 'slow', visual_style: ['noir'], emotional_valence: 0.2, energy: 0.7, intimacy: 0.3, surrealism: 0.1, darkness: 0.9, humor: 0.05, romanticism: 0.1, narrative_density: 0.6, melancholy_level: 0.5, tension_level: 0.9, confidence: 0.85 };
@@ -13,8 +13,17 @@ const xaiOk = (data: any = good, usage: any = { prompt_tokens: 1200, completion_
   new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(data) } }], usage }), { status: 200 });
 
 describe('xai migration', () => {
+  it('usa grok-4-3 (modelo atual) e modo seguro desliga geracao por default', () => {
+    expect(DEFAULT_XAI_MODEL).toBe('grok-4-3');
+    expect(isMovieGenerationEnabled({} as any)).toBe(false);
+    expect(isMovieGenerationEnabled({ MOVIE_GENERATION_ENABLED: 'true' } as any)).toBe(true);
+  });
+  it('schema Grok alinha pace enum + arrays + dims com o validador', () => {
+    expect((ENRICHMENT_JSON_SCHEMA.properties as any).pace.enum).toEqual(['very_slow', 'slow', 'medium', 'fast', 'very_fast']);
+    expect(validateEnrichment(good).ok).toBe(true);
+  });
   it('xAI gera JSON valido via structured outputs', async () => {
-    const c = new XaiClient('k', 'grok-4-1-fast-non-reasoning', (async () => xaiOk()) as any);
+    const c = new XaiClient('k', 'grok-4-3', (async () => xaiOk()) as any);
     const r = await c.generateJson({ system: 's', prompt: 'p', schema: { type: 'object' } });
     expect(r.provider).toBe('xai');
     expect(validateEnrichment(r.data).ok).toBe(true);
@@ -39,6 +48,12 @@ describe('xai migration', () => {
     expect(cred.retryable).toBe(false);
     expect(classifyProviderError(new Error('payment required: insufficient credits')).code).toBe('INSUFFICIENT_CREDITS');
     expect(classifyProviderError(new Error('too many subrequests')).code).toBe('WORKER_SUBREQUEST_LIMIT');
+  });
+  it('D1 indisponivel fecha o circuito (fail-closed), nao libera chamadas', async () => {
+    const badDb = { prepare: () => { throw new Error('D1 down'); } } as any;
+    const s = await circuitState(badDb, 'generation-xai');
+    expect(s.open).toBe(true);
+    expect(s.unknown).toBe(true);
   });
   it('circuit breaker abre e fecha com persistencia minima', async () => {
     const db = memDb();

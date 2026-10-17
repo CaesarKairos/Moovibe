@@ -3,6 +3,8 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 
 vi.mock('../workers/pipeline/src/generation-factory', () => ({
+  DEFAULT_XAI_MODEL: 'grok-4-3',
+  isMovieGenerationEnabled: (env: any) => String(env?.MOVIE_GENERATION_ENABLED || 'false').toLowerCase() === 'true',
   createMovieGenerationProvider: () => ({
     name: 'xai',
     generateJson: async () => ({
@@ -31,7 +33,7 @@ class Statement {
 }
 const makeEnv=(db:Database.Database)=>{
   const sent:any[]=[];
-  const env:any={MOOVIBE_LIBRARY:{prepare:(sql:string)=>new Statement(db,sql),batch:async(xs:Statement[])=>Promise.all(xs.map(x=>x.run()))},PIPELINE_QUEUE:{send:async(j:any)=>{sent.push(j);}},MOVIE_VECTORS:{upsert:vi.fn()},GEMINI_API_KEY:'x',TMDB_API_KEY:'x',EMBEDDING_MODEL:'gemini-embedding-2',EMBEDDING_DIMENSIONS:'768',EMBEDDING_SCHEMA_VERSION:'movie-v1'};
+  const env:any={MOOVIBE_LIBRARY:{prepare:(sql:string)=>new Statement(db,sql),batch:async(xs:Statement[])=>Promise.all(xs.map(x=>x.run()))},PIPELINE_QUEUE:{send:async(j:any)=>{sent.push(j);}},MOVIE_VECTORS:{upsert:vi.fn()},GEMINI_API_KEY:'x',TMDB_API_KEY:'x',EMBEDDING_MODEL:'gemini-embedding-2',EMBEDDING_DIMENSIONS:'768',EMBEDDING_SCHEMA_VERSION:'movie-v1',MOVIE_GENERATION_PROVIDER:'xai',MOVIE_GENERATION_MODEL:'grok-4-3',MOVIE_GENERATION_ENABLED:'true',MOVIE_GENERATION_PILOT_LIMIT:'10000'};
   return {env,sent};
 };
 const trackRowWrites=(env:any,table?:string)=>{
