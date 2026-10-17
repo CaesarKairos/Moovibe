@@ -39,9 +39,16 @@ SELECT tmdb_id,collection_status,enrichment_status,embedding_status FROM ranked
 WHERE (stage='collection' AND stage_rank<=?) OR (stage='enrichment' AND stage_rank<=?) OR (stage='embedding' AND stage_rank<=?)
 ORDER BY CASE stage WHEN 'collection' THEN 0 WHEN 'embedding' THEN 1 ELSE 2 END,stage_rank LIMIT ?`;
 
-export const ENRICHMENT_BACKLOG_SQL = `SELECT tmdb_id,collection_status,enrichment_status,embedding_status FROM movies WHERE collection_status='complete' AND enrichment_status IN ('pending','error') ORDER BY updated_at,tmdb_id LIMIT ?`;
-export const EMBEDDING_BACKLOG_SQL = `SELECT tmdb_id,collection_status,enrichment_status,embedding_status FROM movies WHERE collection_status='complete' AND enrichment_status='complete' AND embedding_status IN ('pending','error') ORDER BY updated_at,tmdb_id LIMIT ?`;
-export const COLLECTION_BACKLOG_SQL = `SELECT tmdb_id,collection_status,enrichment_status,embedding_status FROM movies WHERE collection_status='discovered' ORDER BY updated_at,tmdb_id LIMIT ?`;
+// Backlog eligibility: movies whose terminal job (same key) is in error or in
+// cooldown are skipped by the selector itself, so persistent failures never
+// pin the head of the queue. Fairness preserved via (updated_at,tmdb_id).
+// Anti-blocking: oversample then filter blocked keys, so 8 terminal rows at
+// the head cannot starve thousands of eligible movies behind them.
+export const ENRICHMENT_BACKLOG_SQL = `SELECT m.tmdb_id,m.collection_status,m.enrichment_status,m.embedding_status FROM movies m LEFT JOIN pipeline_jobs j ON j.job_key='enrich:'||m.tmdb_id||':v2' WHERE m.collection_status='complete' AND m.enrichment_status IN ('pending','error') AND (j.job_key IS NULL OR j.status NOT IN ('error') OR j.available_at IS NULL OR j.available_at<=CURRENT_TIMESTAMP) ORDER BY m.updated_at,m.tmdb_id LIMIT ?`;
+export const EMBEDDING_BACKLOG_SQL = `SELECT m.tmdb_id,m.collection_status,m.enrichment_status,m.embedding_status FROM movies m LEFT JOIN pipeline_jobs j ON j.job_key='embed:'||m.tmdb_id||':movie-v1' WHERE m.collection_status='complete' AND m.enrichment_status='complete' AND m.embedding_status IN ('pending','error') AND (j.job_key IS NULL OR j.status NOT IN ('error') OR j.available_at IS NULL OR j.available_at<=CURRENT_TIMESTAMP) ORDER BY m.updated_at,m.tmdb_id LIMIT ?`;
+export const COLLECTION_BACKLOG_SQL = `SELECT m.tmdb_id,m.collection_status,m.enrichment_status,m.embedding_status FROM movies m LEFT JOIN pipeline_jobs j ON j.job_key='index:'||m.tmdb_id||':v1' WHERE m.collection_status='discovered' AND (j.job_key IS NULL OR j.status NOT IN ('error') OR j.available_at IS NULL OR j.available_at<=CURRENT_TIMESTAMP) ORDER BY m.updated_at,m.tmdb_id LIMIT ?`;
+// Oversample factor keeps eligibility after filtering blocked terminal jobs.
+export const BACKLOG_OVERSCAN = 4;
 export const stableDiscoveryKey=(queryId:string)=>`discover:${queryId}:v1`;
 export const retryDelaySeconds=(attempt:number,retryAfter=0)=>retryAfter
   ?Math.min(43200,Math.max(60,retryAfter))
