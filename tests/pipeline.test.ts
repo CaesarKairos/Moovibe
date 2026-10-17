@@ -2,6 +2,15 @@ import {beforeEach,describe,expect,it,vi} from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 
+vi.mock('../workers/pipeline/src/generation-factory', () => ({
+  createMovieGenerationProvider: () => ({
+    name: 'xai',
+    generateJson: async () => ({
+      provider: 'xai', model: 'grok-test',
+      data: { moods: ['calm'], themes: ['memory'], atmosphere: ['warm'], pace: 'medium', visual_style: ['natural'], emotional_valence: .5, energy: .5, intimacy: .5, surrealism: .1, darkness: .1, humor: .2, romanticism: .2, narrative_density: .5, melancholy_level: .2, tension_level: .2, confidence: .9 }
+    })
+  })
+}));
 vi.mock('../functions/_lib/gemini.js',()=>({
   RetryableError:class RetryableError extends Error {retryAfter:number;constructor(message:string,retryAfter=0){super(message);this.retryAfter=retryAfter;}},
   GeminiClient:class {async generateJson(){return {model:'test-model',data:{moods:['calm'],themes:['memory'],atmosphere:['warm'],pace:'medium',visual_style:['natural'],emotional_valence:.5,energy:.5,intimacy:.5,surrealism:.1,darkness:.1,humor:.2,romanticism:.2,narrative_density:.5,melancholy_level:.2,tension_level:.2,confidence:.9}};} async embed(){return Array(768).fill(0.01);}}
@@ -169,8 +178,8 @@ describe('job state machine',()=>{
     await processJob(env,{type:'ENRICH_MOVIE',key:'enrich:1:v2',payload:{tmdb_id:1}});
     expect((db.prepare('SELECT COUNT(*) n FROM movie_enrichments').get() as any).n).toBe(1);
     expect((db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE job_key='embed:1:movie-v1'`).get() as any).n).toBe(1);
+    expect(auditObjects.filter(x=>x.stage==='movie_enrichment')).toHaveLength(1);
     await processJob(env,{type:'EMBED_MOVIE',key:'embed:1:movie-v1',payload:{tmdb_id:1}});
-    expect(auditObjects.filter(x=>x.stage==='movie_enrichment')).toHaveLength(2);
     const embedding=auditObjects.find(x=>x.stage==='movie_embedding');
     expect(embedding).toMatchObject({model:'gemini-embedding-2',dimensions:768,success:true,status:'complete'});
     expect(embedding.input).toContain('Film');expect(embedding.input_hash).toMatch(/^[a-f0-9]{64}$/);expect(embedding).not.toHaveProperty('values');expect(JSON.stringify(embedding)).not.toContain('0.01,0.01');
