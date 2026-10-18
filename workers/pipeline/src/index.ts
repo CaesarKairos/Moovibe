@@ -233,6 +233,16 @@ async function pilotConsume(db: D1Database, limit: number): Promise<boolean> {
     return Boolean(r.meta.changes);
   } catch { return false; }
 }
+// Precisao do piloto: devolve a reserva quando a chamada nao produziu saida
+// (rate limit, rede, timeout). Piso em zero, restrito ao dia corrente, e nunca
+// propaga erro — telemetria auxiliar nao pode falhar um job de producao.
+async function pilotRelease(db: D1Database): Promise<void> {
+  const day = new Date().toISOString().slice(0, 10);
+  try {
+    await db.prepare(`UPDATE system_state SET value=json_set(value,'$.count',MAX(0,CAST(COALESCE(json_extract(value,'$.count'),0) AS INTEGER)-1)),updated_at=CURRENT_TIMESTAMP WHERE key='gen_pilot_count' AND COALESCE(json_extract(value,'$.day'),'')=?`)
+      .bind(day).run();
+  } catch { /* best-effort */ }
+}
 
 // Controlled migration recovery: stage-aware for ENRICH_MOVIE + INDEX_MOVIE
 // generation failures. Skips complete movies, caps batches, dry-run safe,
@@ -380,9 +390,17 @@ async function schedule(env: Env) {
     !generationEnabled || (genCircuit as any).open ? Promise.resolve({ results: [] as any[] }) : env.MOOVIBE_LIBRARY.prepare(ENRICHMENT_BACKLOG_SQL).bind(ENRICHMENT_BACKLOG_BUDGET * over).all<any>(),
     (embCircuit as any).open ? Promise.resolve({ results: [] as any[] }) : env.MOOVIBE_LIBRARY.prepare(EMBEDDING_BACKLOG_SQL).bind(EMBEDDING_BACKLOG_BUDGET * over).all<any>()
   ]);
+  // Safe mode/curto-circuito xAI: INDEX_MOVIE so agenda quando nao exige
+  // geracao paga. 'discovered' sem enriquecimento aguarda fora da fila (sem
+  // mensagens, sem churn de adiamento) e volta a ser elegivel no proximo cron
+  // apos reativacao; ja enriquecidos seguem normalmente (embed gratuito).
+  // Defesa extra: indexMovie>enrich adia com 'deferred' seguro.
+  const collectionSafe = (!generationEnabled || (genCircuit as any).open)
+    ? { results: collection.results.filter((movie: any) => movie.enrichment_status === 'complete') }
+    : collection;
   const pending = {
     results: [
-      ...collection.results.slice(0, COLLECTION_BACKLOG_BUDGET),
+      ...collectionSafe.results.slice(0, COLLECTION_BACKLOG_BUDGET),
       ...embedding.results.slice(0, EMBEDDING_BACKLOG_BUDGET),
       ...enrichment.results.slice(0, ENRICHMENT_BACKLOG_BUDGET)
     ].slice(0, PIPELINE_BUDGET)
@@ -740,7 +758,7 @@ async function enrich(env: Env, job: Job) {
   // Safe mode aqui e redundancia de defesa (processJob ja adia antes do claim).
   if (!isMovieGenerationEnabled(env as any)) {
     const err: any = new Error('movie generation disabled (MOVIE_GENERATION_ENABLED=false); awaiting admin activation');
-    err.retryAfter = 43200;
+    err.retryAfter = GENERATION_DEFER_SECONDS;
     (err as any).deferred = true;
     throw err;
   }
@@ -755,20 +773,22 @@ async function enrich(env: Env, job: Job) {
     err.retryAfter = 600;
     throw err;
   }
-  // Pilot cap por ultimo: a reserva representa uma tentativa real de geracao.
-  const pilotLimit = Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 25);
-  if (!(await pilotConsume(env.MOOVIBE_LIBRARY, pilotLimit))) {
-    const err: any = new Error(`pilot limit reached (${pilotLimit}/day); deferred`);
-    err.retryAfter = 43200;
-    (err as any).deferred = true;
-    throw err;
-  }
   const provider = createMovieGenerationProvider(env as any);
   const sparse = String(movie.overview || '').trim().length < 80;
   const wiki = sparse ? await wikipediaFallback(movie.title, movie.release_year) : null;
   const context = `Title: ${movie.title}\nYear: ${movie.release_year}\nDirector: ${movie.director || 'unknown'}\nCountries: ${movie.countries}\nGenres: ${movie.genres}\nKeywords: ${movie.keywords}\nOverview: ${movie.overview || ''}\nTagline: ${movie.tagline || ''}${wiki ? `\nVerified Wikipedia fallback: ${wiki.text}` : ''}`;
   const system = 'Analyze cinematic aesthetics from supplied facts. Never create factual claims. Return concise English concepts and all numeric dimensions from 0 to 1.',
     started = Date.now();
+  // Pilot cap IMEDIATAMENTE antes da chamada paga: a reserva representa uma
+  // tentativa real de geracao — construcao de contexto e fallback wiki nunca
+  // consomem piloto.
+  const pilotLimit = Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 25);
+  if (!(await pilotConsume(env.MOOVIBE_LIBRARY, pilotLimit))) {
+    const err: any = new Error(`pilot limit reached (${pilotLimit}/day); deferred`);
+    err.retryAfter = GENERATION_DEFER_SECONDS;
+    (err as any).deferred = true;
+    throw err;
+  }
   let result;
   try {
     result = await provider.generateJson({
@@ -793,6 +813,10 @@ async function enrich(env: Env, job: Job) {
       status: 'complete'
     });
   } catch (error: any) {
+    // Precisao do piloto: sem saida do provider (rate limit/rede/timeout) a
+    // reserva e devolvida; saida recebida (mesmo invalida) permanece contada —
+    // o provider ja gerou tokens.
+    if (result === undefined) await pilotRelease(env.MOOVIBE_LIBRARY);
     await audit(env, {
       request_id: traceId,
       timestamp: new Date().toISOString(),
@@ -927,6 +951,9 @@ async function embed(env: Env, job: Job) {
 
 type JobOutcome = { retry: boolean; delaySeconds?: number; deferred?: boolean };
 export const GENERATION_DEFERRED = 'GENERATION_DEFERRED';
+// Cooldown padrao do adiamento administrativo (12h): curta o bastante para
+// reativacao no mesmo dia, longa o bastante para nao gerar churn de fila.
+const GENERATION_DEFER_SECONDS = 43200;
 async function processJob(env: Env, job: Job): Promise<JobOutcome> {
   if (job.type === 'DISCOVER_QUERY') {
     const lane = await queryDiscoveryLane(env.MOOVIBE_LIBRARY, String(job.payload.query_id));
@@ -943,12 +970,19 @@ async function processJob(env: Env, job: Job): Promise<JobOutcome> {
   // Adiamento administrativo (modo seguro / piloto esgotado): tem semantica
   // propria e NAO consome tentativa. Ocorre ANTES do claim (attempts+1), sem
   // marcar erro: job volta a 'queued' com cooldown longo, mesmos attempts,
-  // retomavel apos ativacao. Repetivel indefinidamente sem degradar o job.
+  // retomavel apos ativacao. O UPDATE exige claimability (available_at
+  // vencido): redelivery precoce/duplicata nao estende o cooldown nem degrada
+  // o job — D1 e a unica fonte de verdade do agendamento.
   if (job.type === 'ENRICH_MOVIE' && !isMovieGenerationEnabled(env as any)) {
-    await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='queued',last_error=?,available_at=datetime('now','+43200 seconds'),updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='queued'`)
-      .bind(`[${GENERATION_DEFERRED}] movie generation disabled; awaiting admin activation`, job.key).run();
-    log('job_deferred', { job_key: job.key, type: job.type, reason: 'generation_disabled' });
-    return { retry: true, delaySeconds: 43200, deferred: true };
+    const deferred = await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='queued',last_error=?,available_at=datetime('now',?),updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='queued' AND (available_at IS NULL OR available_at<=CURRENT_TIMESTAMP)`)
+      .bind(`[${GENERATION_DEFERRED}] movie generation disabled; awaiting admin activation`, `+${GENERATION_DEFER_SECONDS} seconds`, job.key).run();
+    if (deferred.meta.changes) {
+      log('job_deferred', { job_key: job.key, type: job.type, reason: 'generation_disabled' });
+      return { retry: true, delaySeconds: GENERATION_DEFER_SECONDS, deferred: true };
+    }
+    // Mensagem cedo/duplicata ou job sob outro dono: nada a fazer; o outbox do
+    // cron reenvia quando available_at vencer.
+    return { retry: false };
   }
   const claim = await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='running',attempts=attempts+1,started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='queued' AND (available_at IS NULL OR available_at<=CURRENT_TIMESTAMP)`).bind(job.key).run();
   if (!claim.meta.changes) return { retry: false };
@@ -1054,11 +1088,24 @@ export default {
     ctx.waitUntil(schedule(env).catch((error: any) => log('cron_failed', { stage: 'scheduler', classification: 'critical', error: String(error?.message || error).slice(0, 300) })));
   },
   async queue(batch: MessageBatch<Job>, env: Env) {
-    for (const message of batch.messages) {
-      const outcome = await processJob(env, message.body);
-      if (outcome.retry) message.retry({ delaySeconds: outcome.delaySeconds });
-      else message.ack();
-    }
+    // Sem head-of-line blocking: o lote processa em paralelo e cada mensagem
+    // tem isolamento de erro proprio — uma excecao inesperada retrya apenas a
+    // sua mensagem e nunca derruba o batch inteiro para as demais.
+    await Promise.all(batch.messages.map(async (message) => {
+      try {
+        const outcome = await processJob(env, message.body);
+        // Adiamento administrativo (modo seguro / piloto esgotado) e durvel em
+        // D1: a mensagem e reconhecida sem consumir entregas da fila, e o
+        // outbox do cron a reenvia quando available_at vencer. Assim o job
+        // nunca cai em DLQ por aguardar ativacao do administrador.
+        if (outcome.deferred) message.ack();
+        else if (outcome.retry) message.retry({ delaySeconds: outcome.delaySeconds });
+        else message.ack();
+      } catch (error: any) {
+        log('queue_message_failed', { job_key: message.body?.key, type: message.body?.type, error: String(error?.message || error).slice(0, 300) });
+        message.retry();
+      }
+    }));
   },
   // Runtime validation below constrains the only accepted body field.
   // @ts-ignore catch() widens the generic JSON result to an empty-object union.

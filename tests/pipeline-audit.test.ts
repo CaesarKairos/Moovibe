@@ -6,15 +6,28 @@ vi.mock('../workers/pipeline/src/generation-factory', () => ({
   isMovieGenerationEnabled: (env: any) => String(env?.MOVIE_GENERATION_ENABLED || 'false').toLowerCase() === 'true',
   createMovieGenerationProvider: () => ({
     name: 'xai',
-    generateJson: async () => ({ provider: 'xai', model: 'grok-4-3',
-      data: { moods: ['calm'], themes: ['memory'], atmosphere: ['warm'], pace: 'medium', visual_style: ['natural'], emotional_valence: .5, energy: .5, intimacy: .5, surrealism: .1, darkness: .1, humor: .2, romanticism: .2, narrative_density: .5, melancholy_level: .2, tension_level: .2, confidence: .9 } })
+    // Instrumentado: mede chamadas simultaneas (concorrencia) e permite falhar
+    // as proximas chamadas via globalThis.__genMock = { failNext: n }.
+    generateJson: async () => {
+      const g: any = globalThis as any;
+      g.__genInflight = (g.__genInflight || 0) + 1;
+      g.__genMaxInflight = Math.max(g.__genMaxInflight || 0, g.__genInflight);
+      try {
+        await new Promise((r) => setTimeout(r, 5));
+        const mock = g.__genMock;
+        if (mock && Number(mock.failNext) > 0) { mock.failNext -= 1; throw new Error('xAI 429 rate limited'); }
+        return { provider: 'xai', model: 'grok-4-3',
+          data: { moods: ['calm'], themes: ['memory'], atmosphere: ['warm'], pace: 'medium', visual_style: ['natural'], emotional_valence: .5, energy: .5, intimacy: .5, surrealism: .1, darkness: .1, humor: .2, romanticism: .2, narrative_density: .5, melancholy_level: .2, tension_level: .2, confidence: .9 } };
+      } finally { g.__genInflight -= 1; }
+    }
   })
 }));
 vi.mock('../functions/_lib/gemini.js', () => ({
   RetryableError: class RetryableError extends Error { retryAfter: number; constructor(m: string, r = 0) { super(m); this.retryAfter = r; } },
   GeminiClient: class { async generateJson() { throw new Error('no-call'); } async embed() { return Array(768).fill(0.01); } }
 }));
-import { processJob, schedule, recoverGenerationBacklog, providerStatus } from '../workers/pipeline/src/index.js';
+import pipelineWorker, { processJob, schedule, recoverGenerationBacklog, providerStatus } from '../workers/pipeline/src/index.js';
+import { updatePipelineControl } from '../workers/pipeline/src/pipeline-control.js';
 import { ENRICHMENT_BACKLOG_BUDGET } from '../workers/pipeline/src/job-policy.js';
 class Statement {
   values: any[] = [];
@@ -35,7 +48,7 @@ const makeEnv = (db: Database.Database, extra: any = {}) => {
   return { env, sent };
 };
 let db: Database.Database;
-beforeEach(() => { db = new Database(':memory:'); for (const f of fs.readdirSync('migrations').filter((x) => x.endsWith('.sql')).sort()) db.exec(fs.readFileSync(`migrations/${f}`, 'utf8')); });
+beforeEach(() => { db = new Database(':memory:'); for (const f of fs.readdirSync('migrations').filter((x) => x.endsWith('.sql')).sort()) db.exec(fs.readFileSync(`migrations/${f}`, 'utf8')); const g: any = globalThis as any; g.__genInflight = 0; g.__genMaxInflight = 0; g.__genMock = undefined; });
 describe('auditoria-a', () => {
   it('1. jobs error nao bloqueiam backlog elegivel', async () => {
     for (let i = 1; i <= 60; i++) {
@@ -127,10 +140,16 @@ describe('auditoria-c (defeitos restantes)', () => {
     db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status) VALUES(61,'S','complete','pending')`).run();
     db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:61:v2','ENRICH_MOVIE','{"tmdb_id":61}','queued')`).run();
     const { env } = makeEnv(db); // ENABLED=false (default)
+    // 1a entrega adia com cooldown longo sem consumir tentativa...
+    const first: any = await processJob(env, { type: 'ENRICH_MOVIE', key: 'enrich:61:v2', payload: { tmdb_id: 61 } });
+    expect(first).toMatchObject({ retry: true, deferred: true });
+    const cooldown: any = db.prepare(`SELECT available_at FROM pipeline_jobs WHERE job_key='enrich:61:v2'`).get();
+    // ...e redeliveries em cooldown nao estendem o prazo nem degradam o job.
     for (let i = 0; i < 8; i++) {
       const out: any = await processJob(env, { type: 'ENRICH_MOVIE', key: 'enrich:61:v2', payload: { tmdb_id: 61 } });
-      expect(out).toMatchObject({ retry: true, deferred: true });
+      expect(out).toEqual({ retry: false });
     }
+    expect(db.prepare(`SELECT available_at FROM pipeline_jobs WHERE job_key='enrich:61:v2'`).get()).toEqual(cooldown);
     const row: any = db.prepare(`SELECT status,attempts,last_error FROM pipeline_jobs WHERE job_key='enrich:61:v2'`).get();
     expect(row).toMatchObject({ status: 'queued', attempts: 0 });
     expect(row.last_error).toContain('GENERATION_DEFERRED');
@@ -210,6 +229,159 @@ describe('auditoria-c (defeitos restantes)', () => {
     expect(skip.requeued).toBe(0);
     expect(skip.skipped).toBeGreaterThanOrEqual(3);
     expect(sent.length).toBe(before);
+  });
+});
+describe('auditoria-d (orquestracao de fila e piloto)', () => {
+  const msg = (body: any) => ({ body, ack: vi.fn(), retry: vi.fn() });
+  const longOverview = 'A long overview used to skip the Wikipedia fallback path deterministically in tests. '.repeat(2);
+  it('16. adiamento acka a mensagem da fila e mantem o job durvel em D1', async () => {
+    db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status) VALUES(61,'S','complete','pending')`).run();
+    db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:61:v2','ENRICH_MOVIE','{\"tmdb_id\":61}','queued')`).run();
+    const { env } = makeEnv(db); // ENABLED=false
+    const m: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:61:v2', payload: { tmdb_id: 61 } });
+    await (pipelineWorker as any).queue({ messages: [m] }, env);
+    expect(m.ack).toHaveBeenCalledTimes(1);
+    expect(m.retry).not.toHaveBeenCalled();
+    const row: any = db.prepare(`SELECT status,attempts,last_error,available_at FROM pipeline_jobs WHERE job_key='enrich:61:v2'`).get();
+    expect(row).toMatchObject({ status: 'queued', attempts: 0 });
+    expect(row.last_error).toContain('GENERATION_DEFERRED');
+    const floor: any = db.prepare(`SELECT datetime('now','+43100 seconds') x`).get();
+    expect(row.available_at >= floor.x).toBe(true);
+  });
+  it('17. cooldown respeitado: redelivery precoce acka sem estender o prazo', async () => {
+    db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status) VALUES(62,'S','complete','pending')`).run();
+    db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:62:v2','ENRICH_MOVIE','{\"tmdb_id\":62}','queued')`).run();
+    const { env } = makeEnv(db);
+    await (pipelineWorker as any).queue({ messages: [msg({ type: 'ENRICH_MOVIE', key: 'enrich:62:v2', payload: { tmdb_id: 62 } })] }, env);
+    const cooldown: any = db.prepare(`SELECT available_at FROM pipeline_jobs WHERE job_key='enrich:62:v2'`).get();
+    const m2: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:62:v2', payload: { tmdb_id: 62 } });
+    await (pipelineWorker as any).queue({ messages: [m2] }, env);
+    expect(m2.ack).toHaveBeenCalledTimes(1);
+    expect(m2.retry).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT available_at,attempts,status FROM pipeline_jobs WHERE job_key='enrich:62:v2'`).get())
+      .toEqual({ available_at: cooldown.available_at, attempts: 0, status: 'queued' });
+    db.prepare(`UPDATE pipeline_jobs SET available_at=CURRENT_TIMESTAMP WHERE job_key='enrich:62:v2'`).run();
+    const m3: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:62:v2', payload: { tmdb_id: 62 } });
+    await (pipelineWorker as any).queue({ messages: [m3] }, env);
+    expect(m3.ack).toHaveBeenCalledTimes(1);
+    expect(m3.retry).not.toHaveBeenCalled();
+    expect((db.prepare(`SELECT attempts,status FROM pipeline_jobs WHERE job_key='enrich:62:v2'`).get() as any)).toEqual({ attempts: 0, status: 'queued' });
+  });
+  it('18. lote concorrente: um job lento nao bloqueia os demais', async () => {
+    for (let i = 201; i <= 205; i++) {
+      db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(?,'C',?,'complete','pending')`).run(i, longOverview);
+      db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES(?, 'ENRICH_MOVIE', ?, 'queued')`).run(`enrich:${i}:v2`, JSON.stringify({ tmdb_id: i }));
+    }
+    const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true' });
+    const msgs: any[] = [201, 202, 203, 204, 205].map((i) => msg({ type: 'ENRICH_MOVIE', key: `enrich:${i}:v2`, payload: { tmdb_id: i } }));
+    await (pipelineWorker as any).queue({ messages: msgs }, env);
+    for (const m of msgs) { expect(m.ack).toHaveBeenCalledTimes(1); expect(m.retry).not.toHaveBeenCalled(); }
+    expect((db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE type='ENRICH_MOVIE' AND status='done'`).get() as any).n).toBe(5);
+    expect((globalThis as any).__genMaxInflight).toBeGreaterThanOrEqual(2);
+  });
+  it('19. falha inesperada isola a mensagem e nao derruba o lote', async () => {
+    db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status,embedding_status) VALUES(301,'G',?,'complete','complete','pending')`).run(longOverview);
+    db.prepare(`INSERT INTO movie_enrichments(movie_id,model,schema_version) VALUES((SELECT id FROM movies WHERE tmdb_id=301),'grok-4-3','style-v2')`).run();
+    db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('embed:301:movie-v1','EMBED_MOVIE','{\"tmdb_id\":301}','queued')`).run();
+    db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(302,'B',?,'complete','pending')`).run(longOverview);
+    db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:302:v2','ENRICH_MOVIE','{\"tmdb_id\":302}','queued')`).run();
+    const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true' });
+    const base = env.MOOVIBE_LIBRARY.prepare;
+    env.MOOVIBE_LIBRARY.prepare = (sql: string) => {
+      const st: any = base(sql);
+      const bind = st.bind.bind(st);
+      st.bind = (...v: any[]) => {
+        if (sql.includes(`SET status='running',attempts=attempts+1`) && v[0] === 'enrich:302:v2') throw new Error('D1 unavailable');
+        return bind(...v);
+      };
+      return st;
+    };
+    const mBad: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:302:v2', payload: { tmdb_id: 302 } });
+    const mGood: any = msg({ type: 'EMBED_MOVIE', key: 'embed:301:movie-v1', payload: { tmdb_id: 301 } });
+    await (pipelineWorker as any).queue({ messages: [mBad, mGood] }, env);
+    expect(mBad.retry).toHaveBeenCalledTimes(1);
+    expect(mBad.ack).not.toHaveBeenCalled();
+    expect(mGood.ack).toHaveBeenCalledTimes(1);
+    expect(mGood.retry).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT status FROM pipeline_jobs WHERE job_key='embed:301:movie-v1'`).get()).toEqual({ status: 'done' });
+    expect(db.prepare(`SELECT status,attempts FROM pipeline_jobs WHERE job_key='enrich:302:v2'`).get()).toEqual({ status: 'queued', attempts: 0 });
+  });
+  it('20. pausa prolongada nao agenda nem retoma sozinha; retomada envia uma unica mensagem', async () => {
+    db.exec(`INSERT INTO collection_queries(query_id,label,params_json,is_executable,status,next_page,next_run_at) VALUES('recent-v2:000-pause','P','{}',1,'pending',2,CURRENT_TIMESTAMP)`);
+    db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('discover:recent-v2:000-pause:v1','DISCOVER_QUERY','{\"query_id\":\"recent-v2:000-pause\"}','queued')`);
+    const { env, sent } = makeEnv(db);
+    await updatePipelineControl(env.MOOVIBE_LIBRARY, { historical_enabled: false, recent_enabled: false });
+    const out: any = await processJob(env, { type: 'DISCOVER_QUERY', key: 'discover:recent-v2:000-pause:v1', payload: { query_id: 'recent-v2:000-pause' } });
+    expect(out).toEqual({ retry: false });
+    expect(db.prepare(`SELECT status,attempts FROM pipeline_jobs WHERE job_key='discover:recent-v2:000-pause:v1'`).get()).toEqual({ status: 'paused', attempts: 0 });
+    for (let i = 0; i < 3; i++) await schedule(env);
+    db.prepare(`UPDATE pipeline_jobs SET updated_at=datetime('now','-2 day') WHERE job_key='discover:recent-v2:000-pause:v1'`).run();
+    await schedule(env);
+    expect(sent).toHaveLength(0);
+    expect(db.prepare(`SELECT status,next_page FROM collection_queries WHERE query_id='recent-v2:000-pause'`).get()).toEqual({ status: 'pending', next_page: 2 });
+    await updatePipelineControl(env.MOOVIBE_LIBRARY, { recent_enabled: true });
+    await schedule(env);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ type: 'DISCOVER_QUERY', key: 'discover:recent-v2:000-pause:v1' });
+    expect(db.prepare(`SELECT status FROM pipeline_jobs WHERE job_key='discover:recent-v2:000-pause:v1'`).get()).toEqual({ status: 'queued' });
+    await schedule(env);
+    expect(sent).toHaveLength(1);
+  });
+  it('21. INDEX_MOVIE seguro: cron nao agenda trabalho pago desligado; outbox retoma apos ativacao', async () => {
+    db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(901,'U',?,'discovered','pending')`).run(longOverview);
+    db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status,embedding_status) VALUES(902,'E',?,'discovered','complete','pending')`).run(longOverview);
+    db.prepare(`INSERT INTO movie_enrichments(movie_id,model,schema_version) VALUES((SELECT id FROM movies WHERE tmdb_id=902),'grok-4-3','style-v2')`).run();
+    const { env, sent } = makeEnv(db); // ENABLED=false
+    await schedule(env);
+    expect(sent.some((s: any) => s.key === 'index:901:v1')).toBe(false);
+    expect(sent.some((s: any) => s.key === 'index:902:v1')).toBe(true);
+    db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('index:901:v1','INDEX_MOVIE','{\"tmdb_id\":901}','queued')`).run();
+    const m: any = msg({ type: 'INDEX_MOVIE', key: 'index:901:v1', payload: { tmdb_id: 901 } });
+    await (pipelineWorker as any).queue({ messages: [m] }, env);
+    expect(m.ack).toHaveBeenCalledTimes(1);
+    expect(m.retry).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT status,attempts FROM pipeline_jobs WHERE job_key='index:901:v1'`).get()).toMatchObject({ status: 'queued', attempts: 0 });
+    env.MOVIE_GENERATION_ENABLED = 'true';
+    db.prepare(`UPDATE pipeline_jobs SET available_at=CURRENT_TIMESTAMP,updated_at=datetime('now','-10 minutes') WHERE job_key='index:901:v1'`).run();
+    const before = sent.length;
+    await schedule(env);
+    expect(sent.slice(before).filter((s: any) => s.key === 'index:901:v1')).toHaveLength(1);
+  });
+  it('22. piloto preciso: falha do provedor devolve a reserva; sucesso conta exatamente 1', async () => {
+    db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(911,'P',?,'complete','pending')`).run(longOverview);
+    db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:911:v2','ENRICH_MOVIE','{\"tmdb_id\":911}','queued')`).run();
+    const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true', MOVIE_GENERATION_PILOT_LIMIT: '5' });
+    (globalThis as any).__genMock = { failNext: 1 };
+    const m1: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:911:v2', payload: { tmdb_id: 911 } });
+    await (pipelineWorker as any).queue({ messages: [m1] }, env);
+    expect(m1.retry).toHaveBeenCalledTimes(1);
+    const counter1: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get();
+    expect(JSON.parse(counter1.value)).toMatchObject({ count: 0 });
+    expect(db.prepare(`SELECT status,attempts FROM pipeline_jobs WHERE job_key='enrich:911:v2'`).get()).toMatchObject({ status: 'queued', attempts: 1 });
+    db.prepare(`DELETE FROM system_state WHERE key='circuit:generation-xai'`).run();
+    db.prepare(`UPDATE pipeline_jobs SET available_at=CURRENT_TIMESTAMP WHERE job_key='enrich:911:v2'`).run();
+    const m2: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:911:v2', payload: { tmdb_id: 911 } });
+    await (pipelineWorker as any).queue({ messages: [m2] }, env);
+    expect(m2.ack).toHaveBeenCalledTimes(1);
+    const counter2: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get();
+    expect(JSON.parse(counter2.value)).toMatchObject({ count: 1 });
+    expect(db.prepare(`SELECT status FROM pipeline_jobs WHERE job_key='enrich:911:v2'`).get()).toEqual({ status: 'done' });
+  });
+  it('23. processamento completo via fila: INDEX enriquece, vetoriza e marca o filme completo', async () => {
+    db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status,embedding_status) VALUES(921,'F',?,'discovered','pending','pending')`).run(longOverview);
+    db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('index:921:v1','INDEX_MOVIE','{\"tmdb_id\":921}','queued')`).run();
+    const { env, sent } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true' });
+    const m: any = msg({ type: 'INDEX_MOVIE', key: 'index:921:v1', payload: { tmdb_id: 921 } });
+    await (pipelineWorker as any).queue({ messages: [m] }, env);
+    expect(m.ack).toHaveBeenCalledTimes(1);
+    expect(m.retry).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT collection_status,enrichment_status,embedding_status FROM movies WHERE tmdb_id=921`).get())
+      .toEqual({ collection_status: 'complete', enrichment_status: 'complete', embedding_status: 'complete' });
+    expect(db.prepare(`SELECT status FROM pipeline_jobs WHERE job_key='index:921:v1'`).get()).toEqual({ status: 'done' });
+    expect((env.MOVIE_VECTORS.upsert.mock.calls[0][0][0].values as number[])).toHaveLength(768);
+    const counter: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get();
+    expect(JSON.parse(counter.value)).toMatchObject({ count: 1 });
+    expect(sent.filter((s: any) => s.type === 'EMBED_MOVIE')).toHaveLength(0);
   });
 });
 
