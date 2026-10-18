@@ -26,7 +26,7 @@ vi.mock('../functions/_lib/gemini.js', () => ({
   RetryableError: class RetryableError extends Error { retryAfter: number; constructor(m: string, r = 0) { super(m); this.retryAfter = r; } },
   GeminiClient: class { async generateJson() { throw new Error('no-call'); } async embed() { return Array(768).fill(0.01); } }
 }));
-import pipelineWorker, { processJob, schedule, recoverGenerationBacklog, providerStatus } from '../workers/pipeline/src/index.js';
+import pipelineWorker, { processJob, schedule, recoverGenerationBacklog, providerStatus, providerStatusFull } from '../workers/pipeline/src/index.js';
 import { updatePipelineControl } from '../workers/pipeline/src/pipeline-control.js';
 import { ENRICHMENT_BACKLOG_BUDGET } from '../workers/pipeline/src/job-policy.js';
 class Statement {
@@ -355,8 +355,9 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
     const m1: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:911:v2', payload: { tmdb_id: 911 } });
     await (pipelineWorker as any).queue({ messages: [m1] }, env);
     expect(m1.retry).toHaveBeenCalledTimes(1);
+    // Sem devolucao: a tentativa admitida conta no teto mesmo falhando.
     const counter1: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get();
-    expect(JSON.parse(counter1.value)).toMatchObject({ count: 0 });
+    expect(JSON.parse(counter1.value)).toMatchObject({ count: 1, attempts: 1, success: 0, failed: 1 });
     expect(db.prepare(`SELECT status,attempts FROM pipeline_jobs WHERE job_key='enrich:911:v2'`).get()).toMatchObject({ status: 'queued', attempts: 1 });
     db.prepare(`DELETE FROM system_state WHERE key='circuit:generation-xai'`).run();
     db.prepare(`UPDATE pipeline_jobs SET available_at=CURRENT_TIMESTAMP WHERE job_key='enrich:911:v2'`).run();
@@ -364,8 +365,10 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
     await (pipelineWorker as any).queue({ messages: [m2] }, env);
     expect(m2.ack).toHaveBeenCalledTimes(1);
     const counter2: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get();
-    expect(JSON.parse(counter2.value)).toMatchObject({ count: 1 });
+    expect(JSON.parse(counter2.value)).toMatchObject({ count: 2, attempts: 2, success: 1, failed: 1 });
     expect(db.prepare(`SELECT status FROM pipeline_jobs WHERE job_key='enrich:911:v2'`).get()).toEqual({ status: 'done' });
+    const full: any = await providerStatusFull(env);
+    expect(full.generation).toMatchObject({ pilot_used_today: 2, pilot_attempts_today: 2, pilot_success_today: 1, pilot_failed_today: 1 });
   });
   it('23. processamento completo via fila: INDEX enriquece, vetoriza e marca o filme completo', async () => {
     db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status,embedding_status) VALUES(921,'F',?,'discovered','pending','pending')`).run(longOverview);
@@ -382,6 +385,86 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
     const counter: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get();
     expect(JSON.parse(counter.value)).toMatchObject({ count: 1 });
     expect(sent.filter((s: any) => s.type === 'EMBED_MOVIE')).toHaveLength(0);
+  });
+  it('24. recover INDEX avanca: 100 erros em lotes de 25 alcançam todos sem reprocessar', async () => {
+    for (let i = 1001; i <= 1100; i++) {
+      db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status,embedding_status) VALUES(?,'R','discovered','pending','pending')`).run(i);
+      db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,last_error,updated_at) VALUES(?,'INDEX_MOVIE',?,'error','xAI 429 rate limit',datetime('now','-1 day'))`).run(`index:${i}:v1`, JSON.stringify({ tmdb_id: i }));
+    }
+    const { env, sent } = makeEnv(db);
+    const seen = new Set<string>();
+    let batches = 0, requeuedTotal = 0, advancedTotal = 0;
+    for (let b = 0; b < 8; b++) {
+      const r: any = await recoverGenerationBacklog(env, 25, false);
+      batches++;
+      requeuedTotal += r.requeued;
+      advancedTotal += r.advanced || 0;
+      for (const s of sent.splice(0)) seen.add(`${s.type}:${s.key}`);
+      if (r.requeued === 0) break;
+    }
+    // 100 INDEX diretos planejados (25/lote x 4 lotes), cada chave 1x.
+    expect(Array.from(seen).filter((k) => k.startsWith('INDEX_MOVIE:index:')).length).toBe(100);
+    expect(requeuedTotal).toBe(100);
+    expect(advancedTotal).toBe(0); // INDEX direto reativa (sai de error); toque e so p/ derivado
+    expect((db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE type='INDEX_MOVIE' AND status='error'`).get() as any).n).toBe(0);
+    expect((db.prepare(`SELECT COUNT(DISTINCT job_key) n FROM pipeline_jobs WHERE type='INDEX_MOVIE' AND status='queued'`).get() as any).n).toBe(100);
+    // Nenhum INDEX marcado done sem etapas concluidas.
+    expect((db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE type='INDEX_MOVIE' AND status='done'`).get() as any).n).toBe(0);
+    // Lote extra apos drenar: nada reenviado, nada duplicado.
+    const tail: any = await recoverGenerationBacklog(env, 25, false);
+    expect(tail.requeued).toBe(0);
+    expect(sent).toHaveLength(0);
+    expect(batches).toBeLessThanOrEqual(6);
+  });
+  it('25. recover INDEX com derivados existentes avanca sem duplicar mensagens', async () => {
+    for (let i = 2001; i <= 2030; i++) {
+      db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status,embedding_status) VALUES(?,'R','complete','pending','pending')`).run(i);
+      db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,last_error,updated_at) VALUES(?,'INDEX_MOVIE',?,'error','xAI 500 provider unavailable',datetime('now','-1 day'))`).run(`index:${i}:v1`, JSON.stringify({ tmdb_id: i }));
+    }
+    // Metade ja tem derivado queued (trabalho anterior nao concluido): o
+    // recover nao deve reenvia-los, mas deve visitar as fontes e avancar.
+    for (let i = 2001; i <= 2015; i++)
+      db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,available_at) VALUES(?,'ENRICH_MOVIE',?,'queued',CURRENT_TIMESTAMP)`).run(`enrich:${i}:v2`, JSON.stringify({ tmdb_id: i }));
+    const { env, sent } = makeEnv(db);
+    const first: any = await recoverGenerationBacklog(env, 25, false);
+    expect(first.eligible).toBeLessThanOrEqual(25);
+    const resent = sent.filter((s: any) => s.type === 'ENRICH_MOVIE' && Number(s.key.split(':')[1]) <= 2015);
+    expect(resent).toHaveLength(0); // derivados existentes: sem duplicata
+    const second: any = await recoverGenerationBacklog(env, 25, false);
+    const fresh = sent.filter((s: any) => s.type === 'ENRICH_MOVIE' && Number(s.key.split(':')[1]) > 2015);
+    expect(fresh.length).toBeGreaterThan(0);
+    expect(second.requeued).toBeGreaterThan(0);
+    // Idempotencia total: nenhum par type:key repetido em todos os sends.
+    const all = sent.map((s: any) => `${s.type}:${s.key}`);
+    expect(new Set(all).size).toBe(all.length);
+  });
+  it('26. scheduler nao deixa queued bloquear orcamento: novos filmes sao agendados', async () => {
+    // 8 primeiros candidatos (por updated_at) com jobs queued VENCIDOS mas
+    // RECENTES (<5min): o outbox ainda nao os alcancou (threshold 5min), e o
+    // backlog NAO pode consumi-los — prova que queued nao bloqueia orcamento.
+    for (let i = 3001; i <= 3008; i++) {
+      db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status,updated_at) VALUES(?,'Q','complete','pending',datetime('now','-2 day'))`).run(i);
+      db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,available_at,updated_at) VALUES(?,'ENRICH_MOVIE',?,'queued',CURRENT_TIMESTAMP,datetime('now','-1 minute'))`).run(`enrich:${i}:v2`, JSON.stringify({ tmdb_id: i }));
+    }
+    for (let i = 4001; i <= 4300; i++)
+      db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status,updated_at) VALUES(?,'N','complete','pending',CURRENT_TIMESTAMP)`).run(i);
+    const { env, sent } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true' });
+    await schedule(env);
+    const enrichKeys = sent.filter((s: any) => s.type === 'ENRICH_MOVIE').map((s: any) => Number(s.key.split(':')[1]));
+    // Budget de enrichment preenchido com trabalho NOVO (sem job): os 8
+    // queued nao ocupam vaga do backlog (nao sao reenviados aqui).
+    expect(enrichKeys.length).toBeGreaterThan(0);
+    expect(enrichKeys.every((k: number) => k >= 4001)).toBe(true);
+    expect(enrichKeys.some((k: number) => k <= 3008)).toBe(false);
+    // Recuperação dos queued e EXCLUSIVA do outbox: apos o threshold (5min),
+    // o cron os reenvia — sem duplicar com o backlog (que nunca os toca).
+    db.prepare(`UPDATE pipeline_jobs SET updated_at=datetime('now','-10 minutes') WHERE job_key LIKE 'enrich:30%'`).run();
+    const before = sent.length;
+    await schedule(env);
+    const fresh = sent.slice(before).filter((s: any) => s.type === 'ENRICH_MOVIE').map((s: any) => s.key);
+    expect(fresh.filter((k: string) => Number(k.split(':')[1]) <= 3008)).toHaveLength(8);
+    expect(new Set(sent.filter((s: any) => s.type === 'ENRICH_MOVIE').map((s: any) => s.key)).size)
+      .toBe(sent.filter((s: any) => s.type === 'ENRICH_MOVIE').length);
   });
 });
 

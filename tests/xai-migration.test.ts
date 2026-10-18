@@ -71,4 +71,49 @@ describe('xai migration', () => {
     const f2 = (async () => new Response('denied', { status: 401 })) as any;
     await expect(new XaiClient('k', 'm', f2).generateJson({ system: 's', prompt: 'p', schema: {} })).rejects.toMatchObject({ status: 401 });
   });
+  it('gate por tentativa nega o retry interno sem rede quando o orcamento esgota', async () => {
+    let n = 0;
+    const f = (async () => { n++; return new Response('busy', { status: 429 }); }) as any;
+    const c = new XaiClient('k', 'm', f);
+    let budget = 1;
+    c.setAttemptBudget(async () => (budget-- > 0));
+    await expect(c.generateJson({ system: 's', prompt: 'p', schema: {} })).rejects.toMatchObject({ deferred: true, status: 429 });
+    expect(n).toBe(1); // retry interno negado ANTES do HTTP: 1 chamada real, nao 2
+  });
+  it('limite 25: 100 jobs concorrentes com 429/500/timeout enviam no maximo 25 HTTP', async () => {
+    const Database = (await import('better-sqlite3')).default;
+    const fs = (await import('node:fs')).default;
+    const tdb = new Database(':memory:');
+    for (const f of fs.readdirSync('migrations').filter((x) => x.endsWith('.sql')).sort()) tdb.exec(fs.readFileSync(`migrations/${f}`, 'utf8'));
+    const stmt = (sql: string) => ({ bind: (...a: any[]) => ({ run: async () => ({ meta: { changes: tdb.prepare(sql).run(...a).changes } }) }) });
+    const idx = (await import('../workers/pipeline/src/index.js')) as any;
+    const limit = 25;
+    let http = 0;
+    const behaviors = ['gone-429', 'gone-500', 'timeout', 'ok'];
+    const stub = (async () => {
+      http++;
+      const b = behaviors[(http - 1) % behaviors.length];
+      if (b === 'gone-429') return new Response('busy', { status: 429 });
+      if (b === 'gone-500') return new Response('boom', { status: 500 });
+      if (b === 'timeout') throw new Error('fetch failed: timeout');
+      return xaiOk();
+    }) as any;
+    const runOne = async () => {
+      const mod = await import('../workers/pipeline/src/xai-client.js');
+      const c = new mod.XaiClient('k', 'grok-4-3', stub);
+      c.setAttemptBudget(() => idx.__testPilotConsume({ prepare: stmt } as any, limit));
+      try { await c.generateJson({ system: 's', prompt: 'p', schema: { type: 'object' } }); return 'ok'; }
+      catch (e: any) { return e?.deferred === true ? 'deferred' : 'failed'; }
+    };
+    const results = await Promise.all(Array.from({ length: 100 }, runOne));
+    // Teto absoluto de HTTP reais no dia: 25 tentativas (inclui retries).
+    expect(http).toBe(25);
+    const ok = results.filter((r) => r === 'ok').length;
+    const deferred = results.filter((r) => r === 'deferred').length;
+    expect(ok + deferred + results.filter((r) => r === 'failed').length).toBe(100);
+    expect(deferred).toBeGreaterThan(0);
+    // Metrica do dia: attempts == HTTP reais.
+    const row = tdb.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get() as any;
+    expect(JSON.parse(row.value).attempts).toBe(http);
+  });
 });

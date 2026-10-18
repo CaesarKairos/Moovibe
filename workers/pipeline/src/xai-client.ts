@@ -13,13 +13,28 @@ const callFetch = (f: any, url: string, init: any) => {
 };
 export class XaiClient implements GenerationProvider {
   readonly name = 'xai';
-  constructor(private apiKey: string, private model: string, private fetcher: any = null) {
+  // tryConsumeAttempt: chamado ANTES de cada HTTP real (incluindo o retry
+  // interno). Deve ser atomico e diario: true = tentativa admitida (contou no
+  // orcamento), false = negar sem chamar a rede. Opcional para nao quebrar
+  // chamadores fora do pipeline (testes, gemini-health).
+  constructor(private apiKey: string, private model: string, private fetcher: any = null, private tryConsumeAttempt: (() => Promise<boolean>) | null = null) {
     if (!apiKey) throw new Error('XAI_API_KEY is required');
     if (!model) throw new Error('MOVIE_GENERATION_MODEL is required');
   }
+  // Orçamento por tentativa (chamado pelo pipeline antes de cada HTTP real,
+  // incluindo o retry interno). Sem ele, cada instancia admite no maximo o
+  // proprio retry isolado.
+  setAttemptBudget(fn: () => Promise<boolean>): void { this.tryConsumeAttempt = fn; }
   async generateJson({ system, prompt, schema, temperature = 0.2 }: GenerationRequest): Promise<GenerationResult> {
     let last: any;
     for (let attempt = 0; attempt < 2; attempt++) {
+      // Gate por tentativa: o retry interno tambem consome vaga do teto.
+      // Nega sem rede; o adiamento conserva attempts do job (retomavel).
+      if (this.tryConsumeAttempt && !(await this.tryConsumeAttempt())) {
+        const denied: any = new XaiError(`pilot limit reached; xAI attempt ${attempt + 1} denied before network`, 429, 43200);
+        (denied as any).deferred = true;
+        throw denied;
+      }
       try {
         const res: Response = await callFetch(this.fetcher, `${API}/chat/completions`, {
           method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },

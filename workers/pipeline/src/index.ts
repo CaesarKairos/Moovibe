@@ -206,42 +206,50 @@ const KNOWN_FAILURE_RULES: {
 // Pilot cap: MOVIE_GENERATION_PILOT_LIMIT bounds total generations per cron
 // sweep (global, incl. concurrent pre-queued messages via a counter row).
 async function pilotCountToday(db: D1Database): Promise<number> {
+  return (await pilotStatsToday(db)).count;
+}
+// Metricas do piloto (1 escrita best-effort por chamada concluida): cada
+// tentativa HTTP admitida ja incrementou count+attempts no gate; aqui o
+// desfecho (success|failed) e registrado para distinguir tentativas, sucessos
+// e falhas no /admin/providers. success+failed == attempts sempre. Linhas
+// legadas (sem attempts) tratam count como attempts. Nunca falha o job.
+async function pilotStatsToday(db: D1Database): Promise<{ count: number; attempts: number; success: number; failed: number }> {
+  const zero = { count: 0, attempts: 0, success: 0, failed: 0 };
   try {
     const row = await db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).bind().first<{ value: string }>().catch(() => null);
-    if (!row?.value) return 0;
+    if (!row?.value) return zero;
     const v = JSON.parse(row.value);
-    const today = new Date().toISOString().slice(0, 10);
-    return v.day === today ? Number(v.count) || 0 : 0;
-  } catch { return 0; }
+    if (v.day !== new Date().toISOString().slice(0, 10)) return zero;
+    return { count: Number(v.count) || 0, attempts: Number(v.attempts ?? v.count) || 0, success: Number(v.success) || 0, failed: Number(v.failed) || 0 };
+  } catch { return zero; }
+}
+async function pilotTally(db: D1Database, field: 'success' | 'failed'): Promise<void> {
+  const day = new Date().toISOString().slice(0, 10);
+  try {
+    await db.prepare(`UPDATE system_state SET value=json_set(value,'$."${field}"',CAST(COALESCE(json_extract(value,'$."${field}"'),0) AS INTEGER)+1),updated_at=CURRENT_TIMESTAMP WHERE key='gen_pilot_count' AND COALESCE(json_extract(value,'$.day'),'')=?`)
+      .bind(day).run();
+  } catch { /* best-effort */ }
 }
 // Pilot cap atomico (2 escritas, decisao em 1 UPDATE condicional):
-// 1) INSERT OR IGNORE cria a linha do contador (count=0) se inexistente.
-// 2) UPDATE incrementa count+1 SOMENTE se (dia<>hoje => reseta p/1) OU
-//    (mesmo dia E count<limite). O D1 serializa escritas na mesma linha, logo
-//    N workers concorrentes produzem no maximo `cap` UPDATEs com changes=1.
-//    Quem recebe changes=0 foi adiado — nunca ultrapassa o limite.
+// 1) INSERT OR IGNORE cria a linha do contador se inexistente.
+// 2) UPDATE admite UMA tentativa HTTP real SOMENTE se (dia<>hoje => reseta) OU
+//    (mesmo dia E count<limite), incrementando count E attempts juntos. O D1
+//    serializa escritas na mesma linha, logo N workers concorrentes produzem
+//    no maximo `cap` admissoes com changes=1 — cada HTTP real tem sua vaga.
+//    Quem recebe changes=0 foi adiado e NAO chama o provedor. Sem devolucao:
+//    tentativa admitida conta mesmo se falhar (inclusive timeouts).
 // Virada de dia UTC: dia<>hoje reinicia em 1 automaticamente.
 async function pilotConsume(db: D1Database, limit: number): Promise<boolean> {
   const day = new Date().toISOString().slice(0, 10);
   const cap = Math.max(1, Math.min(10000, Number(limit) || 25));
   try {
     await db.prepare(`INSERT INTO system_state(key,value,updated_at) VALUES('gen_pilot_count',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO NOTHING`)
-      .bind(JSON.stringify({ day: '', count: 0 })).run();
+      .bind(JSON.stringify({ day: '', count: 0, attempts: 0, success: 0, failed: 0 })).run();
     const r = await db.prepare(
-      `UPDATE system_state SET value=CASE WHEN COALESCE(json_extract(value,'$.day'),'')<>? THEN ? ELSE json_set(value,'$.count',CAST(COALESCE(json_extract(value,'$.count'),0) AS INTEGER)+1) END, updated_at=CURRENT_TIMESTAMP WHERE key='gen_pilot_count' AND (COALESCE(json_extract(value,'$.day'),'')<>? OR CAST(COALESCE(json_extract(value,'$.count'),0) AS INTEGER)<?)`
-    ).bind(day, JSON.stringify({ day, count: 1 }), day, cap).run();
+      `UPDATE system_state SET value=CASE WHEN COALESCE(json_extract(value,'$.day'),'')<>? THEN ? ELSE json_set(json_set(value,'$.count',CAST(COALESCE(json_extract(value,'$.count'),0) AS INTEGER)+1),'$.attempts',CAST(COALESCE(json_extract(value,'$.attempts'),0) AS INTEGER)+1) END, updated_at=CURRENT_TIMESTAMP WHERE key='gen_pilot_count' AND (COALESCE(json_extract(value,'$.day'),'')<>? OR CAST(COALESCE(json_extract(value,'$.count'),0) AS INTEGER)<?)`
+    ).bind(day, JSON.stringify({ day, count: 1, attempts: 1, success: 0, failed: 0 }), day, cap).run();
     return Boolean(r.meta.changes);
   } catch { return false; }
-}
-// Precisao do piloto: devolve a reserva quando a chamada nao produziu saida
-// (rate limit, rede, timeout). Piso em zero, restrito ao dia corrente, e nunca
-// propaga erro — telemetria auxiliar nao pode falhar um job de producao.
-async function pilotRelease(db: D1Database): Promise<void> {
-  const day = new Date().toISOString().slice(0, 10);
-  try {
-    await db.prepare(`UPDATE system_state SET value=json_set(value,'$.count',MAX(0,CAST(COALESCE(json_extract(value,'$.count'),0) AS INTEGER)-1)),updated_at=CURRENT_TIMESTAMP WHERE key='gen_pilot_count' AND COALESCE(json_extract(value,'$.day'),'')=?`)
-      .bind(day).run();
-  } catch { /* best-effort */ }
 }
 
 // Controlled migration recovery: stage-aware for ENRICH_MOVIE + INDEX_MOVIE
@@ -262,14 +270,14 @@ export async function recoverGenerationBacklog(env: Env, limit = 25, dryRun = fa
      ORDER BY j.updated_at ASC LIMIT ?`).bind(cap).all<any>();
   // Plano por tipo com budgets separados: os ENRICH diretos nunca consomem a
   // cota dos INDEX derivados (antes os 25 primeiros ENRICH bloqueavam INDEX).
-  const enrichPlan: { job_key: string; type: string; payload: any }[] = [];
-  const indexPlan: { job_key: string; type: string; payload: any }[] = [];
-  for (const r of enrichRows.results) enrichPlan.push({ job_key: r.job_key, type: 'ENRICH_MOVIE', payload: JSON.parse(r.payload_json) });
+  const enrichPlan: { job_key: string; type: string; payload: any; source_key: string }[] = [];
+  const indexPlan: { job_key: string; type: string; payload: any; source_key: string }[] = [];
+  for (const r of enrichRows.results) enrichPlan.push({ job_key: r.job_key, type: 'ENRICH_MOVIE', payload: JSON.parse(r.payload_json), source_key: r.job_key });
   for (const r of indexRows.results) {
     const p = JSON.parse(r.payload_json);
-    if (r.collection_status !== 'complete') indexPlan.push({ job_key: r.job_key, type: 'INDEX_MOVIE', payload: p });
-    else if (r.enrichment_status !== 'complete') indexPlan.push({ job_key: `enrich:${p.tmdb_id}:v2`, type: 'ENRICH_MOVIE', payload: p });
-    else indexPlan.push({ job_key: `embed:${p.tmdb_id}:movie-v1`, type: 'EMBED_MOVIE', payload: p });
+    if (r.collection_status !== 'complete') indexPlan.push({ job_key: r.job_key, type: 'INDEX_MOVIE', payload: p, source_key: r.job_key });
+    else if (r.enrichment_status !== 'complete') indexPlan.push({ job_key: `enrich:${p.tmdb_id}:v2`, type: 'ENRICH_MOVIE', payload: p, source_key: r.job_key });
+    else indexPlan.push({ job_key: `embed:${p.tmdb_id}:movie-v1`, type: 'EMBED_MOVIE', payload: p, source_key: r.job_key });
   }
   // Dedup: mesma chave derivada de dois INDEX (ou de ENRICH+INDEX) aparece 1x.
   const seen = new Set(enrichPlan.map((p) => p.type + ':' + p.job_key));
@@ -283,10 +291,16 @@ export async function recoverGenerationBacklog(env: Env, limit = 25, dryRun = fa
   }
   let requeued = 0;
   const skipped: string[] = [];
+  // Avanco entre lotes: as fontes INDEX planejadas aqui sao "tocadas"
+  // (updated_at=now, status preservado) para que ORDER BY updated_at ASC do
+  // proximo lote alcance registros ainda nao visitados. A fonte ENRICH reativa
+  // via UPDATE (ja bumpa updated_at); INDEX fonte que reativa sai de 'error'
+  // da mesma forma. Derivadas que ja existem (done/running/queued) apontam a
+  // fonte como visitada, drenando o cursor sem duplicar mensagens. Nada e
+  // marcado 'done' sem as etapas concluidas; o toque e duravel (sobrevive a
+  // reinicializacoes, sem cursor volatil).
+  const touched: string[] = [];
   for (const p of bounded) {
-    // Reativa SOMENTE job em 'error'. INSERT derivado so cria se a chave nao
-    // existir; o send() e o contador dependem de mudanca real (changes>0).
-    // done/running/queued existentes => sem send, sem contagem (idempotente).
     const reactivated = await env.MOOVIBE_LIBRARY.prepare(
       `UPDATE pipeline_jobs SET status='queued',attempts=0,last_error=NULL,available_at=CURRENT_TIMESTAMP,started_at=NULL,completed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='error'`).bind(p.job_key).run();
     let created = false;
@@ -300,17 +314,34 @@ export async function recoverGenerationBacklog(env: Env, limit = 25, dryRun = fa
     await env.PIPELINE_QUEUE.send({ type: p.type as any, key: p.job_key, payload: p.payload });
     requeued++;
   }
-  log('recover_generation_backlog', { eligible: bounded.length, requeued, skipped: skipped.length });
-  return { eligible: bounded.length, requeued, skipped: skipped.length };
+  // Toque das fontes INDEX em 'error' que originaram derivados (ou que foram
+  // planejadas como INDEX direto mas nao reativaram — ja tocadas pelo UPDATE
+  // acima quando reativadas). Marca visita honesta: status continua 'error'
+  // ate o trabalho real concluir as etapas.
+  for (const p of bounded) {
+    if (!p.source_key.startsWith('index:')) continue;
+    if (p.source_key === p.job_key) continue; // INDEX direto ja bumpou updated_at via reativacao
+    const t = await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='error'`).bind(p.source_key).run();
+    if (t.meta.changes) touched.push(p.source_key);
+  }
+  // ENRICH fonte reativa via UPDATE (updated_at bumpado); INDEX fonte reativa
+  // idem. Derivadas criadas apontam a fonte como visitada (toque acima) para
+  // o cursor avanzar sem duplicar mensagens em reruns.
+  log('recover_generation_backlog', { eligible: bounded.length, requeued, skipped: skipped.length, advanced: touched.length });
+  return { eligible: bounded.length, requeued, skipped: skipped.length, advanced: touched.length };
 }
 
 export async function providerStatus(env: Env) {
-  const [gen, emb] = await Promise.all([
+  return providerStatusFull(env);
+}
+export async function providerStatusFull(env: Env) {
+  const [gen, emb, stats] = await Promise.all([
     circuitState(env.MOOVIBE_LIBRARY, 'generation-xai'),
-    circuitState(env.MOOVIBE_LIBRARY, 'embedding-gemini')
+    circuitState(env.MOOVIBE_LIBRARY, 'embedding-gemini'),
+    pilotStatsToday(env.MOOVIBE_LIBRARY)
   ]);
   return {
-    generation: { provider: String((env as any).MOVIE_GENERATION_PROVIDER || 'xai'), model: String((env as any).MOVIE_GENERATION_MODEL || DEFAULT_XAI_MODEL), enabled: isMovieGenerationEnabled(env as any), pilot_limit: Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 25), pilot_used_today: await pilotCountToday(env.MOOVIBE_LIBRARY), state: (gen as any).open ? 'LIMITADO' : 'OPERACIONAL', cooldown_until: (gen as any).until || null },
+    generation: { provider: String((env as any).MOVIE_GENERATION_PROVIDER || 'xai'), model: String((env as any).MOVIE_GENERATION_MODEL || DEFAULT_XAI_MODEL), enabled: isMovieGenerationEnabled(env as any), pilot_limit: Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 25), pilot_used_today: stats.count, pilot_attempts_today: stats.attempts, pilot_success_today: stats.success, pilot_failed_today: stats.failed, state: (gen as any).open ? 'LIMITADO' : 'OPERACIONAL', cooldown_until: (gen as any).until || null },
     embedding: { provider: 'gemini', model: String((env as any).EMBEDDING_MODEL || 'gemini-embedding-2'), dimensions: Number((env as any).EMBEDDING_DIMENSIONS || 768), state: (emb as any).open ? 'LIMITADO' : 'OPERACIONAL', cooldown_until: (emb as any).until || null }
   };
 }
@@ -774,6 +805,14 @@ async function enrich(env: Env, job: Job) {
     throw err;
   }
   const provider = createMovieGenerationProvider(env as any);
+  // Gate xAI em duas camadas (sem escritas extras aqui): a 1a vaga cobre a 1a
+  // tentativa HTTP (pre-gate abaixo); se o provider for XaiClient, cada retry
+  // interno consome sua propria vaga atomica via tryConsumeAttempt ANTES da
+  // rede — nega sem HTTP quando o teto foi atingido. Preparacao local (wiki,
+  // contexto) nunca consome orcamento.
+  if (providerName === 'xai' && (provider as any).setAttemptBudget) {
+    (provider as any).setAttemptBudget(() => pilotConsume(env.MOOVIBE_LIBRARY, Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 25)));
+  }
   const sparse = String(movie.overview || '').trim().length < 80;
   const wiki = sparse ? await wikipediaFallback(movie.title, movie.release_year) : null;
   const context = `Title: ${movie.title}\nYear: ${movie.release_year}\nDirector: ${movie.director || 'unknown'}\nCountries: ${movie.countries}\nGenres: ${movie.genres}\nKeywords: ${movie.keywords}\nOverview: ${movie.overview || ''}\nTagline: ${movie.tagline || ''}${wiki ? `\nVerified Wikipedia fallback: ${wiki.text}` : ''}`;
@@ -798,6 +837,7 @@ async function enrich(env: Env, job: Job) {
     });
     const v = validateEnrichment(result.data);
     if (!v.ok) throw new Error(`INVALID_GENERATION_OUTPUT ${v.error}`);
+    await pilotTally(env.MOOVIBE_LIBRARY, 'success');
     await closeCircuit(env.MOOVIBE_LIBRARY, circuitKey);
     await audit(env, {
       request_id: traceId,
@@ -813,10 +853,9 @@ async function enrich(env: Env, job: Job) {
       status: 'complete'
     });
   } catch (error: any) {
-    // Precisao do piloto: sem saida do provider (rate limit/rede/timeout) a
-    // reserva e devolvida; saida recebida (mesmo invalida) permanece contada —
-    // o provider ja gerou tokens.
-    if (result === undefined) await pilotRelease(env.MOOVIBE_LIBRARY);
+    // Sem devolucao: a tentativa admitida conta no teto mesmo falhando.
+    // Registra o desfecho para as metricas (success+failed == attempts).
+    await pilotTally(env.MOOVIBE_LIBRARY, 'failed');
     await audit(env, {
       request_id: traceId,
       timestamp: new Date().toISOString(),
@@ -1209,4 +1248,5 @@ export default {
   }
 };
 
+export { pilotConsume as __testPilotConsume };
 export { enqueue, processJob, schedule, seedQueries, discover, fetchMovie, indexMovie, replaceRelations, requeueKnownFailures, splitOversizedQuery, pipelineControlStatus };

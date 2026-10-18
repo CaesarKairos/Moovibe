@@ -41,16 +41,20 @@ ORDER BY CASE stage WHEN 'collection' THEN 0 WHEN 'embedding' THEN 1 ELSE 2 END,
 
 // Backlog eligibility (definitivo): apenas filmes cujo job da chave canonica
 // pode ser efetivamente agendado por enqueue(). Regras:
-// - sem job (NULL): elegivel (INSERT cria).
+// - sem job (NULL): elegivel (INSERT cria + send).
 // - job 'done' com available_at vencido: elegivel (reprocessamento permitido).
-// - job 'queued' com available_at vencido: elegivel (outbox reenviara).
+// - job 'queued' (vencido ou nao): NAO elegivel aqui — o outbox do cron
+//   (recoverJobs) e o unico responsavel por reenviá-lo, evitando duplicatas
+//   e o bloqueio do orcamento por jobs já enfileirados.
+// - job 'queued' em cooldown (available_at futuro): NAO elegivel (outbox so
+//   reenvia quando vencer).
 // - 'error': NUNCA elegivel aqui (exige recuperacao explicita via endpoint).
 // - 'running'/'paused': NUNCA elegivel (lease/pausa administrativa).
-// - 'queued' em cooldown (available_at futuro) ou 'done' sem vencimento: fora.
 // Oversample 4x absorve linhas filtradas sem quebrar as proporcoes de budget.
-export const ENRICHMENT_BACKLOG_SQL = `SELECT m.tmdb_id,m.collection_status,m.enrichment_status,m.embedding_status FROM movies m LEFT JOIN pipeline_jobs j ON j.job_key='enrich:'||m.tmdb_id||':v2' WHERE m.collection_status='complete' AND m.enrichment_status IN ('pending','error') AND (j.job_key IS NULL OR (j.status='done' AND j.available_at IS NOT NULL AND j.available_at<=CURRENT_TIMESTAMP) OR (j.status='queued' AND (j.available_at IS NULL OR j.available_at<=CURRENT_TIMESTAMP))) ORDER BY m.updated_at,m.tmdb_id LIMIT ?`;
-export const EMBEDDING_BACKLOG_SQL = `SELECT m.tmdb_id,m.collection_status,m.enrichment_status,m.embedding_status FROM movies m LEFT JOIN pipeline_jobs j ON j.job_key='embed:'||m.tmdb_id||':movie-v1' WHERE m.collection_status='complete' AND m.enrichment_status='complete' AND m.embedding_status IN ('pending','error') AND (j.job_key IS NULL OR (j.status='done' AND j.available_at IS NOT NULL AND j.available_at<=CURRENT_TIMESTAMP) OR (j.status='queued' AND (j.available_at IS NULL OR j.available_at<=CURRENT_TIMESTAMP))) ORDER BY m.updated_at,m.tmdb_id LIMIT ?`;
-export const COLLECTION_BACKLOG_SQL = `SELECT m.tmdb_id,m.collection_status,m.enrichment_status,m.embedding_status FROM movies m LEFT JOIN pipeline_jobs j ON j.job_key='index:'||m.tmdb_id||':v1' WHERE m.collection_status='discovered' AND (j.job_key IS NULL OR (j.status='done' AND j.available_at IS NOT NULL AND j.available_at<=CURRENT_TIMESTAMP) OR (j.status='queued' AND (j.available_at IS NULL OR j.available_at<=CURRENT_TIMESTAMP))) ORDER BY m.updated_at,m.tmdb_id LIMIT ?`;
+const BACKLOG_ELIGIBLE = `(j.job_key IS NULL OR (j.status='done' AND j.available_at IS NOT NULL AND j.available_at<=CURRENT_TIMESTAMP))`;
+export const ENRICHMENT_BACKLOG_SQL = `SELECT m.tmdb_id,m.collection_status,m.enrichment_status,m.embedding_status FROM movies m LEFT JOIN pipeline_jobs j ON j.job_key='enrich:'||m.tmdb_id||':v2' WHERE m.collection_status='complete' AND m.enrichment_status IN ('pending','error') AND ${BACKLOG_ELIGIBLE} ORDER BY m.updated_at,m.tmdb_id LIMIT ?`;
+export const EMBEDDING_BACKLOG_SQL = `SELECT m.tmdb_id,m.collection_status,m.enrichment_status,m.embedding_status FROM movies m LEFT JOIN pipeline_jobs j ON j.job_key='embed:'||m.tmdb_id||':movie-v1' WHERE m.collection_status='complete' AND m.enrichment_status='complete' AND m.embedding_status IN ('pending','error') AND ${BACKLOG_ELIGIBLE} ORDER BY m.updated_at,m.tmdb_id LIMIT ?`;
+export const COLLECTION_BACKLOG_SQL = `SELECT m.tmdb_id,m.collection_status,m.enrichment_status,m.embedding_status FROM movies m LEFT JOIN pipeline_jobs j ON j.job_key='index:'||m.tmdb_id||':v1' WHERE m.collection_status='discovered' AND ${BACKLOG_ELIGIBLE} ORDER BY m.updated_at,m.tmdb_id LIMIT ?`;
 // Oversample factor keeps eligibility after filtering blocked terminal jobs.
 export const BACKLOG_OVERSCAN = 4;
 export const stableDiscoveryKey=(queryId:string)=>`discover:${queryId}:v1`;
