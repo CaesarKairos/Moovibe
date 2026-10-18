@@ -1,27 +1,38 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
-vi.mock('../workers/pipeline/src/generation-factory', () => ({
-  DEFAULT_XAI_MODEL: 'grok-4-3',
-  isMovieGenerationEnabled: (env: any) => String(env?.MOVIE_GENERATION_ENABLED || 'false').toLowerCase() === 'true',
-  createMovieGenerationProvider: () => ({
-    name: 'xai',
-    // Instrumentado: mede chamadas simultaneas (concorrencia) e permite falhar
-    // as proximas chamadas via globalThis.__genMock = { failNext: n }.
-    generateJson: async () => {
+vi.mock('../workers/pipeline/src/generation-factory', async (importOriginal) => {
+  const factory: any = await importOriginal();
+  const { XaiClient } = await import('../workers/pipeline/src/xai-client.js');
+  const okData = () => ({ provider: 'xai', model: 'grok-4-3',
+    data: { moods: ['calm'], themes: ['memory'], atmosphere: ['warm'], pace: 'medium', visual_style: ['natural'], emotional_valence: .5, energy: .5, intimacy: .5, surrealism: .1, darkness: .1, humor: .2, romanticism: .2, narrative_density: .5, melancholy_level: .2, tension_level: .2, confidence: .9 } });
+  // Mock com XaiClient REAL: cada instância recebe um fetch stub (contado em
+  // globalThis.__http) e delega o fluxa real de retries/gates/métricas.
+  return {
+    DEFAULT_XAI_MODEL: factory.DEFAULT_XAI_MODEL ?? 'grok-4-3',
+    isMovieGenerationEnabled: factory.isMovieGenerationEnabled,
+    createMovieGenerationProvider: (env: any) => {
       const g: any = globalThis as any;
-      g.__genInflight = (g.__genInflight || 0) + 1;
-      g.__genMaxInflight = Math.max(g.__genMaxInflight || 0, g.__genInflight);
-      try {
-        await new Promise((r) => setTimeout(r, 5));
-        const mock = g.__genMock;
-        if (mock && Number(mock.failNext) > 0) { mock.failNext -= 1; throw new Error('xAI 429 rate limited'); }
-        return { provider: 'xai', model: 'grok-4-3',
-          data: { moods: ['calm'], themes: ['memory'], atmosphere: ['warm'], pace: 'medium', visual_style: ['natural'], emotional_valence: .5, energy: .5, intimacy: .5, surrealism: .1, darkness: .1, humor: .2, romanticism: .2, narrative_density: .5, melancholy_level: .2, tension_level: .2, confidence: .9 } };
-      } finally { g.__genInflight -= 1; }
+      const failPlan: Array<'ok' | 'fail:http' | 'fail:timeout'> = g.__genFailPlan || [];
+      const client = new XaiClient(env?.XAI_API_KEY || 'x', env?.MOVIE_GENERATION_MODEL || 'grok-4-3', async () => {
+        const g2: any = globalThis as any;
+        g2.__genInflight = (g2.__genInflight || 0) + 1;
+        g2.__genMaxInflight = Math.max(g2.__genMaxInflight || 0, g2.__genInflight);
+        g2.__http = (g2.__http || 0) + 1;
+        try {
+          await new Promise((r) => setTimeout(r, 5));
+          const mode = failPlan.length ? failPlan.shift() : 'ok';
+          if (mode === 'fail:http') return new Response('busy', { status: 429 });
+          if (mode === 'fail:timeout') throw new Error('fetch failed: timeout');
+          return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(okData().data) } }], usage: { prompt_tokens: 10, completion_tokens: 5 } }), { status: 200 });
+        } finally { g2.__genInflight -= 1; }
+      });
+      const orig = client.generateJson.bind(client);
+      (client as any).generateJson = async (input: any) => orig(input);
+      return client;
     }
-  })
-}));
+  };
+});
 vi.mock('../functions/_lib/gemini.js', () => ({
   RetryableError: class RetryableError extends Error { retryAfter: number; constructor(m: string, r = 0) { super(m); this.retryAfter = r; } },
   GeminiClient: class { async generateJson() { throw new Error('no-call'); } async embed() { return Array(768).fill(0.01); } }
@@ -48,7 +59,7 @@ const makeEnv = (db: Database.Database, extra: any = {}) => {
   return { env, sent };
 };
 let db: Database.Database;
-beforeEach(() => { db = new Database(':memory:'); for (const f of fs.readdirSync('migrations').filter((x) => x.endsWith('.sql')).sort()) db.exec(fs.readFileSync(`migrations/${f}`, 'utf8')); const g: any = globalThis as any; g.__genInflight = 0; g.__genMaxInflight = 0; g.__genMock = undefined; });
+beforeEach(() => { db = new Database(':memory:'); for (const f of fs.readdirSync('migrations').filter((x) => x.endsWith('.sql')).sort()) db.exec(fs.readFileSync(`migrations/${f}`, 'utf8')); const g: any = globalThis as any; g.__genInflight = 0; g.__genMaxInflight = 0; g.__genFailPlan = []; g.__genMock = undefined; g.__http = 0; });
 describe('auditoria-a', () => {
   it('1. jobs error nao bloqueiam backlog elegivel', async () => {
     for (let i = 1; i <= 60; i++) {
@@ -347,28 +358,59 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
     await schedule(env);
     expect(sent.slice(before).filter((s: any) => s.key === 'index:901:v1')).toHaveLength(1);
   });
-  it('22. piloto preciso: falha do provedor devolve a reserva; sucesso conta exatamente 1', async () => {
+  it('22. fluxo real enrich+XaiClient: 1 HTTP = 1 vaga; falha conta sem devolver', async () => {
     db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(911,'P',?,'complete','pending')`).run(longOverview);
     db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:911:v2','ENRICH_MOVIE','{\"tmdb_id\":911}','queued')`).run();
     const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true', MOVIE_GENERATION_PILOT_LIMIT: '5' });
-    (globalThis as any).__genMock = { failNext: 1 };
+    // 1a operacao: 429 seguido de timeout — 2 HTTP reais, 2 vagas, 0 sucesso.
+    (globalThis as any).__genFailPlan = ['fail:http', 'fail:timeout'];
     const m1: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:911:v2', payload: { tmdb_id: 911 } });
     await (pipelineWorker as any).queue({ messages: [m1] }, env);
     expect(m1.retry).toHaveBeenCalledTimes(1);
-    // Sem devolucao: a tentativa admitida conta no teto mesmo falhando.
+    expect((globalThis as any).__http).toBe(2);
     const counter1: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get();
-    expect(JSON.parse(counter1.value)).toMatchObject({ count: 1, attempts: 1, success: 0, failed: 1 });
+    expect(JSON.parse(counter1.value)).toMatchObject({ count: 2, attempts: 2, success: 0, failed: 2 });
     expect(db.prepare(`SELECT status,attempts FROM pipeline_jobs WHERE job_key='enrich:911:v2'`).get()).toMatchObject({ status: 'queued', attempts: 1 });
+    // 2a operacao: sucesso em 1 HTTP — +1 vaga, +1 sucesso.
     db.prepare(`DELETE FROM system_state WHERE key='circuit:generation-xai'`).run();
     db.prepare(`UPDATE pipeline_jobs SET available_at=CURRENT_TIMESTAMP WHERE job_key='enrich:911:v2'`).run();
     const m2: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:911:v2', payload: { tmdb_id: 911 } });
     await (pipelineWorker as any).queue({ messages: [m2] }, env);
     expect(m2.ack).toHaveBeenCalledTimes(1);
+    expect((globalThis as any).__http).toBe(3);
     const counter2: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get();
-    expect(JSON.parse(counter2.value)).toMatchObject({ count: 2, attempts: 2, success: 1, failed: 1 });
+    expect(JSON.parse(counter2.value)).toMatchObject({ count: 3, attempts: 3, success: 1, failed: 2 });
     expect(db.prepare(`SELECT status FROM pipeline_jobs WHERE job_key='enrich:911:v2'`).get()).toEqual({ status: 'done' });
     const full: any = await providerStatusFull(env);
-    expect(full.generation).toMatchObject({ pilot_used_today: 2, pilot_attempts_today: 2, pilot_success_today: 1, pilot_failed_today: 1 });
+    expect(full.generation).toMatchObject({ pilot_used_today: 3, pilot_attempts_today: 3, pilot_success_today: 1, pilot_failed_today: 2 });
+  });
+  it('22b. geracao desativada = zero HTTP e zero vagas; limite esgotado nega sem rede', async () => {
+    db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(912,'D',?,'complete','pending')`).run(longOverview);
+    db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:912:v2','ENRICH_MOVIE','{\"tmdb_id\":912}','queued')`).run();
+    const { env } = makeEnv(db); // ENABLED=false
+    const m: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:912:v2', payload: { tmdb_id: 912 } });
+    await (pipelineWorker as any).queue({ messages: [m] }, env);
+    expect(m.ack).toHaveBeenCalledTimes(1);
+    expect((globalThis as any).__http).toBe(0);
+    expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key='gen_pilot_count'`).get()).toEqual({ n: 0 });
+    // Limite esgotado: nenhuma chamada apos atingir o teto.
+    const { env: env2 } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true', MOVIE_GENERATION_PILOT_LIMIT: '2' });
+    db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(913,'L',?,'complete','pending')`).run(longOverview);
+    db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:913:v2','ENRICH_MOVIE','{\"tmdb_id\":913}','queued')`).run();
+    db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(914,'L',?,'complete','pending')`).run(longOverview);
+    db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:914:v2','ENRICH_MOVIE','{\"tmdb_id\":914}','queued')`).run();
+    await (pipelineWorker as any).queue({ messages: [msg({ type: 'ENRICH_MOVIE', key: 'enrich:913:v2', payload: { tmdb_id: 913 } })] }, env2);
+    expect((globalThis as any).__http).toBe(1);
+    await (pipelineWorker as any).queue({ messages: [msg({ type: 'ENRICH_MOVIE', key: 'enrich:914:v2', payload: { tmdb_id: 914 } })] }, env2);
+    expect((globalThis as any).__http).toBe(2);
+    // 3o job: teto atingido — deferido antes da rede, attempts do job intactos.
+    db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(915,'L',?,'complete','pending')`).run(longOverview);
+    db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:915:v2','ENRICH_MOVIE','{\"tmdb_id\":915}','queued')`).run();
+    const m3: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:915:v2', payload: { tmdb_id: 915 } });
+    await (pipelineWorker as any).queue({ messages: [m3] }, env2);
+    expect(m3.ack).toHaveBeenCalledTimes(1);
+    expect((globalThis as any).__http).toBe(2);
+    expect(db.prepare(`SELECT status,attempts FROM pipeline_jobs WHERE job_key='enrich:915:v2'`).get()).toMatchObject({ status: 'queued', attempts: 0 });
   });
   it('23. processamento completo via fila: INDEX enriquece, vetoriza e marca o filme completo', async () => {
     db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status,embedding_status) VALUES(921,'F',?,'discovered','pending','pending')`).run(longOverview);

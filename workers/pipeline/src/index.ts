@@ -805,28 +805,33 @@ async function enrich(env: Env, job: Job) {
     throw err;
   }
   const provider = createMovieGenerationProvider(env as any);
-  // Gate xAI em duas camadas (sem escritas extras aqui): a 1a vaga cobre a 1a
-  // tentativa HTTP (pre-gate abaixo); se o provider for XaiClient, cada retry
-  // interno consome sua propria vaga atomica via tryConsumeAttempt ANTES da
-  // rede — nega sem HTTP quando o teto foi atingido. Preparacao local (wiki,
+  const pilotLimit = Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 25);
+  // Gate xAI em UMA camada, por tentativa HTTP dentro do cliente: o XaiClient
+  // consome 1 vaga atomica ANTES de cada HTTP (incluindo seu retry interno)
+  // via tryConsumeAttempt e reporta cada desfecho via setAttemptReporter —
+  // 1 HTTP = 1 vaga, 2 HTTP = 2 vagas. O pre-gate redundante aqui foi removido
+  // (causava 2 vagas por 1 HTTP). Para provider gemini (rollback), o pre-gate
+  // abaixo continua valendo: 1 chamada = 1 vaga. Preparacao local (wiki,
   // contexto) nunca consome orcamento.
-  if (providerName === 'xai' && (provider as any).setAttemptBudget) {
-    (provider as any).setAttemptBudget(() => pilotConsume(env.MOOVIBE_LIBRARY, Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 25)));
+  const isXai = providerName === 'xai' && typeof (provider as any).setAttemptBudget === 'function';
+  if (isXai) {
+    (provider as any).setAttemptBudget(() => pilotConsume(env.MOOVIBE_LIBRARY, pilotLimit));
+    (provider as any).setAttemptReporter((outcome: 'success' | 'failed') => pilotTally(env.MOOVIBE_LIBRARY, outcome));
   }
   const sparse = String(movie.overview || '').trim().length < 80;
   const wiki = sparse ? await wikipediaFallback(movie.title, movie.release_year) : null;
   const context = `Title: ${movie.title}\nYear: ${movie.release_year}\nDirector: ${movie.director || 'unknown'}\nCountries: ${movie.countries}\nGenres: ${movie.genres}\nKeywords: ${movie.keywords}\nOverview: ${movie.overview || ''}\nTagline: ${movie.tagline || ''}${wiki ? `\nVerified Wikipedia fallback: ${wiki.text}` : ''}`;
   const system = 'Analyze cinematic aesthetics from supplied facts. Never create factual claims. Return concise English concepts and all numeric dimensions from 0 to 1.',
     started = Date.now();
-  // Pilot cap IMEDIATAMENTE antes da chamada paga: a reserva representa uma
-  // tentativa real de geracao — construcao de contexto e fallback wiki nunca
-  // consomem piloto.
-  const pilotLimit = Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 25);
-  if (!(await pilotConsume(env.MOOVIBE_LIBRARY, pilotLimit))) {
-    const err: any = new Error(`pilot limit reached (${pilotLimit}/day); deferred`);
-    err.retryAfter = GENERATION_DEFER_SECONDS;
-    (err as any).deferred = true;
-    throw err;
+  // Rollback gemini: sem gate por tentativa no cliente, o pre-gate atomico
+  // abaixo admite a chamada inteira (sem retry interno: maxAttempts=1).
+  if (!isXai) {
+    if (!(await pilotConsume(env.MOOVIBE_LIBRARY, pilotLimit))) {
+      const err: any = new Error(`pilot limit reached (${pilotLimit}/day); deferred`);
+      err.retryAfter = GENERATION_DEFER_SECONDS;
+      (err as any).deferred = true;
+      throw err;
+    }
   }
   let result;
   try {
@@ -837,7 +842,9 @@ async function enrich(env: Env, job: Job) {
     });
     const v = validateEnrichment(result.data);
     if (!v.ok) throw new Error(`INVALID_GENERATION_OUTPUT ${v.error}`);
-    await pilotTally(env.MOOVIBE_LIBRARY, 'success');
+    // Métricas xAI vêm do cliente por tentativa (setAttemptReporter); aqui só
+    // o caminho gemini registra o desfecho da chamada única.
+    if (!isXai) await pilotTally(env.MOOVIBE_LIBRARY, 'success');
     await closeCircuit(env.MOOVIBE_LIBRARY, circuitKey);
     await audit(env, {
       request_id: traceId,
@@ -854,8 +861,9 @@ async function enrich(env: Env, job: Job) {
     });
   } catch (error: any) {
     // Sem devolucao: a tentativa admitida conta no teto mesmo falhando.
-    // Registra o desfecho para as metricas (success+failed == attempts).
-    await pilotTally(env.MOOVIBE_LIBRARY, 'failed');
+    // xAI: desfechos ja registrados por tentativa no cliente (setAttemptReporter),
+    // entao nada a somar aqui. Gemini (sem gate por tentativa): 1 chamada = 1 falha.
+    if (!isXai) await pilotTally(env.MOOVIBE_LIBRARY, 'failed');
     await audit(env, {
       request_id: traceId,
       timestamp: new Date().toISOString(),

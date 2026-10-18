@@ -17,7 +17,9 @@ export class XaiClient implements GenerationProvider {
   // interno). Deve ser atomico e diario: true = tentativa admitida (contou no
   // orcamento), false = negar sem chamar a rede. Opcional para nao quebrar
   // chamadores fora do pipeline (testes, gemini-health).
-  constructor(private apiKey: string, private model: string, private fetcher: any = null, private tryConsumeAttempt: (() => Promise<boolean>) | null = null) {
+  // reportAttemptOutcome: chamado UMA vez por tentativa ADMITIDA (HTTP real
+  // enviado), com seu desfecho — nunca para tentativas negadas pre-rede.
+  constructor(private apiKey: string, private model: string, private fetcher: any = null, private tryConsumeAttempt: (() => Promise<boolean>) | null = null, private reportAttemptOutcome: ((outcome: 'success' | 'failed') => Promise<void>) | null = null) {
     if (!apiKey) throw new Error('XAI_API_KEY is required');
     if (!model) throw new Error('MOVIE_GENERATION_MODEL is required');
   }
@@ -25,6 +27,9 @@ export class XaiClient implements GenerationProvider {
   // incluindo o retry interno). Sem ele, cada instancia admite no maximo o
   // proprio retry isolado.
   setAttemptBudget(fn: () => Promise<boolean>): void { this.tryConsumeAttempt = fn; }
+  // Desfecho por tentativa admitida (para metricas fieis: success+failed ==
+  // attempts). Best-effort: nunca falha a operacao.
+  setAttemptReporter(fn: (outcome: 'success' | 'failed') => Promise<void>): void { this.reportAttemptOutcome = fn; }
   async generateJson({ system, prompt, schema, temperature = 0.2 }: GenerationRequest): Promise<GenerationResult> {
     let last: any;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -36,25 +41,36 @@ export class XaiClient implements GenerationProvider {
         throw denied;
       }
       try {
-        const res: Response = await callFetch(this.fetcher, `${API}/chat/completions`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify({
-            model: this.model,
-            messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
-            temperature,
-            response_format: { type: 'json_schema', json_schema: { name: 'movie_enrichment', strict: true, schema } }
-          })
-        });
+        const report = async (outcome: 'success' | 'failed') => {
+          try { if (this.reportAttemptOutcome) await this.reportAttemptOutcome(outcome); } catch { /* best-effort */ }
+        };
+        let res: Response;
+        try {
+          res = await callFetch(this.fetcher, `${API}/chat/completions`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },
+            body: JSON.stringify({
+              model: this.model,
+              messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
+              temperature,
+              response_format: { type: 'json_schema', json_schema: { name: 'movie_enrichment', strict: true, schema } }
+            })
+          });
+        } catch (net: any) {
+          await report('failed'); // HTTP saiu e falhou na rede: tentativa admitida conta
+          throw net;
+        }
         if (!res.ok) {
           const body = (await res.text()).slice(0, 500);
+          await report('failed');
           throw new XaiError(`xAI ${res.status}: ${body}`, res.status, Number(res.headers.get('Retry-After') || 0));
         }
         const data: any = await res.json();
         const text = data?.choices?.[0]?.message?.content || '';
-        if (!text.trim()) throw new XaiError(`xAI empty response from ${this.model}`, null, 0);
+        if (!text.trim()) { await report('failed'); throw new XaiError(`xAI empty response from ${this.model}`, null, 0); }
         const parsed = JSON.parse(text);
         const v = validateEnrichment(parsed);
-        if (!v.ok) { const e: any = new XaiError(`xAI invalid output: ${v.error}`, null, 0); e.invalidOutput = true; throw e; }
+        if (!v.ok) { const e: any = new XaiError(`xAI invalid output: ${v.error}`, null, 0); e.invalidOutput = true; await report('failed'); throw e; }
+        await report('success');
         return { data: parsed, model: this.model, provider: 'xai', usage: { inputTokens: data?.usage?.prompt_tokens, outputTokens: data?.usage?.completion_tokens } };
       } catch (e: any) {
         last = e;
