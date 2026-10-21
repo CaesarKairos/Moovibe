@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { classifyProviderError } from '../workers/pipeline/src/provider-errors';
 import { circuitState, closeCircuit, openCircuit, validateEnrichment, ENRICHMENT_JSON_SCHEMA } from '../workers/pipeline/src/generation-provider';
-import { createMovieGenerationProvider, isMovieGenerationEnabled, DEFAULT_XAI_MODEL } from '../workers/pipeline/src/generation-factory';
+import { createMovieGenerationProvider, isMovieGenerationEnabled, DEFAULT_GROQ_MODEL } from '../workers/pipeline/src/generation-factory';
 import { XaiClient } from '../workers/pipeline/src/xai-client';
 
 const good = { moods: ['tense'], themes: ['revenge'], atmosphere: ['dark'], pace: 'slow', visual_style: ['noir'], emotional_valence: 0.2, energy: 0.7, intimacy: 0.3, surrealism: 0.1, darkness: 0.9, humor: 0.05, romanticism: 0.1, narrative_density: 0.6, melancholy_level: 0.5, tension_level: 0.9, confidence: 0.85 };
@@ -57,8 +57,8 @@ describe('xai migration', () => {
       expect(report.mock.calls).toEqual(allowed === 1 ? [['failed']] : [['failed'], ['success']]);
     }
   });
-  it('usa grok-4.3 (modelo atual) e modo seguro desliga geracao por default', () => {
-    expect(DEFAULT_XAI_MODEL).toBe('grok-4.3');
+  it('usa Groq GPT OSS 120B (modelo atual) e modo seguro desliga geracao por default', () => {
+    expect(DEFAULT_GROQ_MODEL).toBe('openai/gpt-oss-120b');
     expect(isMovieGenerationEnabled({} as any)).toBe(false);
     expect(isMovieGenerationEnabled({ MOVIE_GENERATION_ENABLED: 'true' } as any)).toBe(true);
   });
@@ -79,9 +79,9 @@ describe('xai migration', () => {
     expect(validateEnrichment({ ...good, pace: 'warp' }).ok).toBe(false);
     expect(validateEnrichment({ ...good, energy: 'alta' }).ok).toBe(false);
   });
-  it('factory usa xai por padrao e gemini como rollback', () => {
-    expect(createMovieGenerationProvider({ XAI_API_KEY: 'k', MOVIE_GENERATION_MODEL: 'm' }).name).toBe('xai');
-    expect(createMovieGenerationProvider({ MOVIE_GENERATION_PROVIDER: 'gemini', GEMINI_API_KEY: 'k' }).name).toBe('gemini');
+  it('factory usa Groq sem rollback automatico', () => {
+    expect(createMovieGenerationProvider({ XAI_API_KEY: 'k', MOVIE_GENERATION_MODEL: 'm' }).name).toBe('groq');
+    expect(() => createMovieGenerationProvider({ MOVIE_GENERATION_PROVIDER: 'gemini', XAI_API_KEY: 'k' })).toThrow('INVALID_REQUEST');
     expect(() => createMovieGenerationProvider({} as any)).toThrow('XAI_API_KEY');
   });
   it('429 abre cooldown, 401 nao repete, credito insuficiente e terminal', () => {
@@ -160,7 +160,7 @@ describe('xai migration', () => {
     expect(ok + deferred + results.filter((r) => r === 'failed').length).toBe(100);
     expect(deferred).toBeGreaterThan(0);
     // Metrica do dia: attempts == HTTP reais.
-    const row = tdb.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get() as any;
+    const row = tdb.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count:groq'`).get() as any;
     expect(JSON.parse(row.value).attempts).toBe(http);
   });
 });

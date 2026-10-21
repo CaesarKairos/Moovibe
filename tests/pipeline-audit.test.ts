@@ -1,43 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
-vi.mock('../workers/pipeline/src/generation-factory', async (importOriginal) => {
-  const factory: any = await importOriginal();
-  const { XaiClient } = await import('../workers/pipeline/src/xai-client.js');
-  const okData = () => ({ provider: 'xai', model: 'grok-4-3',
-    data: { moods: ['calm'], themes: ['memory'], atmosphere: ['warm'], pace: 'medium', visual_style: ['natural'], emotional_valence: .5, energy: .5, intimacy: .5, surrealism: .1, darkness: .1, humor: .2, romanticism: .2, narrative_density: .5, melancholy_level: .2, tension_level: .2, confidence: .9 } });
-  // Mock com XaiClient REAL: cada instância recebe um fetch stub (contado em
-  // globalThis.__http) e delega o fluxa real de retries/gates/métricas.
-  return {
-    DEFAULT_XAI_MODEL: factory.DEFAULT_XAI_MODEL ?? 'grok-4-3',
-    isMovieGenerationEnabled: factory.isMovieGenerationEnabled,
-    createMovieGenerationProvider: (env: any) => {
-      const g: any = globalThis as any;
-      const failPlan: string[] = g.__genFailPlan || [];
-      const client = new XaiClient(env?.XAI_API_KEY || 'x', env?.MOVIE_GENERATION_MODEL || 'grok-4-3', async () => {
-        const g2: any = globalThis as any;
-        g2.__genInflight = (g2.__genInflight || 0) + 1;
-        g2.__genMaxInflight = Math.max(g2.__genMaxInflight || 0, g2.__genInflight);
-        g2.__http = (g2.__http || 0) + 1;
-        try {
-          await new Promise((r) => setTimeout(r, 5));
-          const mode = failPlan.length ? failPlan.shift() : 'ok';
-          if (mode === 'fail:http') return new Response('busy', { status: 429 });
-          if (mode === 'fail:timeout') throw new Error('fetch failed: timeout');
-          if (mode === 'invalid:envelope') return new Response('{');
-          if (mode === 'invalid:content') return new Response(JSON.stringify({ choices: [{ message: { content: '{' } }] }));
-          return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(okData().data) } }], usage: { prompt_tokens: 10, completion_tokens: 5 } }), { status: 200 });
-        } finally { g2.__genInflight -= 1; }
-      });
-      const orig = client.generateJson.bind(client);
-      (client as any).generateJson = async (input: any) => orig(input);
-      return client;
-    }
-  };
-});
 import pipelineWorker, { processJob, schedule, recoverGenerationBacklog, providerStatus, providerStatusFull } from '../workers/pipeline/src/index.js';
 import { updatePipelineControl } from '../workers/pipeline/src/pipeline-control.js';
 import { ENRICHMENT_BACKLOG_BUDGET } from '../workers/pipeline/src/job-policy.js';
+import { openCircuit } from '../workers/pipeline/src/generation-provider';
 class Statement {
   values: any[] = [];
   constructor(private db: Database.Database, private sql: string) { }
@@ -53,7 +20,7 @@ const makeEnv = (db: Database.Database, extra: any = {}) => {
     PIPELINE_QUEUE: { send: async (j: any) => { sent.push(j); } }, MOVIE_VECTORS: { upsert: vi.fn() },
     GEMINI_API_KEY: 'x', XAI_API_KEY: 'x', TMDB_API_KEY: 'x', EMBEDDING_MODEL: 'gemini-embedding-2',
     EMBEDDING_DIMENSIONS: '768', EMBEDDING_SCHEMA_VERSION: 'movie-v1',
-    MOVIE_GENERATION_PROVIDER: 'xai', MOVIE_GENERATION_MODEL: 'grok-4-3',
+    MOVIE_GENERATION_PROVIDER: 'groq', MOVIE_GENERATION_MODEL: 'openai/gpt-oss-120b',
     MOVIE_GENERATION_ENABLED: 'false', MOVIE_GENERATION_PILOT_LIMIT: '25', ...extra };
   return { env, sent };
 };
@@ -61,6 +28,23 @@ let db: Database.Database;
 beforeEach(() => { db = new Database(':memory:'); for (const f of fs.readdirSync('migrations').filter((x) => x.endsWith('.sql')).sort()) db.exec(fs.readFileSync(`migrations/${f}`, 'utf8')); const g: any = globalThis as any; g.__genInflight = 0; g.__genMaxInflight = 0; g.__genFailPlan = []; g.__genMock = undefined; g.__http = 0; });
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url) === 'https://api.groq.com/openai/v1/chat/completions') {
+      const g: any = globalThis;
+      g.__genInflight++;
+      g.__genMaxInflight = Math.max(g.__genMaxInflight, g.__genInflight);
+      g.__http++;
+      try {
+        await new Promise((r) => setTimeout(r, 5));
+        const mode = g.__genFailPlan.shift() || 'ok';
+        if (mode === 'fail:http') return new Response('rate limit', { status: 429 });
+        if (mode === 'fail:transient') return new Response('busy', { status: 500 });
+        if (mode === 'fail:timeout') throw new Error('fetch failed: timeout');
+        if (mode === 'invalid:envelope') return new Response('{');
+        if (mode === 'invalid:content') return new Response(JSON.stringify({ choices: [{ message: { content: '{' } }] }));
+        const data = { moods: ['calm'], themes: ['memory'], atmosphere: ['warm'], pace: 'medium', visual_style: ['natural'], emotional_valence: .5, energy: .5, intimacy: .5, surrealism: .1, darkness: .1, humor: .2, romanticism: .2, narrative_density: .5, melancholy_level: .2, tension_level: .2, confidence: .9 };
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(data) } }], usage: { prompt_tokens: 10, completion_tokens: 5 } }));
+      } finally { g.__genInflight--; }
+    }
     if (String(url).includes('generativelanguage.googleapis.com') && String(url).includes(':embedContent')) {
       return new Response(JSON.stringify({ embedding: { values: Array(768).fill(.01) } }));
     }
@@ -69,6 +53,103 @@ beforeEach(() => {
   }));
 });
 afterEach(() => { vi.unstubAllGlobals(); db.close(); });
+const seedGenerationJob = (id: number) => {
+  db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status) VALUES(?,'Groq movie',?,'complete')`).run(id, 'Verified cinematic overview. '.repeat(10));
+  const job = { type: 'ENRICH_MOVIE' as const, key: `enrich:${id}:v2`, payload: { tmdb_id: id } };
+  db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json) VALUES(?,?,?)`).run(job.key, job.type, JSON.stringify(job.payload));
+  return job;
+};
+describe('Groq migration integration (real clients, mocked HTTP)', () => {
+  const groqMessage = (body: any) => ({ body, ack: vi.fn(), retry: vi.fn() });
+  it('three concurrent HTTP attempts have their own metrics and leave xAI history intact', async () => {
+    const legacy = JSON.stringify({ day: new Date().toISOString().slice(0, 10), count: 3, attempts: 3, failed: 3, success: 0 });
+    db.prepare(`INSERT INTO system_state(key,value) VALUES('gen_pilot_count',?)`).run(legacy);
+    await openCircuit({ prepare: (sql: string) => new Statement(db, sql) } as any, 'generation-xai', 43200, 'Incorrect API key');
+    const jobs = Array.from({ length: 50 }, (_, i) => seedGenerationJob(3000 + i));
+    const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true', MOVIE_GENERATION_PILOT_LIMIT: '3' });
+    (globalThis as any).__genFailPlan = ['invalid:content', 'fail:transient', 'ok'];
+    await Promise.all(jobs.map((job) => processJob(env, job)));
+    expect((globalThis as any).__http).toBe(3);
+    const status = await providerStatusFull(env);
+    expect(status.generation).toMatchObject({ provider: 'groq', pilot_limit: 3, pilot_used_today: 3, pilot_attempts_today: 3, pilot_success_today: 1, pilot_failed_today: 2 });
+    expect(db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get()).toEqual({ value: legacy });
+    expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key='circuit:generation-xai'`).get()).toEqual({ n: 1 });
+    expect(db.prepare(`SELECT status,COUNT(*) n FROM pipeline_jobs WHERE type='ENRICH_MOVIE' GROUP BY status ORDER BY status`).all()).toEqual([{ status: 'done', n: 1 }, { status: 'error', n: 1 }, { status: 'queued', n: 48 }]);
+    expect(db.prepare(`SELECT MAX(attempts) n FROM pipeline_jobs WHERE status='queued'`).get()).toEqual({ n: 0 });
+    const calls = vi.mocked(fetch).mock.calls;
+    expect(calls.filter(([url]) => String(url).includes('api.x.ai'))).toHaveLength(0);
+    const before = (globalThis as any).__http;
+    await processJob(env, seedGenerationJob(3099));
+    expect((globalThis as any).__http).toBe(before);
+    await schedule(env);
+    expect(db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE type='ENRICH_MOVIE'`).get()).toEqual({ n: 51 });
+  });
+  it.each([400, 401, 403, 429])('Groq %s preserves durable jobs and circuit deferral never burns attempts or queue deliveries', async (status) => {
+    const first = seedGenerationJob(3100), waiting = seedGenerationJob(3101);
+    const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true', MOVIE_GENERATION_PILOT_LIMIT: '3' });
+    vi.mocked(fetch).mockImplementationOnce(async () => new Response(status === 429 ? 'TPD exhausted' : 'Incorrect API key provided', { status, headers: status === 429 ? { 'retry-after': '80000' } : {} }));
+    const initial = groqMessage(first);
+    await (pipelineWorker as any).queue({ messages: [initial] }, env);
+    expect(initial.ack).toHaveBeenCalledOnce(); expect(initial.retry).not.toHaveBeenCalled();
+    const snapshot = await providerStatusFull(env);
+    expect(snapshot.generation).toMatchObject({ provider: 'groq', state: 'LIMITADO', pilot_attempts_today: 1, pilot_failed_today: 1 });
+    if (status === 429) expect(Date.parse(snapshot.generation.cooldown_until!) - Date.now()).toBeGreaterThan(79000 * 1000);
+    for (let i = 0; i < 6; i++) {
+      db.prepare(`UPDATE pipeline_jobs SET available_at=CURRENT_TIMESTAMP WHERE job_key=?`).run(waiting.key);
+      const message = groqMessage(waiting);
+      await (pipelineWorker as any).queue({ messages: [message] }, env);
+      expect(message.ack).toHaveBeenCalledOnce(); expect(message.retry).not.toHaveBeenCalled();
+    }
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(db.prepare(`SELECT status,attempts,last_error FROM pipeline_jobs WHERE job_key=?`).get(waiting.key)).toMatchObject({ status: 'queued', attempts: 0, last_error: expect.stringContaining('[GENERATION_DEFERRED] Groq') });
+    expect(db.prepare(`SELECT last_error FROM pipeline_jobs WHERE last_error LIKE '%UNKNOWN%'`).all()).toHaveLength(0);
+  });
+  it('successful response with exhausted RPD opens a durable daily cooldown without failing the enrichment', async () => {
+    const first = seedGenerationJob(3200), next = seedGenerationJob(3201);
+    const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true' });
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementationOnce(async (...args) => {
+      const response = await original(...args);
+      return new Response(await response.text(), { headers: { 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-reset-requests': '20h' } });
+    });
+    await processJob(env, first);
+    expect((await providerStatusFull(env)).generation).toMatchObject({ state: 'LIMITADO', pilot_success_today: 1, pilot_failed_today: 0 });
+    expect(await processJob(env, next)).toMatchObject({ deferred: true });
+    expect((globalThis as any).__http).toBe(1);
+    await Promise.all([openCircuit(env.MOOVIBE_LIBRARY, 'generation-groq', 60, 'minute'), openCircuit(env.MOOVIBE_LIBRARY, 'generation-groq', 120, 'token')]);
+    expect(Date.parse((await providerStatusFull(env)).generation.cooldown_until!) - Date.now()).toBeGreaterThan(19 * 3600 * 1000);
+  });
+  it('recovers old xAI credential errors explicitly in bounded batches; cron and dry-run do not recover them', async () => {
+    const jobs = [3300, 3301, 3302].map(seedGenerationJob);
+    db.exec(`UPDATE pipeline_jobs SET status='error',attempts=5,last_error='[INVALID_CREDENTIAL] xAI 400 Incorrect API key provided'`);
+    const { env, sent } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true', MOVIE_GENERATION_PILOT_LIMIT: '3' });
+    await schedule(env);
+    expect(db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE status='error'`).get()).toEqual({ n: 3 });
+    sent.splice(0);
+    const before = db.prepare(`SELECT * FROM pipeline_jobs ORDER BY job_key`).all();
+    expect(await recoverGenerationBacklog(env, 1, true)).toMatchObject({ eligible: 1, dry_run: true });
+    expect(db.prepare(`SELECT * FROM pipeline_jobs ORDER BY job_key`).all()).toEqual(before); expect(sent).toHaveLength(0);
+    expect(await recoverGenerationBacklog(env, 1, false)).toMatchObject({ requeued: 1 });
+    expect(sent).toHaveLength(1);
+    const recovered = jobs.find((j) => j.key === sent[0].key)!;
+    await processJob(env, recovered);
+    expect(db.prepare(`SELECT status FROM pipeline_jobs WHERE job_key=?`).get(recovered.key)).toEqual({ status: 'done' });
+    expect(db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE status='error'`).get()).toEqual({ n: 2 });
+    expect((globalThis as any).__http).toBe(1);
+    const enrichment: any = db.prepare(`SELECT model,provenance_json FROM movie_enrichments`).get();
+    expect(enrichment.model).toBe('openai/gpt-oss-120b'); expect(JSON.parse(enrichment.provenance_json).provider).toBe('groq');
+  });
+  it('GET /admin/providers reflects the checked-in pilot and does not claim authentication was validated', async () => {
+    const vars = JSON.parse(fs.readFileSync('workers/pipeline/wrangler.jsonc', 'utf8')).vars;
+    const { env } = makeEnv(db, { ...vars, ADMIN_TOKEN: 'admin', XAI_API_KEY: 'never-show-this' });
+    const response = await pipelineWorker.fetch(new Request('https://worker.test/admin/providers', { headers: { authorization: 'Bearer admin' } }), env);
+    const result: any = await response.json();
+    expect(result.generation).toMatchObject({ provider: 'groq', model: 'openai/gpt-oss-120b', enabled: true, pilot_limit: 3, pilot_used_today: 0, circuit: 'generation-groq', authentication: 'not_verified_by_status_endpoint' });
+    expect(result.embedding).toMatchObject({ provider: 'gemini', model: 'gemini-embedding-2', dimensions: 768 });
+    expect(JSON.stringify(result)).not.toContain('never-show-this');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
 describe('auditoria-a', () => {
   it.each(['invalid:envelope', 'invalid:content'])('%s termina sem UNKNOWN/retry e registra a tentativa', async (mode) => {
     db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status) VALUES(991,'Invalid',?,'complete')`).run('Verified overview. '.repeat(10));
@@ -78,7 +159,7 @@ describe('auditoria-a', () => {
     const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true' });
     expect(await processJob(env, job)).toEqual({ retry: false });
     expect(db.prepare(`SELECT status,last_error FROM pipeline_jobs WHERE job_key=?`).get(job.key)).toMatchObject({ status: 'error', last_error: expect.stringContaining('[INVALID_GENERATION_OUTPUT]') });
-    expect(JSON.parse((db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get() as any).value)).toMatchObject({ attempts: 1, failed: 1, success: 0 });
+    expect(JSON.parse((db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count:groq'`).get() as any).value)).toMatchObject({ attempts: 1, failed: 1, success: 0 });
     expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key LIKE 'enrichment-lock:%'`).get()).toEqual({ n: 0 });
     expect(db.prepare(`SELECT COUNT(*) n FROM movie_enrichments`).get()).toEqual({ n: 0 });
   });
@@ -151,7 +232,7 @@ describe('auditoria-a', () => {
   });
 });
 describe('auditoria-b', () => {
-  it('5/6. modo seguro: cron nao agenda, enrich nao chama xAI, nada se perde', async () => {
+  it('5/6. modo seguro: cron nao agenda, enrich nao chama Groq, nada se perde', async () => {
     db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status) VALUES(21,'S','complete','pending')`).run();
     db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:21:v2','ENRICH_MOVIE','{"tmdb_id":21}','queued')`);
     const { env, sent } = makeEnv(db);
@@ -164,7 +245,7 @@ describe('auditoria-b', () => {
     expect(row.last_error).toContain('disabled');
     const st: any = await providerStatus(env);
     expect(st.generation.enabled).toBe(false);
-    expect(st.generation.model).toBe('grok-4-3');
+    expect(st.generation.model).toBe('openai/gpt-oss-120b');
   });
   it('7. piloto global limita geracoes pre-enfileiradas', async () => {
     for (let i = 31; i <= 34; i++) {
@@ -191,7 +272,7 @@ describe('auditoria-b', () => {
     db.exec(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status) VALUES(51,'Q','complete','pending')`);
     db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:51:v2','ENRICH_MOVIE','{"tmdb_id":51}','queued')`);
     const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true' });
-    await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO system_state(key,value) VALUES('circuit:generation-xai',?)`).bind(JSON.stringify({ until: new Date(Date.now() + 3600e3).toISOString(), reason: 'RATE_LIMITED' })).run();
+    await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO system_state(key,value) VALUES('circuit:generation-groq',?)`).bind(JSON.stringify({ until: new Date(Date.now() + 3600e3).toISOString(), reason: 'RATE_LIMITED' })).run();
     const out: any = await processJob(env, { type: 'ENRICH_MOVIE', key: 'enrich:51:v2', payload: { tmdb_id: 51 } });
     expect(out.retry).toBe(true);
     expect(out.delaySeconds).toBeGreaterThanOrEqual(60);
@@ -243,7 +324,7 @@ describe('auditoria-c (defeitos restantes)', () => {
     await Promise.all(Array.from({ length: 50 }, (_, k) => processJob(env, { type: 'ENRICH_MOVIE', key: `enrich:${71 + k}:v2`, payload: { tmdb_id: 71 + k } })));
     const done = db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE type='ENRICH_MOVIE' AND status='done'`).get() as any;
     const queued = db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE type='ENRICH_MOVIE' AND status='queued'`).get() as any;
-    const counter = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get() as any;
+    const counter = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count:groq'`).get() as any;
     expect(done.n).toBe(25);
     expect(queued.n).toBe(25);
     expect(JSON.parse(counter.value).count).toBe(25);
@@ -253,21 +334,21 @@ describe('auditoria-c (defeitos restantes)', () => {
     db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status) VALUES(81,'A','complete','pending')`).run();
     db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:81:v2','ENRICH_MOVIE','{"tmdb_id":81}','queued')`).run();
     await processJob(makeEnv(db).env, { type: 'ENRICH_MOVIE', key: 'enrich:81:v2', payload: { tmdb_id: 81 } });
-    expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key='gen_pilot_count'`).get()).toEqual({ n: 0 });
+    expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key='gen_pilot_count:groq'`).get()).toEqual({ n: 0 });
     // b) circuito aberto: defere sem reservar piloto.
     db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status) VALUES(82,'B','complete','pending')`).run();
     db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:82:v2','ENRICH_MOVIE','{"tmdb_id":82}','queued')`).run();
     const b = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true' });
-    await b.env.MOOVIBE_LIBRARY.prepare(`INSERT INTO system_state(key,value) VALUES('circuit:generation-xai',?)`).bind(JSON.stringify({ until: new Date(Date.now() + 3600e3).toISOString(), reason: 'RATE_LIMITED' })).run();
+    await b.env.MOOVIBE_LIBRARY.prepare(`INSERT INTO system_state(key,value) VALUES('circuit:generation-groq',?)`).bind(JSON.stringify({ until: new Date(Date.now() + 3600e3).toISOString(), reason: 'RATE_LIMITED' })).run();
     await processJob(b.env, { type: 'ENRICH_MOVIE', key: 'enrich:82:v2', payload: { tmdb_id: 82 } });
-    expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key='gen_pilot_count'`).get()).toEqual({ n: 0 });
+    expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key='gen_pilot_count:groq'`).get()).toEqual({ n: 0 });
     // c) job ja pronto: enriquecimento completo nao reserva piloto.
     db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status) VALUES(83,'C','complete','complete')`).run();
     db.prepare(`INSERT INTO movie_enrichments(movie_id,model,schema_version) VALUES((SELECT id FROM movies WHERE tmdb_id=83),'grok-4-3','style-v2')`).run();
     db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:83:v2','ENRICH_MOVIE','{"tmdb_id":83}','queued')`).run();
     const c = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true' });
     await processJob(c.env, { type: 'ENRICH_MOVIE', key: 'enrich:83:v2', payload: { tmdb_id: 83 } });
-    expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key='gen_pilot_count'`).get()).toEqual({ n: 0 });
+    expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key='gen_pilot_count:groq'`).get()).toEqual({ n: 0 });
   });
   it('15. recover idempotente: rerun nao reenvia; done intocado; ENRICH 25 nao bloqueia INDEX', async () => {
     for (let i = 1; i <= 12; i++) {
@@ -421,27 +502,27 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
     await schedule(env);
     expect(sent.slice(before).filter((s: any) => s.key === 'index:901:v1')).toHaveLength(1);
   });
-  it('22. fluxo real enrich+XaiClient: 1 HTTP = 1 vaga; falha conta sem devolver', async () => {
+  it('22. fluxo real enrich+GroqClient: 1 HTTP = 1 vaga; falha conta sem devolver', async () => {
     db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(911,'P',?,'complete','pending')`).run(longOverview);
     db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:911:v2','ENRICH_MOVIE','{\"tmdb_id\":911}','queued')`).run();
     const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true', MOVIE_GENERATION_PILOT_LIMIT: '5' });
-    // 1a operacao: 429 seguido de timeout — 2 HTTP reais, 2 vagas, 0 sucesso.
-    (globalThis as any).__genFailPlan = ['fail:http', 'fail:timeout'];
+    // 1a operacao: 500 seguido de timeout — 2 HTTP reais, 2 vagas, 0 sucesso.
+    (globalThis as any).__genFailPlan = ['fail:transient', 'fail:timeout'];
     const m1: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:911:v2', payload: { tmdb_id: 911 } });
     await (pipelineWorker as any).queue({ messages: [m1] }, env);
     expect(m1.retry).toHaveBeenCalledTimes(1);
     expect((globalThis as any).__http).toBe(2);
-    const counter1: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get();
+    const counter1: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count:groq'`).get();
     expect(JSON.parse(counter1.value)).toMatchObject({ count: 2, attempts: 2, success: 0, failed: 2 });
     expect(db.prepare(`SELECT status,attempts FROM pipeline_jobs WHERE job_key='enrich:911:v2'`).get()).toMatchObject({ status: 'queued', attempts: 1 });
     // 2a operacao: sucesso em 1 HTTP — +1 vaga, +1 sucesso.
-    db.prepare(`DELETE FROM system_state WHERE key='circuit:generation-xai'`).run();
+    db.prepare(`DELETE FROM system_state WHERE key='circuit:generation-groq'`).run();
     db.prepare(`UPDATE pipeline_jobs SET available_at=CURRENT_TIMESTAMP WHERE job_key='enrich:911:v2'`).run();
     const m2: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:911:v2', payload: { tmdb_id: 911 } });
     await (pipelineWorker as any).queue({ messages: [m2] }, env);
     expect(m2.ack).toHaveBeenCalledTimes(1);
     expect((globalThis as any).__http).toBe(3);
-    const counter2: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get();
+    const counter2: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count:groq'`).get();
     expect(JSON.parse(counter2.value)).toMatchObject({ count: 3, attempts: 3, success: 1, failed: 2 });
     expect(db.prepare(`SELECT status FROM pipeline_jobs WHERE job_key='enrich:911:v2'`).get()).toEqual({ status: 'done' });
     const full: any = await providerStatusFull(env);
@@ -455,7 +536,7 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
     await (pipelineWorker as any).queue({ messages: [m] }, env);
     expect(m.ack).toHaveBeenCalledTimes(1);
     expect((globalThis as any).__http).toBe(0);
-    expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key='gen_pilot_count'`).get()).toEqual({ n: 0 });
+    expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key='gen_pilot_count:groq'`).get()).toEqual({ n: 0 });
     // Limite esgotado: nenhuma chamada apos atingir o teto.
     const { env: env2 } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true', MOVIE_GENERATION_PILOT_LIMIT: '2' });
     db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(913,'L',?,'complete','pending')`).run(longOverview);
@@ -487,7 +568,7 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
       .toEqual({ collection_status: 'complete', enrichment_status: 'complete', embedding_status: 'complete' });
     expect(db.prepare(`SELECT status FROM pipeline_jobs WHERE job_key='index:921:v1'`).get()).toEqual({ status: 'done' });
     expect((env.MOVIE_VECTORS.upsert.mock.calls[0][0][0].values as number[])).toHaveLength(768);
-    const counter: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get();
+    const counter: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count:groq'`).get();
     expect(JSON.parse(counter.value)).toMatchObject({ count: 1 });
     expect(sent.filter((s: any) => s.type === 'EMBED_MOVIE')).toHaveLength(0);
   });

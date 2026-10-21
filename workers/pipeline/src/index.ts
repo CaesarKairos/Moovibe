@@ -6,7 +6,7 @@ import { discoveryQueries, splitDateInterval } from './queries';
 import { BACKLOG_OVERSCAN, COLLECTION_BACKLOG_BUDGET, COLLECTION_BACKLOG_SQL, EMBEDDING_BACKLOG_BUDGET, EMBEDDING_BACKLOG_SQL, ENRICHMENT_BACKLOG_BUDGET, ENRICHMENT_BACKLOG_SQL, HISTORICAL_DISCOVERY_BUDGET, HISTORICAL_DISCOVERY_DUE_SQL, PIPELINE_BUDGET, RECENT_DISCOVERY_BUDGET, RECENT_DISCOVERY_DUE_SQL, STALE_JOBS_SQL, STALE_JOB_MINUTES, retryDelaySeconds, shouldRetry, stableDiscoveryKey } from './job-policy';
 import { classifyProviderError } from './provider-errors';
 import { closeCircuit, circuitState, openCircuit, validateEnrichment, ENRICHMENT_JSON_SCHEMA } from './generation-provider';
-import { createMovieGenerationProvider, isMovieGenerationEnabled, DEFAULT_XAI_MODEL } from './generation-factory';
+import { createMovieGenerationProvider, isMovieGenerationEnabled, DEFAULT_GROQ_MODEL, GENERATION_CIRCUIT } from './generation-factory';
 import { laneEnabled, queryDiscoveryLane, readPipelineControl, updatePipelineControl } from './pipeline-control';
 
 type JobType = 'DISCOVER_QUERY' | 'INDEX_MOVIE' | 'FETCH_MOVIE' | 'ENRICH_MOVIE' | 'EMBED_MOVIE' | 'REFRESH_MOVIE' | 'REEMBED_MOVIE';
@@ -26,6 +26,7 @@ interface Env {
   MOVIE_GENERATION_MODEL?: string;
   MOVIE_GENERATION_ENABLED?: string;
   MOVIE_GENERATION_PILOT_LIMIT?: string;
+  // Legacy secret name, now interpreted exclusively as a GroqCloud key.
   XAI_API_KEY?: string;
 }
 const TMDB = 'https://api.themoviedb.org/3';
@@ -201,10 +202,9 @@ const KNOWN_FAILURE_RULES: {
 ];
 
 // Safe mode: MOVIE_GENERATION_ENABLED=false (default) blocks ALL new paid
-// xAI generations — cron, queue consumers and INDEX_MOVIE — without losing
+// Groq generations — cron, queue consumers and INDEX_MOVIE — without losing
 // messages or marking jobs as errors. Jobs wait with a long cooldown.
-// Pilot cap: MOVIE_GENERATION_PILOT_LIMIT bounds total generations per cron
-// sweep (global, incl. concurrent pre-queued messages via a counter row).
+// Pilot cap bounds daily HTTP attempts globally, including concurrent jobs.
 async function pilotCountToday(db: D1Database): Promise<number> {
   return (await pilotStatsToday(db)).count;
 }
@@ -216,7 +216,7 @@ async function pilotCountToday(db: D1Database): Promise<number> {
 async function pilotStatsToday(db: D1Database): Promise<{ count: number; attempts: number; success: number; failed: number }> {
   const zero = { count: 0, attempts: 0, success: 0, failed: 0 };
   try {
-    const row = await db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).bind().first<{ value: string }>().catch(() => null);
+    const row = await db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count:groq'`).bind().first<{ value: string }>().catch(() => null);
     if (!row?.value) return zero;
     const v = JSON.parse(row.value);
     if (v.day !== new Date().toISOString().slice(0, 10)) return zero;
@@ -226,7 +226,7 @@ async function pilotStatsToday(db: D1Database): Promise<{ count: number; attempt
 async function pilotTally(db: D1Database, field: 'success' | 'failed'): Promise<void> {
   const day = new Date().toISOString().slice(0, 10);
   try {
-    await db.prepare(`UPDATE system_state SET value=json_set(value,'$."${field}"',CAST(COALESCE(json_extract(value,'$."${field}"'),0) AS INTEGER)+1),updated_at=CURRENT_TIMESTAMP WHERE key='gen_pilot_count' AND COALESCE(json_extract(value,'$.day'),'')=?`)
+    await db.prepare(`UPDATE system_state SET value=json_set(value,'$."${field}"',CAST(COALESCE(json_extract(value,'$."${field}"'),0) AS INTEGER)+1),updated_at=CURRENT_TIMESTAMP WHERE key='gen_pilot_count:groq' AND COALESCE(json_extract(value,'$.day'),'')=?`)
       .bind(day).run();
   } catch { /* best-effort */ }
 }
@@ -241,12 +241,12 @@ async function pilotTally(db: D1Database, field: 'success' | 'failed'): Promise<
 // Virada de dia UTC: dia<>hoje reinicia em 1 automaticamente.
 async function pilotConsume(db: D1Database, limit: number): Promise<boolean> {
   const day = new Date().toISOString().slice(0, 10);
-  const cap = Math.max(1, Math.min(10000, Number(limit) || 25));
+  const cap = Math.max(1, Math.min(10000, Number(limit) || 3));
   try {
-    await db.prepare(`INSERT INTO system_state(key,value,updated_at) VALUES('gen_pilot_count',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO NOTHING`)
+    await db.prepare(`INSERT INTO system_state(key,value,updated_at) VALUES('gen_pilot_count:groq',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO NOTHING`)
       .bind(JSON.stringify({ day: '', count: 0, attempts: 0, success: 0, failed: 0 })).run();
     const r = await db.prepare(
-      `UPDATE system_state SET value=CASE WHEN COALESCE(json_extract(value,'$.day'),'')<>? THEN ? ELSE json_set(json_set(value,'$.count',CAST(COALESCE(json_extract(value,'$.count'),0) AS INTEGER)+1),'$.attempts',CAST(COALESCE(json_extract(value,'$.attempts'),0) AS INTEGER)+1) END, updated_at=CURRENT_TIMESTAMP WHERE key='gen_pilot_count' AND (COALESCE(json_extract(value,'$.day'),'')<>? OR CAST(COALESCE(json_extract(value,'$.count'),0) AS INTEGER)<?)`
+      `UPDATE system_state SET value=CASE WHEN COALESCE(json_extract(value,'$.day'),'')<>? THEN ? ELSE json_set(json_set(value,'$.count',CAST(COALESCE(json_extract(value,'$.count'),0) AS INTEGER)+1),'$.attempts',CAST(COALESCE(json_extract(value,'$.attempts'),0) AS INTEGER)+1) END, updated_at=CURRENT_TIMESTAMP WHERE key='gen_pilot_count:groq' AND (COALESCE(json_extract(value,'$.day'),'')<>? OR CAST(COALESCE(json_extract(value,'$.count'),0) AS INTEGER)<?)`
     ).bind(day, JSON.stringify({ day, count: 1, attempts: 1, success: 0, failed: 0 }), day, cap).run();
     return Boolean(r.meta.changes);
   } catch { return false; }
@@ -257,7 +257,7 @@ async function pilotConsume(db: D1Database, limit: number): Promise<boolean> {
 // idempotent, never touches done jobs. INDEX_MOVIE recovers to the minimal
 // stage: enrich (no enrichment), embed (enriched, no vector), or index
 // (no collection) — never redoes finished steps.
-const GEN_ERROR_LIKE = `(j.last_error LIKE '%Gemini%' OR j.last_error LIKE '%RATE_LIMITED%' OR j.last_error LIKE '%QUOTA%' OR j.last_error LIKE '%Illegal invocation%' OR j.last_error LIKE '%Empty response%' OR j.last_error LIKE '%xAI%' OR j.last_error LIKE '%INVALID_GENERATION_OUTPUT%')`;
+const GEN_ERROR_LIKE = `(j.last_error LIKE '%Gemini%' OR j.last_error LIKE '%RATE_LIMITED%' OR j.last_error LIKE '%QUOTA%' OR j.last_error LIKE '%Illegal invocation%' OR j.last_error LIKE '%Empty response%' OR j.last_error LIKE '%xAI%' OR j.last_error LIKE '%Groq%' OR j.last_error LIKE '%INVALID_CREDENTIAL%' OR j.last_error LIKE '%GENERATION_DEFERRED%' OR j.last_error LIKE '%INVALID_GENERATION_OUTPUT%')`;
 export async function recoverGenerationBacklog(env: Env, limit = 25, dryRun = false) {
   const cap = Math.max(1, Math.min(100, Number(limit) || 25));
   const enrichRows = await env.MOOVIBE_LIBRARY.prepare(
@@ -336,12 +336,12 @@ export async function providerStatus(env: Env) {
 }
 export async function providerStatusFull(env: Env) {
   const [gen, emb, stats] = await Promise.all([
-    circuitState(env.MOOVIBE_LIBRARY, 'generation-xai'),
+    circuitState(env.MOOVIBE_LIBRARY, GENERATION_CIRCUIT),
     circuitState(env.MOOVIBE_LIBRARY, 'embedding-gemini'),
     pilotStatsToday(env.MOOVIBE_LIBRARY)
   ]);
   return {
-    generation: { provider: String((env as any).MOVIE_GENERATION_PROVIDER || 'xai'), model: String((env as any).MOVIE_GENERATION_MODEL || DEFAULT_XAI_MODEL), enabled: isMovieGenerationEnabled(env as any), pilot_limit: Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 25), pilot_used_today: stats.count, pilot_attempts_today: stats.attempts, pilot_success_today: stats.success, pilot_failed_today: stats.failed, state: (gen as any).open ? 'LIMITADO' : 'OPERACIONAL', cooldown_until: (gen as any).until || null },
+    generation: { provider: String((env as any).MOVIE_GENERATION_PROVIDER || 'groq'), model: String((env as any).MOVIE_GENERATION_MODEL || DEFAULT_GROQ_MODEL), enabled: isMovieGenerationEnabled(env as any), pilot_limit: Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 3), pilot_used_today: stats.count, pilot_attempts_today: stats.attempts, pilot_success_today: stats.success, pilot_failed_today: stats.failed, state: gen.open ? 'LIMITADO' : 'OPERACIONAL', authentication: 'not_verified_by_status_endpoint', circuit: GENERATION_CIRCUIT, circuit_unknown: gen.unknown, cooldown_until: gen.until || null },
     embedding: { provider: 'gemini', model: String((env as any).EMBEDDING_MODEL || 'gemini-embedding-2'), dimensions: Number((env as any).EMBEDDING_DIMENSIONS || 768), state: (emb as any).open ? 'LIMITADO' : 'OPERACIONAL', cooldown_until: (emb as any).until || null }
   };
 }
@@ -413,7 +413,8 @@ async function schedule(env: Env) {
   // not scheduled at all (zero new paid work). Overscan defeats head-of-line
   // blocking by terminal error jobs.
   const generationEnabled = isMovieGenerationEnabled(env as any);
-  const genCircuit = await circuitState(env.MOOVIBE_LIBRARY, 'generation-xai');
+  const genCircuit = await circuitState(env.MOOVIBE_LIBRARY, GENERATION_CIRCUIT);
+  let generationRemaining = Math.max(0, Number(env.MOVIE_GENERATION_PILOT_LIMIT || 3) - await pilotCountToday(env.MOOVIBE_LIBRARY));
   const embCircuit = await circuitState(env.MOOVIBE_LIBRARY, 'embedding-gemini');
   const over = BACKLOG_OVERSCAN;
   const [collection, enrichment, embedding] = await Promise.all([
@@ -421,7 +422,7 @@ async function schedule(env: Env) {
     !generationEnabled || (genCircuit as any).open ? Promise.resolve({ results: [] as any[] }) : env.MOOVIBE_LIBRARY.prepare(ENRICHMENT_BACKLOG_SQL).bind(ENRICHMENT_BACKLOG_BUDGET * over).all<any>(),
     (embCircuit as any).open ? Promise.resolve({ results: [] as any[] }) : env.MOOVIBE_LIBRARY.prepare(EMBEDDING_BACKLOG_SQL).bind(EMBEDDING_BACKLOG_BUDGET * over).all<any>()
   ]);
-  // Safe mode/curto-circuito xAI: INDEX_MOVIE so agenda quando nao exige
+  // Safe mode/curto-circuito Groq: INDEX_MOVIE so agenda quando nao exige
   // geracao paga. 'discovered' sem enriquecimento aguarda fora da fila (sem
   // mensagens, sem churn de adiamento) e volta a ser elegivel no proximo cron
   // apos reativacao; ja enriquecidos seguem normalmente (embed gratuito).
@@ -438,6 +439,9 @@ async function schedule(env: Env) {
   };
   let pipelineQueued = 0;
   for (const movie of pending.results) {
+    const needsGeneration = movie.enrichment_status !== 'complete';
+    if (needsGeneration && generationRemaining <= 0) continue;
+    const before = pipelineQueued;
     if (movie.collection_status === 'discovered')
       pipelineQueued += Number(
         await enqueue(env, {
@@ -462,6 +466,7 @@ async function schedule(env: Env) {
           payload: { tmdb_id: movie.tmdb_id }
         })
       );
+    if (needsGeneration && pipelineQueued > before) generationRemaining--;
   }
   const control = await readPipelineControl(env.MOOVIBE_LIBRARY);
   const [recentDue, historicalDue] = await Promise.all([control.recent_enabled ? env.MOOVIBE_LIBRARY.prepare(RECENT_DISCOVERY_DUE_SQL).bind(RECENT_DISCOVERY_BUDGET).all<{ query_id: string }>() : Promise.resolve({ results: [] as { query_id: string }[] }), control.historical_enabled ? env.MOOVIBE_LIBRARY.prepare(HISTORICAL_DISCOVERY_DUE_SQL).bind(HISTORICAL_DISCOVERY_BUDGET).all<{ query_id: string }>() : Promise.resolve({ results: [] as { query_id: string }[] })]);
@@ -819,46 +824,33 @@ async function enrichOwned(env: Env, job: Job, lockKey: string, lockToken: strin
     (err as any).deferred = true;
     throw err;
   }
-  const providerName = String(env.MOVIE_GENERATION_PROVIDER || 'xai').toLowerCase();
-  const circuitKey = providerName === 'gemini' ? 'generation-gemini' : 'generation-xai';
-  if (providerName === 'xai' && !env.XAI_API_KEY) throw new Error('XAI_API_KEY is required');
-  if (providerName === 'gemini' && !env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is required');
-  // Circuit breaker: an open xAI circuit defers the job without burning quota.
-  const circuit = await circuitState(env.MOOVIBE_LIBRARY, circuitKey);
-  if (circuit.open) {
-    const err: any = new Error(`${providerName} circuit open until ${circuit.until}`);
-    err.retryAfter = 600;
-    throw err;
-  }
-  const provider = createMovieGenerationProvider(env as any);
-  const pilotLimit = Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 25);
-  // Gate xAI em UMA camada, por tentativa HTTP dentro do cliente: o XaiClient
-  // consome 1 vaga atomica ANTES de cada HTTP (incluindo seu retry interno)
-  // via tryConsumeAttempt e reporta cada desfecho via setAttemptReporter —
-  // 1 HTTP = 1 vaga, 2 HTTP = 2 vagas. O pre-gate redundante aqui foi removido
-  // (causava 2 vagas por 1 HTTP). Para provider gemini (rollback), o pre-gate
-  // abaixo continua valendo: 1 chamada = 1 vaga. Preparacao local (wiki,
-  // contexto) nunca consome orcamento.
-  const isXai = providerName === 'xai' && typeof (provider as any).setAttemptBudget === 'function';
-  if (isXai) {
-    (provider as any).setAttemptBudget(() => pilotConsume(env.MOOVIBE_LIBRARY, pilotLimit));
-    (provider as any).setAttemptReporter((outcome: 'success' | 'failed') => pilotTally(env.MOOVIBE_LIBRARY, outcome));
-  }
+  const circuitKey = GENERATION_CIRCUIT;
+  const assertCircuitAvailable = async () => {
+    const circuit = await circuitState(env.MOOVIBE_LIBRARY, circuitKey);
+    if (circuit.open) {
+      const err: any = new Error(`Groq generation circuit open until ${circuit.until || 'state available'}`);
+      err.retryAfter = circuit.until ? Math.max(60, Math.ceil((Date.parse(circuit.until) - Date.now()) / 1000)) : 600;
+      err.deferred = true;
+      throw err;
+    }
+  };
+  await assertCircuitAvailable();
+  const provider = createMovieGenerationProvider(env);
+  const pilotLimit = Number(env.MOVIE_GENERATION_PILOT_LIMIT || 3);
+  // One atomic slot per real HTTP, including the bounded internal retry.
+  provider.setAttemptBudget(async () => {
+    await assertCircuitAvailable();
+    return pilotConsume(env.MOOVIBE_LIBRARY, pilotLimit);
+  });
+  provider.setAttemptReporter((outcome) => pilotTally(env.MOOVIBE_LIBRARY, outcome));
+  provider.setCooldownReporter(async (seconds, reason) => {
+    await openCircuit(env.MOOVIBE_LIBRARY, circuitKey, seconds, reason);
+  });
   const sparse = String(movie.overview || '').trim().length < 80;
   const wiki = sparse ? await wikipediaFallback(movie.title, movie.release_year) : null;
   const context = `Title: ${movie.title}\nYear: ${movie.release_year}\nDirector: ${movie.director || 'unknown'}\nCountries: ${movie.countries}\nGenres: ${movie.genres}\nKeywords: ${movie.keywords}\nOverview: ${movie.overview || ''}\nTagline: ${movie.tagline || ''}${wiki ? `\nVerified Wikipedia fallback: ${wiki.text}` : ''}`;
   const system = 'Analyze cinematic aesthetics from supplied facts. Never create factual claims. Return concise English concepts and all numeric dimensions from 0 to 1.',
     started = Date.now();
-  // Rollback gemini: sem gate por tentativa no cliente, o pre-gate atomico
-  // abaixo admite a chamada inteira (sem retry interno: maxAttempts=1).
-  if (!isXai) {
-    if (!(await pilotConsume(env.MOOVIBE_LIBRARY, pilotLimit))) {
-      const err: any = new Error(`pilot limit reached (${pilotLimit}/day); deferred`);
-      err.retryAfter = GENERATION_DEFER_SECONDS;
-      (err as any).deferred = true;
-      throw err;
-    }
-  }
   let result;
   try {
     result = await provider.generateJson({
@@ -868,10 +860,8 @@ async function enrichOwned(env: Env, job: Job, lockKey: string, lockToken: strin
     });
     const v = validateEnrichment(result.data);
     if (!v.ok) throw new Error(`INVALID_GENERATION_OUTPUT ${v.error}`);
-    // Métricas xAI vêm do cliente por tentativa (setAttemptReporter); aqui só
-    // o caminho gemini registra o desfecho da chamada única.
-    if (!isXai) await pilotTally(env.MOOVIBE_LIBRARY, 'success');
-    await closeCircuit(env.MOOVIBE_LIBRARY, circuitKey);
+    // A concurrent 429 may have opened the circuit after our admission.
+    // Never clear that cooldown on success; expired circuits already allow work.
     await audit(env, {
       request_id: traceId,
       timestamp: new Date().toISOString(),
@@ -886,10 +876,9 @@ async function enrichOwned(env: Env, job: Job, lockKey: string, lockToken: strin
       status: 'complete'
     });
   } catch (error: any) {
-    // Sem devolucao: a tentativa admitida conta no teto mesmo falhando.
-    // xAI: desfechos ja registrados por tentativa no cliente (setAttemptReporter),
-    // entao nada a somar aqui. Gemini (sem gate por tentativa): 1 chamada = 1 falha.
-    if (!isXai) await pilotTally(env.MOOVIBE_LIBRARY, 'failed');
+    // Pre-network circuit/pilot deferrals are not provider failures.
+    if (error?.deferred && error?.status !== 429) throw error;
+    // Attempt outcomes are recorded once by GroqClient; never refund HTTPs.
     await audit(env, {
       request_id: traceId,
       timestamp: new Date().toISOString(),
@@ -908,7 +897,7 @@ async function enrichOwned(env: Env, job: Job, lockKey: string, lockToken: strin
     if (classified.code === 'QUOTA_EXHAUSTED' || classified.code === 'RATE_LIMITED') {
       await openCircuit(env.MOOVIBE_LIBRARY, circuitKey, classified.retryAfterSeconds || 600, classified.message.slice(0, 200));
     }
-    if (classified.code === 'INVALID_CREDENTIAL' || classified.code === 'INSUFFICIENT_CREDITS') {
+    if (classified.code === 'INVALID_CREDENTIAL' || classified.code === 'INSUFFICIENT_CREDITS' || classified.code === 'INVALID_REQUEST') {
       await openCircuit(env.MOOVIBE_LIBRARY, circuitKey, 43200, classified.message.slice(0, 200));
     }
     throw error;
@@ -970,7 +959,7 @@ async function embed(env: Env, job: Job) {
     log('movie_embed_skipped', { tmdb_id: id, reason: 'already_embedded' });
     return;
   }
-  // Separate Gemini-embedding circuit: enrichment (xAI) keeps flowing.
+  // Separate Gemini-embedding circuit: enrichment (Groq) keeps flowing.
   const embCircuit = await circuitState(env.MOOVIBE_LIBRARY, 'embedding-gemini');
   if (embCircuit.open) { const e: any = new Error(`gemini embedding circuit open until ${embCircuit.until}`); e.retryAfter = 600; throw e; }
   let values: number[];
@@ -1094,7 +1083,7 @@ async function processJob(env: Env, job: Job): Promise<JobOutcome> {
     const classified = classifyProviderError(error);
     const message = `[${classified.code}] ` + String(error?.message || error).slice(0, 900);
     // Terminal provider states never retry at job level: they wait for admin/circuit.
-    const terminal = classified.code === 'INVALID_CREDENTIAL' || classified.code === 'INSUFFICIENT_CREDITS' || classified.code === 'INVALID_GENERATION_OUTPUT';
+    const terminal = classified.code === 'INVALID_CREDENTIAL' || classified.code === 'INSUFFICIENT_CREDITS' || classified.code === 'INVALID_GENERATION_OUTPUT' || classified.code === 'INVALID_REQUEST';
     const retry = !terminal && shouldRetry(attempt) && (classified.retryable || classified.code === 'UNKNOWN');
     const requestedDelay = retryDelaySeconds(attempt, (error instanceof RetryableError ? error.retryAfter : 0) || classified.retryAfterSeconds || 0);
     const delay = classified.code === 'QUOTA_EXHAUSTED' ? Math.max(requestedDelay, 3600) : requestedDelay;
@@ -1103,6 +1092,7 @@ async function processJob(env: Env, job: Job): Promise<JobOutcome> {
       .run();
     if (job.type === 'DISCOVER_QUERY') await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET status='pending',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE query_id=? AND is_executable=1`).bind(message, String(job.payload.query_id)).run();
     log(retry ? 'job_retry' : 'job_error', {
+      provider: error?.provider || (job.type === 'ENRICH_MOVIE' ? 'groq' : undefined),
       job_key: job.key,
       type: job.type,
       attempt,

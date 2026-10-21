@@ -47,7 +47,15 @@ export async function circuitState(db: D1Database, key: string): Promise<Circuit
   } catch { return { open: true, until: null, reason: 'circuit state unreadable (D1); fail-closed', unknown: true }; }
 }
 export async function openCircuit(db: D1Database, key: string, delaySeconds: number, reason: string) {
-  const until = new Date(Date.now() + Math.max(60, Math.min(43200, delaySeconds)) * 1000).toISOString();
+  const until = new Date(Date.now() + Math.max(60, Math.min(key === 'generation-groq' ? 86400 : 43200, delaySeconds)) * 1000).toISOString();
+  if (key === 'generation-groq') {
+    // Concurrent token/minute failures must never shorten a daily cooldown.
+    await db.prepare(`INSERT INTO system_state(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP
+      WHERE CASE WHEN json_valid(system_state.value) THEN COALESCE(json_extract(system_state.value,'$.until'),'')<json_extract(excluded.value,'$.until') ELSE 1 END`)
+      .bind('circuit:' + key, JSON.stringify({ until, reason })).run();
+    return;
+  }
   try {
     const cur = await db.prepare(`SELECT value FROM system_state WHERE key=?`).bind('circuit:' + key).first<{ value: string }>();
     if (cur?.value) {

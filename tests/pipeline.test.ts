@@ -2,17 +2,13 @@ import {beforeEach,describe,expect,it,vi} from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 
-vi.mock('../workers/pipeline/src/generation-factory', () => ({
-  DEFAULT_XAI_MODEL: 'grok-4-3',
-  isMovieGenerationEnabled: (env: any) => String(env?.MOVIE_GENERATION_ENABLED || 'false').toLowerCase() === 'true',
-  createMovieGenerationProvider: () => ({
-    name: 'xai',
-    generateJson: async () => ({
-      provider: 'xai', model: 'grok-test',
-      data: { moods: ['calm'], themes: ['memory'], atmosphere: ['warm'], pace: 'medium', visual_style: ['natural'], emotional_valence: .5, energy: .5, intimacy: .5, surrealism: .1, darkness: .1, humor: .2, romanticism: .2, narrative_density: .5, melancholy_level: .2, tension_level: .2, confidence: .9 }
-    })
-  })
-}));
+vi.mock('../workers/pipeline/src/generation-factory', async (importOriginal) => {
+  const factory: any = await importOriginal();
+  const { GroqClient } = await import('../workers/pipeline/src/groq-client');
+  return { ...factory, createMovieGenerationProvider: () => new GroqClient('test', 'openai/gpt-oss-120b', async () => new Response(JSON.stringify({
+    choices: [{ message: { content: JSON.stringify({ moods: ['calm'], themes: ['memory'], atmosphere: ['warm'], pace: 'medium', visual_style: ['natural'], emotional_valence: .5, energy: .5, intimacy: .5, surrealism: .1, darkness: .1, humor: .2, romanticism: .2, narrative_density: .5, melancholy_level: .2, tension_level: .2, confidence: .9 }) } }]
+  }))) };
+});
 vi.mock('../functions/_lib/gemini.js',()=>({
   RetryableError:class RetryableError extends Error {retryAfter:number;constructor(message:string,retryAfter=0){super(message);this.retryAfter=retryAfter;}},
   GeminiClient:class {async generateJson(){return {model:'test-model',data:{moods:['calm'],themes:['memory'],atmosphere:['warm'],pace:'medium',visual_style:['natural'],emotional_valence:.5,energy:.5,intimacy:.5,surrealism:.1,darkness:.1,humor:.2,romanticism:.2,narrative_density:.5,melancholy_level:.2,tension_level:.2,confidence:.9}};} async embed(){return Array(768).fill(0.01);}}
@@ -33,7 +29,7 @@ class Statement {
 }
 const makeEnv=(db:Database.Database)=>{
   const sent:any[]=[];
-  const env:any={MOOVIBE_LIBRARY:{prepare:(sql:string)=>new Statement(db,sql),batch:async(xs:Statement[])=>Promise.all(xs.map(x=>x.run()))},PIPELINE_QUEUE:{send:async(j:any)=>{sent.push(j);}},MOVIE_VECTORS:{upsert:vi.fn()},GEMINI_API_KEY:'x',XAI_API_KEY:'x',TMDB_API_KEY:'x',EMBEDDING_MODEL:'gemini-embedding-2',EMBEDDING_DIMENSIONS:'768',EMBEDDING_SCHEMA_VERSION:'movie-v1',MOVIE_GENERATION_PROVIDER:'xai',MOVIE_GENERATION_MODEL:'grok-4-3',MOVIE_GENERATION_ENABLED:'true',MOVIE_GENERATION_PILOT_LIMIT:'10000'};
+  const env:any={MOOVIBE_LIBRARY:{prepare:(sql:string)=>new Statement(db,sql),batch:async(xs:Statement[])=>Promise.all(xs.map(x=>x.run()))},PIPELINE_QUEUE:{send:async(j:any)=>{sent.push(j);}},MOVIE_VECTORS:{upsert:vi.fn()},GEMINI_API_KEY:'x',XAI_API_KEY:'x',TMDB_API_KEY:'x',EMBEDDING_MODEL:'gemini-embedding-2',EMBEDDING_DIMENSIONS:'768',EMBEDDING_SCHEMA_VERSION:'movie-v1',MOVIE_GENERATION_PROVIDER:'groq',MOVIE_GENERATION_MODEL:'openai/gpt-oss-120b',MOVIE_GENERATION_ENABLED:'true',MOVIE_GENERATION_PILOT_LIMIT:'10000'};
   return {env,sent};
 };
 const trackRowWrites=(env:any,table?:string)=>{

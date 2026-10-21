@@ -10,10 +10,10 @@
     "EMBEDDING_DIMENSIONS": "768",
     "EMBEDDING_SCHEMA_VERSION": "movie-v1",
     "GEMINI_PROJECT_LABEL": "Moovibe Pipeline",
-    "MOVIE_GENERATION_PROVIDER": "xai",
-    "MOVIE_GENERATION_MODEL": "grok-4.3",
-    "MOVIE_GENERATION_ENABLED": "false",
-    "MOVIE_GENERATION_PILOT_LIMIT": "25"
+    "MOVIE_GENERATION_PROVIDER": "groq",
+    "MOVIE_GENERATION_MODEL": "openai/gpt-oss-120b",
+    "MOVIE_GENERATION_ENABLED": "true",
+    "MOVIE_GENERATION_PILOT_LIMIT": "3"
   },
   "d1_databases": [{
     "binding": "MOOVIBE_LIBRARY",

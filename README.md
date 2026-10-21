@@ -68,10 +68,12 @@ TMDb → discovery contínuo → fetch → enrichment → embedding → Vectoriz
 
 - **Discovery** percorre recortes por país, gênero, década e lançamentos recentes.
 - **Fetch** coleta fatos e relações cinematográficas no TMDb.
-- **Enrichment** descreve a linguagem emocional e estética do filme em dados estruturados.
-- **Embedding** cria sua representação semântica de 768 dimensões.
+- **Enrichment** usa GroqCloud (`openai/gpt-oss-120b`) para descrever a linguagem emocional e estética do filme em dados estruturados.
+- **Embedding** usa `gemini-embedding-2` para criar sua representação semântica de 768 dimensões.
 
 Quando esse fluxo termina, o filme passa a competir automaticamente nas próximas recomendações. D1 guarda o catálogo normalizado e os checkpoints; Vectorize mantém o índice semântico; a Queue permite retries e recuperação sem transformar a coleta em uma execução monolítica.
+
+O Worker preserva o secret `XAI_API_KEY` como nome legado da credencial **GroqCloud**. O piloto configurado permite três tentativas HTTP por dia UTC, incluindo retries e falhas. Instruções de publicação, observabilidade e recuperação explícita estão em [Migração GroqCloud](docs/GROQ-MIGRATION.md).
 
 ## ✨ Funcionalidades
 
