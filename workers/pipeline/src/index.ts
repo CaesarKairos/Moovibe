@@ -1,3 +1,5 @@
+import { moviePrompt, MOVIE_SYSTEM } from './movie-prompt';
+import { reserveCapacity, recordCapacity, capacityStatus, plannedCapacity } from './groq-capacity';
 import { GeminiClient, RetryableError } from '../../../functions/_lib/gemini.js';
 import { buildMovieDocument, EMBEDDING_SCHEMA_VERSION } from '../../../functions/_lib/recommender.js';
 import { writeAudit } from '../../../functions/_lib/audit.js';
@@ -71,11 +73,11 @@ async function tmdb(env: Env, path: string, params: Record<string, unknown> = {}
   return response.json<any>();
 }
 
-async function enqueue(env: Env, job: Job) {
+async function enqueue(env: Env, job: Job, delaySeconds = 0) {
   // Never reset attempts on error->queued: the job keeps its retry budget so a
   // persistent cause cannot loop forever. Explicit recovery resets attempts.
-  const result = await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,available_at) VALUES(?,?,?,'queued',CURRENT_TIMESTAMP) ON CONFLICT(job_key) DO UPDATE SET type=excluded.type,payload_json=excluded.payload_json,status='queued',last_error=NULL,available_at=CURRENT_TIMESTAMP,started_at=NULL,completed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE pipeline_jobs.status='paused' OR (pipeline_jobs.status='done' AND (pipeline_jobs.available_at IS NULL OR pipeline_jobs.available_at<=CURRENT_TIMESTAMP))`).bind(job.key, job.type, JSON.stringify(job.payload)).run();
-  if (result.meta.changes) await env.PIPELINE_QUEUE.send(job);
+  const result = await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,available_at) VALUES(?,?,?,'queued',datetime('now',?)) ON CONFLICT(job_key) DO UPDATE SET type=excluded.type,payload_json=excluded.payload_json,status='queued',last_error=NULL,available_at=excluded.available_at,started_at=NULL,completed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE pipeline_jobs.status='paused' OR (pipeline_jobs.status='done' AND (pipeline_jobs.available_at IS NULL OR pipeline_jobs.available_at<=CURRENT_TIMESTAMP))`).bind(job.key, job.type, JSON.stringify(job.payload), `+${delaySeconds} seconds`).run();
+  if (result.meta.changes) await env.PIPELINE_QUEUE.send(job, { delaySeconds });
   return Boolean(result.meta.changes);
 }
 
@@ -335,13 +337,14 @@ export async function providerStatus(env: Env) {
   return providerStatusFull(env);
 }
 export async function providerStatusFull(env: Env) {
-  const [gen, emb, stats] = await Promise.all([
+  const [gen, emb, stats, capacity] = await Promise.all([
     circuitState(env.MOOVIBE_LIBRARY, GENERATION_CIRCUIT),
     circuitState(env.MOOVIBE_LIBRARY, 'embedding-gemini'),
-    pilotStatsToday(env.MOOVIBE_LIBRARY)
+    pilotStatsToday(env.MOOVIBE_LIBRARY),
+    capacityStatus(env.MOOVIBE_LIBRARY, env as any).catch(() => ({ unavailable: true }))
   ]);
   return {
-    generation: { provider: String((env as any).MOVIE_GENERATION_PROVIDER || 'groq'), model: String((env as any).MOVIE_GENERATION_MODEL || DEFAULT_GROQ_MODEL), enabled: isMovieGenerationEnabled(env as any), pilot_limit: Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 3), pilot_used_today: stats.count, pilot_attempts_today: stats.attempts, pilot_success_today: stats.success, pilot_failed_today: stats.failed, state: gen.open ? 'LIMITADO' : 'OPERACIONAL', authentication: 'not_verified_by_status_endpoint', circuit: GENERATION_CIRCUIT, circuit_unknown: gen.unknown, cooldown_until: gen.until || null },
+    generation: { capacity, provider: String((env as any).MOVIE_GENERATION_PROVIDER || 'groq'), model: String((env as any).MOVIE_GENERATION_MODEL || DEFAULT_GROQ_MODEL), enabled: isMovieGenerationEnabled(env as any), pilot_limit: Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 3), pilot_used_today: stats.count, pilot_attempts_today: stats.attempts, pilot_success_today: stats.success, pilot_failed_today: stats.failed, state: gen.open ? 'LIMITADO' : 'OPERACIONAL', authentication: 'not_verified_by_status_endpoint', circuit: GENERATION_CIRCUIT, circuit_unknown: gen.unknown, cooldown_until: gen.until || null, cooldown_reason: gen.reason },
     embedding: { provider: 'gemini', model: String((env as any).EMBEDDING_MODEL || 'gemini-embedding-2'), dimensions: Number((env as any).EMBEDDING_DIMENSIONS || 768), state: (emb as any).open ? 'LIMITADO' : 'OPERACIONAL', cooldown_until: (emb as any).until || null }
   };
 }
@@ -415,11 +418,12 @@ async function schedule(env: Env) {
   const generationEnabled = isMovieGenerationEnabled(env as any);
   const genCircuit = await circuitState(env.MOOVIBE_LIBRARY, GENERATION_CIRCUIT);
   let generationRemaining = Math.max(0, Number(env.MOVIE_GENERATION_PILOT_LIMIT || 3) - await pilotCountToday(env.MOOVIBE_LIBRARY));
+  generationRemaining = Math.min(generationRemaining, await plannedCapacity(env.MOOVIBE_LIBRARY, env as any).catch(() => 0));
   const embCircuit = await circuitState(env.MOOVIBE_LIBRARY, 'embedding-gemini');
   const over = BACKLOG_OVERSCAN;
   const [collection, enrichment, embedding] = await Promise.all([
     env.MOOVIBE_LIBRARY.prepare(COLLECTION_BACKLOG_SQL).bind(COLLECTION_BACKLOG_BUDGET * over).all<any>(),
-    !generationEnabled || (genCircuit as any).open ? Promise.resolve({ results: [] as any[] }) : env.MOOVIBE_LIBRARY.prepare(ENRICHMENT_BACKLOG_SQL).bind(ENRICHMENT_BACKLOG_BUDGET * over).all<any>(),
+    !generationEnabled || generationRemaining <= 0 || (genCircuit as any).open ? Promise.resolve({ results: [] as any[] }) : env.MOOVIBE_LIBRARY.prepare(ENRICHMENT_BACKLOG_SQL).bind(ENRICHMENT_BACKLOG_BUDGET * over).all<any>(),
     (embCircuit as any).open ? Promise.resolve({ results: [] as any[] }) : env.MOOVIBE_LIBRARY.prepare(EMBEDDING_BACKLOG_SQL).bind(EMBEDDING_BACKLOG_BUDGET * over).all<any>()
   ]);
   // Safe mode/curto-circuito Groq: INDEX_MOVIE so agenda quando nao exige
@@ -437,7 +441,7 @@ async function schedule(env: Env) {
       ...enrichment.results.slice(0, ENRICHMENT_BACKLOG_BUDGET)
     ].slice(0, PIPELINE_BUDGET)
   };
-  let pipelineQueued = 0;
+  let pipelineQueued = 0, generationScheduled = 0;
   for (const movie of pending.results) {
     const needsGeneration = movie.enrichment_status !== 'complete';
     if (needsGeneration && generationRemaining <= 0) continue;
@@ -456,7 +460,7 @@ async function schedule(env: Env) {
           type: 'ENRICH_MOVIE',
           key: `enrich:${movie.tmdb_id}:v2`,
           payload: { tmdb_id: movie.tmdb_id }
-        })
+        }, Math.min(840, generationScheduled++ * 60))
       );
     else if (movie.embedding_status !== 'complete')
       pipelineQueued += Number(
@@ -838,8 +842,13 @@ async function enrichOwned(env: Env, job: Job, lockKey: string, lockToken: strin
   const provider = createMovieGenerationProvider(env);
   const pilotLimit = Number(env.MOVIE_GENERATION_PILOT_LIMIT || 3);
   // One atomic slot per real HTTP, including the bounded internal retry.
-  provider.setAttemptBudget(async () => {
+  let reservation: { day: string; tokens: number } | null = null;
+  provider.setTelemetryReporter(async (event) => {
+    if (reservation) await recordCapacity(env.MOOVIBE_LIBRARY, reservation, event);
+  });
+  provider.setAttemptBudget(async (tokens) => {
     await assertCircuitAvailable();
+    reservation = await reserveCapacity(env.MOOVIBE_LIBRARY, env as any, tokens);
     return pilotConsume(env.MOOVIBE_LIBRARY, pilotLimit);
   });
   provider.setAttemptReporter((outcome) => pilotTally(env.MOOVIBE_LIBRARY, outcome));
@@ -848,8 +857,8 @@ async function enrichOwned(env: Env, job: Job, lockKey: string, lockToken: strin
   });
   const sparse = String(movie.overview || '').trim().length < 80;
   const wiki = sparse ? await wikipediaFallback(movie.title, movie.release_year) : null;
-  const context = `Title: ${movie.title}\nYear: ${movie.release_year}\nDirector: ${movie.director || 'unknown'}\nCountries: ${movie.countries}\nGenres: ${movie.genres}\nKeywords: ${movie.keywords}\nOverview: ${movie.overview || ''}\nTagline: ${movie.tagline || ''}${wiki ? `\nVerified Wikipedia fallback: ${wiki.text}` : ''}`;
-  const system = 'Analyze cinematic aesthetics from supplied facts. Never create factual claims. Return concise English concepts and all numeric dimensions from 0 to 1.',
+  const context = moviePrompt(movie, wiki);
+  const system = MOVIE_SYSTEM,
     started = Date.now();
   let result;
   try {
@@ -1169,7 +1178,13 @@ export default {
         // D1: a mensagem e reconhecida sem consumir entregas da fila, e o
         // outbox do cron a reenvia quando available_at vencer. Assim o job
         // nunca cai em DLQ por aguardar ativacao do administrador.
-        if (outcome.deferred) message.ack();
+        if (outcome.deferred) {
+          // A fresh delayed delivery does not consume Queue retries. D1 remains
+          // authoritative if sending fails; the bounded outbox recovers it.
+          if (outcome.delaySeconds && outcome.delaySeconds <= 900)
+            await env.PIPELINE_QUEUE.send(message.body, { delaySeconds: Math.ceil(outcome.delaySeconds) + 1 });
+          message.ack();
+        }
         else if (outcome.retry) message.retry({ delaySeconds: outcome.delaySeconds });
         else message.ack();
       } catch (error: any) {

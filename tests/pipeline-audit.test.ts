@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
-import pipelineWorker, { processJob, schedule, recoverGenerationBacklog, providerStatus, providerStatusFull } from '../workers/pipeline/src/index.js';
+import pipelineWorker, { processJob, schedule, recoverGenerationBacklog, providerStatus, providerStatusFull, __testPilotConsume } from '../workers/pipeline/src/index.js';
 import { updatePipelineControl } from '../workers/pipeline/src/pipeline-control.js';
 import { ENRICHMENT_BACKLOG_BUDGET } from '../workers/pipeline/src/job-policy.js';
 import { openCircuit } from '../workers/pipeline/src/generation-provider';
@@ -61,7 +61,7 @@ const seedGenerationJob = (id: number) => {
 };
 describe('Groq migration integration (real clients, mocked HTTP)', () => {
   const groqMessage = (body: any) => ({ body, ack: vi.fn(), retry: vi.fn() });
-  it('three concurrent HTTP attempts have their own metrics and leave xAI history intact', async () => {
+  it('concurrent jobs are paced globally and leave xAI history intact', async () => {
     const legacy = JSON.stringify({ day: new Date().toISOString().slice(0, 10), count: 3, attempts: 3, failed: 3, success: 0 });
     db.prepare(`INSERT INTO system_state(key,value) VALUES('gen_pilot_count',?)`).run(legacy);
     await openCircuit({ prepare: (sql: string) => new Statement(db, sql) } as any, 'generation-xai', 43200, 'Incorrect API key');
@@ -69,12 +69,12 @@ describe('Groq migration integration (real clients, mocked HTTP)', () => {
     const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true', MOVIE_GENERATION_PILOT_LIMIT: '3' });
     (globalThis as any).__genFailPlan = ['invalid:content', 'fail:transient', 'ok'];
     await Promise.all(jobs.map((job) => processJob(env, job)));
-    expect((globalThis as any).__http).toBe(3);
+    expect((globalThis as any).__http).toBe(1);
     const status = await providerStatusFull(env);
-    expect(status.generation).toMatchObject({ provider: 'groq', pilot_limit: 3, pilot_used_today: 3, pilot_attempts_today: 3, pilot_success_today: 1, pilot_failed_today: 2 });
+    expect(status.generation).toMatchObject({ provider: 'groq', pilot_limit: 3, pilot_used_today: 1, pilot_attempts_today: 1, pilot_success_today: 0, pilot_failed_today: 1 });
     expect(db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get()).toEqual({ value: legacy });
     expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key='circuit:generation-xai'`).get()).toEqual({ n: 1 });
-    expect(db.prepare(`SELECT status,COUNT(*) n FROM pipeline_jobs WHERE type='ENRICH_MOVIE' GROUP BY status ORDER BY status`).all()).toEqual([{ status: 'done', n: 1 }, { status: 'error', n: 1 }, { status: 'queued', n: 48 }]);
+    expect(db.prepare(`SELECT status,COUNT(*) n FROM pipeline_jobs WHERE type='ENRICH_MOVIE' GROUP BY status ORDER BY status`).all()).toEqual([{ status: 'error', n: 1 }, { status: 'queued', n: 49 }]);
     expect(db.prepare(`SELECT MAX(attempts) n FROM pipeline_jobs WHERE status='queued'`).get()).toEqual({ n: 0 });
     const calls = vi.mocked(fetch).mock.calls;
     expect(calls.filter(([url]) => String(url).includes('api.x.ai'))).toHaveLength(0);
@@ -144,7 +144,7 @@ describe('Groq migration integration (real clients, mocked HTTP)', () => {
     const { env } = makeEnv(db, { ...vars, ADMIN_TOKEN: 'admin', XAI_API_KEY: 'never-show-this' });
     const response = await pipelineWorker.fetch(new Request('https://worker.test/admin/providers', { headers: { authorization: 'Bearer admin' } }), env);
     const result: any = await response.json();
-    expect(result.generation).toMatchObject({ provider: 'groq', model: 'openai/gpt-oss-120b', enabled: true, pilot_limit: 3, pilot_used_today: 0, circuit: 'generation-groq', authentication: 'not_verified_by_status_endpoint' });
+    expect(result.generation).toMatchObject({ provider: 'groq', model: 'openai/gpt-oss-120b', enabled: vars.MOVIE_GENERATION_ENABLED === 'true', pilot_limit: Number(vars.MOVIE_GENERATION_PILOT_LIMIT), pilot_used_today: 0, circuit: 'generation-groq', authentication: 'not_verified_by_status_endpoint' });
     expect(result.embedding).toMatchObject({ provider: 'gemini', model: 'gemini-embedding-2', dimensions: 768 });
     expect(JSON.stringify(result)).not.toContain('never-show-this');
     expect(fetch).not.toHaveBeenCalled();
@@ -253,7 +253,7 @@ describe('auditoria-b', () => {
       db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES(?, 'ENRICH_MOVIE', ?, 'queued')`).run(`enrich:${i}:v2`, JSON.stringify({ tmdb_id: i }));
     }
     const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true', MOVIE_GENERATION_PILOT_LIMIT: '2' });
-    for (let i = 31; i <= 34; i++) await processJob(env, { type: 'ENRICH_MOVIE', key: `enrich:${i}:v2`, payload: { tmdb_id: i } });
+    for (let i = 31; i <= 34; i++) { db.exec('UPDATE groq_capacity SET next_at=0'); await processJob(env, { type: 'ENRICH_MOVIE', key: `enrich:${i}:v2`, payload: { tmdb_id: i } }); }
     expect((db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE status='done' AND type='ENRICH_MOVIE'`).get() as any).n).toBe(2);
   });
   it('9. embeddings Gemini 768d compativeis', async () => {
@@ -321,12 +321,9 @@ describe('auditoria-c (defeitos restantes)', () => {
       db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES(?, 'ENRICH_MOVIE', ?, 'queued')`).run(`enrich:${i}:v2`, JSON.stringify({ tmdb_id: i }));
     }
     const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true', MOVIE_GENERATION_PILOT_LIMIT: '25' });
-    await Promise.all(Array.from({ length: 50 }, (_, k) => processJob(env, { type: 'ENRICH_MOVIE', key: `enrich:${71 + k}:v2`, payload: { tmdb_id: 71 + k } })));
-    const done = db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE type='ENRICH_MOVIE' AND status='done'`).get() as any;
-    const queued = db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE type='ENRICH_MOVIE' AND status='queued'`).get() as any;
+    const results = await Promise.all(Array.from({length:50},()=>__testPilotConsume(env.MOOVIBE_LIBRARY,25)));
+    expect(results.filter(Boolean)).toHaveLength(25);
     const counter = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count:groq'`).get() as any;
-    expect(done.n).toBe(25);
-    expect(queued.n).toBe(25);
     expect(JSON.parse(counter.value).count).toBe(25);
   });
   it('14. piloto nao reservado quando nao ha chamada de provedor (circuito, modo seguro, job pronto)', async () => {
@@ -422,7 +419,7 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
     expect(m3.retry).not.toHaveBeenCalled();
     expect((db.prepare(`SELECT attempts,status FROM pipeline_jobs WHERE job_key='enrich:62:v2'`).get() as any)).toEqual({ attempts: 0, status: 'queued' });
   });
-  it('18. lote concorrente: um job lento nao bloqueia os demais', async () => {
+  it('18. lote concorrente: pacing global adia sem consumir retries', async () => {
     for (let i = 201; i <= 205; i++) {
       db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(?,'C',?,'complete','pending')`).run(i, longOverview);
       db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES(?, 'ENRICH_MOVIE', ?, 'queued')`).run(`enrich:${i}:v2`, JSON.stringify({ tmdb_id: i }));
@@ -431,8 +428,8 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
     const msgs: any[] = [201, 202, 203, 204, 205].map((i) => msg({ type: 'ENRICH_MOVIE', key: `enrich:${i}:v2`, payload: { tmdb_id: i } }));
     await (pipelineWorker as any).queue({ messages: msgs }, env);
     for (const m of msgs) { expect(m.ack).toHaveBeenCalledTimes(1); expect(m.retry).not.toHaveBeenCalled(); }
-    expect((db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE type='ENRICH_MOVIE' AND status='done'`).get() as any).n).toBe(5);
-    expect((globalThis as any).__genMaxInflight).toBeGreaterThanOrEqual(2);
+    expect((db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE type='ENRICH_MOVIE' AND status='done'`).get() as any).n).toBe(1);
+    expect((globalThis as any).__genMaxInflight).toBe(1);
   });
   it('19. falha inesperada isola a mensagem e nao derruba o lote', async () => {
     db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status,embedding_status) VALUES(301,'G',?,'complete','complete','pending')`).run(longOverview);
@@ -506,28 +503,24 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
     db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(911,'P',?,'complete','pending')`).run(longOverview);
     db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:911:v2','ENRICH_MOVIE','{\"tmdb_id\":911}','queued')`).run();
     const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true', MOVIE_GENERATION_PILOT_LIMIT: '5' });
-    // 1a operacao: 500 seguido de timeout — 2 HTTP reais, 2 vagas, 0 sucesso.
-    (globalThis as any).__genFailPlan = ['fail:transient', 'fail:timeout'];
-    const m1: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:911:v2', payload: { tmdb_id: 911 } });
-    await (pipelineWorker as any).queue({ messages: [m1] }, env);
-    expect(m1.retry).toHaveBeenCalledTimes(1);
-    expect((globalThis as any).__http).toBe(2);
-    const counter1: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count:groq'`).get();
-    expect(JSON.parse(counter1.value)).toMatchObject({ count: 2, attempts: 2, success: 0, failed: 2 });
-    expect(db.prepare(`SELECT status,attempts FROM pipeline_jobs WHERE job_key='enrich:911:v2'`).get()).toMatchObject({ status: 'queued', attempts: 1 });
-    // 2a operacao: sucesso em 1 HTTP — +1 vaga, +1 sucesso.
-    db.prepare(`DELETE FROM system_state WHERE key='circuit:generation-groq'`).run();
-    db.prepare(`UPDATE pipeline_jobs SET available_at=CURRENT_TIMESTAMP WHERE job_key='enrich:911:v2'`).run();
-    const m2: any = msg({ type: 'ENRICH_MOVIE', key: 'enrich:911:v2', payload: { tmdb_id: 911 } });
-    await (pipelineWorker as any).queue({ messages: [m2] }, env);
-    expect(m2.ack).toHaveBeenCalledTimes(1);
+    (globalThis as any).__genFailPlan = ['fail:transient', 'fail:timeout', 'ok'];
+    const job = { type: 'ENRICH_MOVIE', key: 'enrich:911:v2', payload: { tmdb_id: 911 } };
+    const first = msg(job);
+    await (pipelineWorker as any).queue({messages:[first]},env);
+    expect(first.ack).toHaveBeenCalledOnce();
+    expect(first.retry).not.toHaveBeenCalled();
+    expect((globalThis as any).__http).toBe(1); // immediate internal retry is paced
+    expect(db.prepare(`SELECT attempts,status FROM pipeline_jobs WHERE job_key=?`).get(job.key)).toEqual({attempts:0,status:'queued'});
+    for(let i=0;i<2;i++) {
+      db.exec('UPDATE groq_capacity SET next_at=0');
+      db.prepare(`UPDATE pipeline_jobs SET available_at=CURRENT_TIMESTAMP WHERE job_key=?`).run(job.key);
+      await (pipelineWorker as any).queue({messages:[msg(job)]},env);
+    }
     expect((globalThis as any).__http).toBe(3);
-    const counter2: any = db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count:groq'`).get();
-    expect(JSON.parse(counter2.value)).toMatchObject({ count: 3, attempts: 3, success: 1, failed: 2 });
-    expect(db.prepare(`SELECT status FROM pipeline_jobs WHERE job_key='enrich:911:v2'`).get()).toEqual({ status: 'done' });
-    const full: any = await providerStatusFull(env);
-    expect(full.generation).toMatchObject({ pilot_used_today: 3, pilot_attempts_today: 3, pilot_success_today: 1, pilot_failed_today: 2 });
+    expect(JSON.parse((db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count:groq'`).get() as any).value)).toMatchObject({count:3,attempts:3,success:1,failed:2});
+    expect(db.prepare(`SELECT status FROM pipeline_jobs WHERE job_key=?`).get(job.key)).toEqual({status:'done'});
   });
+
   it('22b. geracao desativada = zero HTTP e zero vagas; limite esgotado nega sem rede', async () => {
     db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(912,'D',?,'complete','pending')`).run(longOverview);
     db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:912:v2','ENRICH_MOVIE','{\"tmdb_id\":912}','queued')`).run();
@@ -545,6 +538,7 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
     db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:914:v2','ENRICH_MOVIE','{\"tmdb_id\":914}','queued')`).run();
     await (pipelineWorker as any).queue({ messages: [msg({ type: 'ENRICH_MOVIE', key: 'enrich:913:v2', payload: { tmdb_id: 913 } })] }, env2);
     expect((globalThis as any).__http).toBe(1);
+    db.exec('UPDATE groq_capacity SET next_at=0');
     await (pipelineWorker as any).queue({ messages: [msg({ type: 'ENRICH_MOVIE', key: 'enrich:914:v2', payload: { tmdb_id: 914 } })] }, env2);
     expect((globalThis as any).__http).toBe(2);
     // 3o job: teto atingido — deferido antes da rede, attempts do job intactos.

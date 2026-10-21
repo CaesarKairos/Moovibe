@@ -26,7 +26,7 @@ export function classifyProviderError(error: unknown): ClassifiedError {
     return { code: 'INSUFFICIENT_CREDITS', httpStatus: http, retryable: false, retryAfterSeconds: 0, message };
   if (http === 429) {
     if ((error as any)?.provider === 'groq')
-      return { code: (error as any).quotaExhausted ? 'QUOTA_EXHAUSTED' : 'RATE_LIMITED', httpStatus: http, retryable: true, retryAfterSeconds: Math.min(86400, Math.max(60, retryAfter)), message };
+      return { code: (error as any).quotaExhausted ? 'QUOTA_EXHAUSTED' : 'RATE_LIMITED', httpStatus: http, retryable: true, retryAfterSeconds: Math.max(60, retryAfter), message };
     if (/quota|resource_exhausted|insufficient_quota/i.test(message))
       return { code: 'QUOTA_EXHAUSTED', httpStatus: 429, retryable: true, retryAfterSeconds: Math.min(43200, Math.max(300, retryAfter)), message };
     return { code: 'RATE_LIMITED', httpStatus: 429, retryable: true, retryAfterSeconds: Math.min(3600, Math.max(5, retryAfter)), message };

@@ -32,7 +32,7 @@ export function groqDuration(value: string | null): number {
   return Math.ceil(matches.reduce((seconds, m) => seconds + Number(m[1]) * units[m[2]], 0));
 }
 
-export function groqCooldown(headers: Headers, status: number, message = ''): { seconds: number; daily: boolean } {
+export function groqCooldown(headers: Headers, status: number, message = '', requiredTokens = 0): { seconds: number; daily: boolean } {
   const retry = headers.get('retry-after');
   const retrySeconds = retry && !/^\d+(?:\.\d+)?$/.test(retry)
     ? Math.max(0, Math.ceil((Date.parse(retry) - Date.now()) / 1000)) || 0 : groqDuration(retry);
@@ -44,34 +44,37 @@ export function groqCooldown(headers: Headers, status: number, message = ''): { 
   const bodyReset = groqDuration(message.match(/try again in\s+((?:\d+(?:\.\d+)?(?:ms|d|h|m|s))+)/i)?.[1] || null);
   const seconds = Math.max(retrySeconds, bodyReset,
     empty('x-ratelimit-remaining-requests') ? requestReset || 86400 : 0,
-    empty('x-ratelimit-remaining-tokens') ? tokenReset || 60 : 0,
+    (empty('x-ratelimit-remaining-tokens') || (headers.has('x-ratelimit-remaining-tokens') && Number(headers.get('x-ratelimit-remaining-tokens')) < requiredTokens)) ? tokenReset || 60 : 0,
     daily && !retrySeconds && !bodyReset && !empty('x-ratelimit-remaining-requests') ? 86400 : 0,
     status === 429 ? 60 : 0);
-  return { seconds: Math.min(86400, seconds), daily };
+  return { seconds, daily };
 }
 
 export class GroqClient implements GenerationProvider {
   readonly name = 'groq';
-  private budget: (() => Promise<boolean>) | null = null;
+  private budget: ((reservation: number) => Promise<boolean>) | null = null;
   private reporter: ((outcome: Outcome) => Promise<void>) | null = null;
   private cooldownReporter: ((seconds: number, reason: string) => Promise<void>) | null = null;
-  constructor(private apiKey: string, private model: string, private fetcher: typeof fetch | null = null) {
+  constructor(private apiKey: string, private model: string, private fetcher: typeof fetch | null = null, private maxCompletionTokens = 2048) {
     if (!apiKey) throw new Error('INVALID_CREDENTIAL Groq requires XAI_API_KEY (legacy secret name for GroqCloud)');
+    if (!Number.isInteger(maxCompletionTokens) || maxCompletionTokens < 512 || maxCompletionTokens > 2048) throw new Error('INVALID_REQUEST completion budget must be 512..2048');
     if (!model) throw new Error('INVALID_REQUEST MOVIE_GENERATION_MODEL is required');
   }
-  setAttemptBudget(fn: () => Promise<boolean>): void { this.budget = fn; }
+  setAttemptBudget(fn: (reservation: number) => Promise<boolean>): void { this.budget = fn; }
   setAttemptReporter(fn: (outcome: Outcome) => Promise<void>): void { this.reporter = fn; }
   setCooldownReporter(fn: (seconds: number, reason: string) => Promise<void>): void { this.cooldownReporter = fn; }
+  private telemetry: ((event: { usage?: any; status?: number; error?: string; headers?: Record<string, string> }) => Promise<void>) | null = null;
+  setTelemetryReporter(fn: NonNullable<GroqClient['telemetry']>): void { this.telemetry = fn; }
   private redact(value: unknown): string { return String(value).split(this.apiKey).join('[REDACTED]').slice(0, 500); }
   async generateJson({ system, prompt, schema, temperature = .2 }: GenerationRequest): Promise<GenerationResult> {
     // Prepare locally before admitting an HTTP attempt.
     const body = JSON.stringify({ model: this.model,
       messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
-      temperature, max_completion_tokens: 2048, reasoning_effort: 'low', include_reasoning: false,
+      temperature, max_completion_tokens: this.maxCompletionTokens, reasoning_effort: 'low', include_reasoning: false,
       response_format: { type: 'json_schema', json_schema: { name: 'movie_enrichment', strict: true, schema: groqStructuredSchema(schema) } }
     });
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (this.budget && !(await this.budget())) {
+      if (this.budget && !(await this.budget(new TextEncoder().encode(body).length + this.maxCompletionTokens + 256))) {
         const denied = new GroqError('Groq pilot limit reached; attempt denied before network');
         denied.deferred = true;
         denied.retryAfter = Math.max(60, Math.ceil((86400000 - Date.now() % 86400000) / 1000));
@@ -79,6 +82,7 @@ export class GroqClient implements GenerationProvider {
       }
       let outcome: Outcome = 'failed';
       let retry = false;
+      let event: { usage?: any; status?: number; error?: string; headers?: Record<string, string> } = {};
       try {
         let response: Response;
         try {
@@ -87,13 +91,16 @@ export class GroqClient implements GenerationProvider {
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` }, body
           });
         } catch (e: any) { throw new GroqError(`Groq fetch failed: ${this.redact(e?.message || e)}`); }
+        event.status = response.status;
+        event.headers = {};
+        response.headers.forEach((value, key) => { if (key.startsWith('x-ratelimit-')) event.headers![key] = value; });
         if (!response.ok) {
           const text = await response.text().catch(() => 'unreadable response body');
           const cooldown = groqCooldown(response.headers, response.status, text);
           // A 429 always yields to the durable queue/circuit, never a short retry.
           throw new GroqError(`Groq ${response.status}: ${this.redact(text)}`, response.status, cooldown.seconds, cooldown.daily);
         }
-        const cooldown = groqCooldown(response.headers, response.status);
+        const cooldown = groqCooldown(response.headers, response.status, '', new TextEncoder().encode(body).length + this.maxCompletionTokens + 256);
         if (cooldown.seconds && this.cooldownReporter) await this.cooldownReporter(cooldown.seconds, cooldown.daily ? 'Groq daily request limit' : 'Groq token limit');
         let data: any;
         try { data = await response.json(); }
@@ -101,6 +108,7 @@ export class GroqClient implements GenerationProvider {
           if (e instanceof SyntaxError) throw new GroqError('Groq invalid output: invalid or truncated response JSON');
           throw new GroqError(`Groq fetch failed while reading response: ${this.redact((e as any)?.message || e)}`);
         }
+        event.usage = data?.usage;
         const choice = data?.choices?.[0];
         if (typeof choice?.message?.content !== 'string' || !choice.message.content.trim() || choice.finish_reason === 'length') {
           throw new GroqError('Groq invalid output: missing string content or truncated completion');
@@ -112,12 +120,14 @@ export class GroqClient implements GenerationProvider {
         if (!validation.ok) throw new GroqError(`Groq invalid output: ${validation.error}`);
         outcome = 'success';
         return { data: parsed, model: this.model, provider: this.name,
-          usage: { inputTokens: data?.usage?.prompt_tokens, outputTokens: data?.usage?.completion_tokens } };
+          usage: { inputTokens: data?.usage?.prompt_tokens, outputTokens: data?.usage?.completion_tokens, totalTokens: data?.usage?.total_tokens, cachedTokens: data?.usage?.prompt_tokens_details?.cached_tokens } };
       } catch (e) {
+        event.error = e instanceof GroqError ? (e.status === 429 ? (e.quotaExhausted ? (/\btpd\b|tokens per day/i.test(e.message) ? 'daily_tokens_429' : 'daily_requests_429') : /\btpm\b|tokens per minute/i.test(e.message) ? 'minute_tokens_429' : /\brpm\b|requests per minute/i.test(e.message) ? 'minute_requests_429' : 'rate_429') : ([401,403].includes(e.status || 0) || (e.status === 400 && /api.?key|authentication|unauthorized/i.test(e.message))) ? 'credential' : e.message.includes('invalid output') ? 'invalid_json' : 'transient') : 'unknown';
         // Every retry rechecks the circuit and consumes its own pilot slot.
         retry = attempt === 0 && e instanceof GroqError && [408, 500, 502, 503, 504].includes(e.status || 0) && !e.retryAfter;
         if (!retry) throw e;
       } finally {
+        try { if (this.telemetry) await this.telemetry(event); } catch { /* reservation is retained on telemetry failure */ }
         try { if (this.reporter) await this.reporter(outcome); } catch { /* existing best-effort metrics contract */ }
       }
       if (retry) await new Promise((resolve) => setTimeout(resolve, 500));

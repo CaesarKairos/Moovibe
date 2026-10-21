@@ -1,5 +1,5 @@
 export interface GenerationRequest { system: string; prompt: string; schema: unknown; temperature?: number }
-export interface GenerationResult { data: unknown; model: string; provider: string; usage?: { inputTokens?: number; outputTokens?: number } }
+export interface GenerationResult { data: unknown; model: string; provider: string; usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cachedTokens?: number } }
 export interface GenerationProvider { readonly name: string; generateJson(input: GenerationRequest): Promise<GenerationResult> }
 export const VIBE_DIMS = ['emotional_valence','energy','intimacy','surrealism','darkness','humor','romanticism','narrative_density','melancholy_level','tension_level'];
 export const PACE_VALUES = ['very_slow','slow','medium','fast','very_fast'] as const;
@@ -47,7 +47,7 @@ export async function circuitState(db: D1Database, key: string): Promise<Circuit
   } catch { return { open: true, until: null, reason: 'circuit state unreadable (D1); fail-closed', unknown: true }; }
 }
 export async function openCircuit(db: D1Database, key: string, delaySeconds: number, reason: string) {
-  const until = new Date(Date.now() + Math.max(60, Math.min(key === 'generation-groq' ? 86400 : 43200, delaySeconds)) * 1000).toISOString();
+  const until = new Date(Date.now() + Math.max(60, (key === 'generation-groq' ? delaySeconds : Math.min(43200, delaySeconds))) * 1000).toISOString();
   if (key === 'generation-groq') {
     // Concurrent token/minute failures must never shorten a daily cooldown.
     await db.prepare(`INSERT INTO system_state(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)

@@ -4,6 +4,7 @@ export type MovieGenEnv = {
   MOVIE_GENERATION_PROVIDER?: string;
   MOVIE_GENERATION_MODEL?: string;
   MOVIE_GENERATION_ENABLED?: string;
+  MOVIE_GENERATION_MAX_COMPLETION_TOKENS?: string;
   // Legacy Cloudflare secret name: its value is the GroqCloud credential.
   XAI_API_KEY?: string;
 };
@@ -15,5 +16,5 @@ export function isMovieGenerationEnabled(env: MovieGenEnv): boolean {
 export function createMovieGenerationProvider(env: MovieGenEnv): GroqClient {
   const which = String(env.MOVIE_GENERATION_PROVIDER || 'groq').toLowerCase();
   if (which !== 'groq') throw new Error(`INVALID_REQUEST unsupported movie generation provider: ${which}; use groq`);
-  return new GroqClient(env.XAI_API_KEY || '', env.MOVIE_GENERATION_MODEL || DEFAULT_GROQ_MODEL);
+  return new GroqClient(env.XAI_API_KEY || '', env.MOVIE_GENERATION_MODEL || DEFAULT_GROQ_MODEL, null, Number(env.MOVIE_GENERATION_MAX_COMPLETION_TOKENS ?? 2048));
 }
