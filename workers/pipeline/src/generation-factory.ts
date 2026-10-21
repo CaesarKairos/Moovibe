@@ -11,7 +11,7 @@ export class GeminiGenerationProvider implements GenerationProvider {
   }
 }
 export type MovieGenEnv = { MOVIE_GENERATION_PROVIDER?: string; MOVIE_GENERATION_MODEL?: string; XAI_API_KEY?: string; GEMINI_API_KEY?: string; MOVIE_GENERATION_ENABLED?: string };
-export const DEFAULT_XAI_MODEL = 'grok-4-3';
+export const DEFAULT_XAI_MODEL = 'grok-4.3';
 export function isMovieGenerationEnabled(env: MovieGenEnv): boolean {
   return String((env as any).MOVIE_GENERATION_ENABLED || 'false').toLowerCase() === 'true';
 }

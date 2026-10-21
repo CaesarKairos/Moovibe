@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 vi.mock('../workers/pipeline/src/generation-factory', async (importOriginal) => {
@@ -13,7 +13,7 @@ vi.mock('../workers/pipeline/src/generation-factory', async (importOriginal) => 
     isMovieGenerationEnabled: factory.isMovieGenerationEnabled,
     createMovieGenerationProvider: (env: any) => {
       const g: any = globalThis as any;
-      const failPlan: Array<'ok' | 'fail:http' | 'fail:timeout'> = g.__genFailPlan || [];
+      const failPlan: string[] = g.__genFailPlan || [];
       const client = new XaiClient(env?.XAI_API_KEY || 'x', env?.MOVIE_GENERATION_MODEL || 'grok-4-3', async () => {
         const g2: any = globalThis as any;
         g2.__genInflight = (g2.__genInflight || 0) + 1;
@@ -24,6 +24,8 @@ vi.mock('../workers/pipeline/src/generation-factory', async (importOriginal) => 
           const mode = failPlan.length ? failPlan.shift() : 'ok';
           if (mode === 'fail:http') return new Response('busy', { status: 429 });
           if (mode === 'fail:timeout') throw new Error('fetch failed: timeout');
+          if (mode === 'invalid:envelope') return new Response('{');
+          if (mode === 'invalid:content') return new Response(JSON.stringify({ choices: [{ message: { content: '{' } }] }));
           return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(okData().data) } }], usage: { prompt_tokens: 10, completion_tokens: 5 } }), { status: 200 });
         } finally { g2.__genInflight -= 1; }
       });
@@ -33,10 +35,6 @@ vi.mock('../workers/pipeline/src/generation-factory', async (importOriginal) => 
     }
   };
 });
-vi.mock('../functions/_lib/gemini.js', () => ({
-  RetryableError: class RetryableError extends Error { retryAfter: number; constructor(m: string, r = 0) { super(m); this.retryAfter = r; } },
-  GeminiClient: class { async generateJson() { throw new Error('no-call'); } async embed() { return Array(768).fill(0.01); } }
-}));
 import pipelineWorker, { processJob, schedule, recoverGenerationBacklog, providerStatus, providerStatusFull } from '../workers/pipeline/src/index.js';
 import { updatePipelineControl } from '../workers/pipeline/src/pipeline-control.js';
 import { ENRICHMENT_BACKLOG_BUDGET } from '../workers/pipeline/src/job-policy.js';
@@ -44,13 +42,14 @@ class Statement {
   values: any[] = [];
   constructor(private db: Database.Database, private sql: string) { }
   bind(...values: any[]) { this.values = values; return this; }
-  async run() { const r = this.db.prepare(this.sql).run(...this.values); return { meta: { changes: r.changes } }; }
+  runSync() { const r = this.db.prepare(this.sql).run(...this.values); return { meta: { changes: r.changes } }; }
+  async run() { return this.runSync(); }
   async all<T>() { return { results: this.db.prepare(this.sql).all(...this.values) as T[] }; }
   async first<T>() { return this.db.prepare(this.sql).get(...this.values) as T | null; }
 }
 const makeEnv = (db: Database.Database, extra: any = {}) => {
   const sent: any[] = [];
-  const env: any = { MOOVIBE_LIBRARY: { prepare: (sql: string) => new Statement(db, sql), batch: async (xs: Statement[]) => Promise.all(xs.map((x) => x.run())) },
+  const env: any = { MOOVIBE_LIBRARY: { prepare: (sql: string) => new Statement(db, sql), batch: async (xs: Statement[]) => db.transaction(() => xs.map((x) => x.runSync()))() },
     PIPELINE_QUEUE: { send: async (j: any) => { sent.push(j); } }, MOVIE_VECTORS: { upsert: vi.fn() },
     GEMINI_API_KEY: 'x', XAI_API_KEY: 'x', TMDB_API_KEY: 'x', EMBEDDING_MODEL: 'gemini-embedding-2',
     EMBEDDING_DIMENSIONS: '768', EMBEDDING_SCHEMA_VERSION: 'movie-v1',
@@ -60,7 +59,67 @@ const makeEnv = (db: Database.Database, extra: any = {}) => {
 };
 let db: Database.Database;
 beforeEach(() => { db = new Database(':memory:'); for (const f of fs.readdirSync('migrations').filter((x) => x.endsWith('.sql')).sort()) db.exec(fs.readFileSync(`migrations/${f}`, 'utf8')); const g: any = globalThis as any; g.__genInflight = 0; g.__genMaxInflight = 0; g.__genFailPlan = []; g.__genMock = undefined; g.__http = 0; });
+beforeEach(() => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url).includes('generativelanguage.googleapis.com') && String(url).includes(':embedContent')) {
+      return new Response(JSON.stringify({ embedding: { values: Array(768).fill(.01) } }));
+    }
+    if (String(url).startsWith('https://en.wikipedia.org/')) return new Response('', { status: 404 });
+    throw new Error(`Unexpected network request in test: ${url}`);
+  }));
+});
+afterEach(() => { vi.unstubAllGlobals(); db.close(); });
 describe('auditoria-a', () => {
+  it.each(['invalid:envelope', 'invalid:content'])('%s termina sem UNKNOWN/retry e registra a tentativa', async (mode) => {
+    db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status) VALUES(991,'Invalid',?,'complete')`).run('Verified overview. '.repeat(10));
+    const job = { type: 'ENRICH_MOVIE' as const, key: 'enrich:991:v2', payload: { tmdb_id: 991 } };
+    db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json) VALUES(?,?,?)`).run(job.key, job.type, JSON.stringify(job.payload));
+    (globalThis as any).__genFailPlan = [mode];
+    const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true' });
+    expect(await processJob(env, job)).toEqual({ retry: false });
+    expect(db.prepare(`SELECT status,last_error FROM pipeline_jobs WHERE job_key=?`).get(job.key)).toMatchObject({ status: 'error', last_error: expect.stringContaining('[INVALID_GENERATION_OUTPUT]') });
+    expect(JSON.parse((db.prepare(`SELECT value FROM system_state WHERE key='gen_pilot_count'`).get() as any).value)).toMatchObject({ attempts: 1, failed: 1, success: 0 });
+    expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key LIKE 'enrichment-lock:%'`).get()).toEqual({ n: 0 });
+    expect(db.prepare(`SELECT COUNT(*) n FROM movie_enrichments`).get()).toEqual({ n: 0 });
+  });
+  it.each(['abandoned', 'lost-before-save', 'save-failed'])('protege persistencia e retomada do bloqueio: %s', async (mode) => {
+    db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status) VALUES(992,'Lock',?,'complete')`).run('Verified overview. '.repeat(10));
+    const job = { type: 'ENRICH_MOVIE' as const, key: 'enrich:992:v2', payload: { tmdb_id: 992 } };
+    db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json) VALUES(?,?,?)`).run(job.key, job.type, JSON.stringify(job.payload));
+    if (mode === 'abandoned') db.prepare(`INSERT INTO system_state(key,value) VALUES('enrichment-lock:992',?)`).run(JSON.stringify({ token: 'old', job: job.key, attempt: 0, started: null }));
+    const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true' });
+    const batch = env.MOOVIBE_LIBRARY.batch;
+    env.MOOVIBE_LIBRARY.batch = async (xs: Statement[]) => {
+      if (mode === 'lost-before-save') db.exec(`UPDATE system_state SET value=json_set(value,'$.token','successor') WHERE key='enrichment-lock:992'`);
+      if (mode === 'save-failed') db.exec(`CREATE TRIGGER reject_save BEFORE UPDATE OF enrichment_status ON movies BEGIN SELECT RAISE(ABORT,'save failed'); END`);
+      return batch(xs);
+    };
+    await processJob(env, job);
+    expect((globalThis as any).__http).toBe(1);
+    expect(db.prepare(`SELECT COUNT(*) n FROM movie_enrichments`).get()).toEqual({ n: mode === 'abandoned' ? 1 : 0 });
+    expect(db.prepare(`SELECT enrichment_status FROM movies WHERE tmdb_id=992`).get()).toEqual({ enrichment_status: mode === 'abandoned' ? 'complete' : 'pending' });
+    const lock: any = db.prepare(`SELECT value FROM system_state WHERE key='enrichment-lock:992'`).get();
+    if (mode === 'lost-before-save') expect(JSON.parse(lock.value).token).toBe('successor');
+    else expect(lock).toBeUndefined();
+    if (mode !== 'abandoned') expect(db.prepare(`SELECT status FROM pipeline_jobs WHERE job_key=?`).get(job.key)).toEqual({ status: 'queued' });
+  });
+  it.each([['INDEX_MOVIE', 'ENRICH_MOVIE'], ['ENRICH_MOVIE', 'INDEX_MOVIE']] as const)('serializa enriquecimento do mesmo filme: %s + %s', async (first, second) => {
+    db.prepare(`INSERT INTO movies(tmdb_id,title,overview,collection_status,enrichment_status) VALUES(990,'Concurrent',?,'complete','pending')`).run('A verified movie overview. '.repeat(10));
+    const jobs = [first, second].map((type) => ({ type, key: `${type}:990`, payload: { tmdb_id: 990 } }));
+    for (const j of jobs) db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES(?,?,?,'queued')`).run(j.key, j.type, JSON.stringify(j.payload));
+    const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true' });
+    const outcomes = await Promise.all(jobs.map((j) => processJob(env, j)));
+    expect((globalThis as any).__http).toBe(1);
+    expect(outcomes.filter((o) => o.deferred)).toHaveLength(1);
+    const pending: any = db.prepare(`SELECT job_key,status,attempts FROM pipeline_jobs WHERE status='queued' AND job_key IN (?,?)`).get(...jobs.map((j) => j.key));
+    expect(pending).toMatchObject({ attempts: 0 });
+    db.prepare(`UPDATE pipeline_jobs SET available_at=CURRENT_TIMESTAMP WHERE job_key=?`).run(pending.job_key);
+    await processJob(env, jobs.find((j) => j.key === pending.job_key)!);
+    expect((globalThis as any).__http).toBe(1);
+    expect(db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE job_key IN (?,?) AND status='done'`).get(...jobs.map((j) => j.key))).toEqual({ n: 2 });
+    expect(db.prepare(`SELECT COUNT(*) n FROM movie_enrichments`).get()).toEqual({ n: 1 });
+    expect(db.prepare(`SELECT enrichment_status,embedding_status FROM movies WHERE tmdb_id=990`).get()).toEqual({ enrichment_status: 'complete', embedding_status: 'complete' });
+  });
   it('1. jobs error nao bloqueiam backlog elegivel', async () => {
     for (let i = 1; i <= 60; i++) {
       db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status) VALUES(?,'E','complete','error')`).run(i);
@@ -123,6 +182,10 @@ describe('auditoria-b', () => {
     const { env } = makeEnv(db);
     expect((await processJob(env, { type: 'EMBED_MOVIE', key: 'embed:41:movie-v1', payload: { tmdb_id: 41 } })).retry).toBe(false);
     expect((env.MOVIE_VECTORS.upsert.mock.calls[0][0][0].values as number[])).toHaveLength(768);
+    const embeddingCalls = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes(':embedContent'));
+    expect(embeddingCalls).toHaveLength(1);
+    expect(String(embeddingCalls[0][0])).toContain('/models/gemini-embedding-2:embedContent');
+    expect(JSON.parse(String(embeddingCalls[0][1]?.body))).toMatchObject({ model: 'models/gemini-embedding-2', outputDimensionality: 768, taskType: 'RETRIEVAL_DOCUMENT' });
   });
   it('10/11. circuito aberto nao gera storm', async () => {
     db.exec(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status) VALUES(51,'Q','complete','pending')`);

@@ -13,8 +13,52 @@ const xaiOk = (data: any = good, usage: any = { prompt_tokens: 1200, completion_
   new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(data) } }], usage }), { status: 200 });
 
 describe('xai migration', () => {
-  it('usa grok-4-3 (modelo atual) e modo seguro desliga geracao por default', () => {
-    expect(DEFAULT_XAI_MODEL).toBe('grok-4-3');
+  it.each([
+    ['invalid HTTP JSON', () => new Response('{'), 'INVALID_GENERATION_OUTPUT'],
+    ['invalid message JSON', () => new Response(JSON.stringify({ choices: [{ message: { content: '{' } }] })), 'INVALID_GENERATION_OUTPUT'],
+    ['missing choices', () => new Response('{}'), 'INVALID_GENERATION_OUTPUT'],
+    ['non-string content', () => new Response(JSON.stringify({ choices: [{ message: { content: {} } }] })), 'INVALID_GENERATION_OUTPUT'],
+    ['empty content', () => new Response(JSON.stringify({ choices: [{ message: { content: ' ' } }] })), 'INVALID_GENERATION_OUTPUT'],
+    ['invalid dimensions', () => xaiOk({ ...good, energy: 4 }), 'INVALID_GENERATION_OUTPUT'],
+    ['truncated completion', () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(good) }, finish_reason: 'length' }] })), 'INVALID_GENERATION_OUTPUT'],
+    ['body read error', () => ({ ok: true, json: async () => { throw new TypeError('stream interrupted'); } }) as unknown as Response, 'PROVIDER_UNAVAILABLE'],
+    ['body timeout', () => ({ ok: true, json: async () => { throw new DOMException('aborted', 'TimeoutError'); } }) as unknown as Response, 'PROVIDER_UNAVAILABLE'],
+    ['fetch timeout', () => { throw new DOMException('aborted', 'AbortError'); }, 'PROVIDER_UNAVAILABLE'],
+    ['unreadable HTTP 401', () => ({ ok: false, status: 401, headers: new Headers(), text: async () => { throw new Error('read failed'); } }) as unknown as Response, 'INVALID_CREDENTIAL'],
+  ] as const)('%s records exactly one failed admitted attempt and classifies it', async (_name, response, code) => {
+    const fetcher = vi.fn(async () => response());
+    const budget = vi.fn(async () => true);
+    const report = vi.fn(async (_outcome: 'success' | 'failed') => {});
+    const client = new XaiClient('k', 'grok-4.3', fetcher, budget, report);
+    const error = await client.generateJson({ system: 's', prompt: 'p', schema: ENRICHMENT_JSON_SCHEMA }).catch((e) => e);
+    expect(classifyProviderError(error).code).toBe(code);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(budget).toHaveBeenCalledTimes(1);
+    expect(report.mock.calls).toEqual([['failed']]);
+  });
+  it.each(['grok-4.3', 'grok-4.3-latest', 'grok-4-3', 'other-model'])('explicit reasoning effort and unchanged structured output: %s', async (model) => {
+    const fetcher = vi.fn(async () => xaiOk());
+    const report = vi.fn(async (_outcome: 'success' | 'failed') => {});
+    const result = await new XaiClient('k', model, fetcher, null, report).generateJson({ system: 's', prompt: 'p', schema: ENRICHMENT_JSON_SCHEMA });
+    const body = JSON.parse((fetcher.mock.calls as any)[0][1].body);
+    expect(body.reasoning_effort).toBe(model === 'other-model' ? undefined : 'none');
+    expect(body.response_format.json_schema).toEqual({ name: 'movie_enrichment', strict: true, schema: ENRICHMENT_JSON_SCHEMA });
+    expect(result.data).toEqual(good);
+    expect(report.mock.calls).toEqual([['success']]);
+  });
+  it('retry reports failure then success, denied retry has no outcome', async () => {
+    for (const allowed of [1, 2]) {
+      let admissions = 0;
+      const fetcher = vi.fn(async () => fetcher.mock.calls.length === 1 ? new Response('busy', { status: 500 }) : xaiOk());
+      const report = vi.fn(async (_outcome: 'success' | 'failed') => {});
+      const client = new XaiClient('k', 'grok-4.3', fetcher, async () => ++admissions <= allowed, report);
+      await client.generateJson({ system: 's', prompt: 'p', schema: {} }).catch((e) => expect(e.deferred).toBe(true));
+      expect(fetcher).toHaveBeenCalledTimes(allowed);
+      expect(report.mock.calls).toEqual(allowed === 1 ? [['failed']] : [['failed'], ['success']]);
+    }
+  });
+  it('usa grok-4.3 (modelo atual) e modo seguro desliga geracao por default', () => {
+    expect(DEFAULT_XAI_MODEL).toBe('grok-4.3');
     expect(isMovieGenerationEnabled({} as any)).toBe(false);
     expect(isMovieGenerationEnabled({ MOVIE_GENERATION_ENABLED: 'true' } as any)).toBe(true);
   });
@@ -89,6 +133,7 @@ describe('xai migration', () => {
     const idx = (await import('../workers/pipeline/src/index.js')) as any;
     const limit = 25;
     let http = 0;
+    const outcomes: string[] = [];
     const behaviors = ['gone-429', 'gone-500', 'timeout', 'ok'];
     const stub = (async () => {
       http++;
@@ -102,12 +147,14 @@ describe('xai migration', () => {
       const mod = await import('../workers/pipeline/src/xai-client.js');
       const c = new mod.XaiClient('k', 'grok-4-3', stub);
       c.setAttemptBudget(() => idx.__testPilotConsume({ prepare: stmt } as any, limit));
+      c.setAttemptReporter(async (outcome) => { outcomes.push(outcome); });
       try { await c.generateJson({ system: 's', prompt: 'p', schema: { type: 'object' } }); return 'ok'; }
       catch (e: any) { return e?.deferred === true ? 'deferred' : 'failed'; }
     };
     const results = await Promise.all(Array.from({ length: 100 }, runOne));
     // Teto absoluto de HTTP reais no dia: 25 tentativas (inclui retries).
     expect(http).toBe(25);
+    expect(outcomes).toHaveLength(http);
     const ok = results.filter((r) => r === 'ok').length;
     const deferred = results.filter((r) => r === 'deferred').length;
     expect(ok + deferred + results.filter((r) => r === 'failed').length).toBe(100);

@@ -775,6 +775,32 @@ async function wikipediaFallback(title: string, year: number | null) {
 
 const enrichmentSchema = ENRICHMENT_JSON_SCHEMA;
 async function enrich(env: Env, job: Job) {
+  // Cross-job mutex in existing D1 state, tied to the existing job lease.
+  // A competing INDEX/ENRICH defers durably without spending a job attempt.
+  // An abandoned owner becomes reclaimable through existing job recovery.
+  const key = `enrichment-lock:${Number(job.payload.tmdb_id)}`;
+  const token = crypto.randomUUID();
+  const claim = await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO system_state(key,value)
+    SELECT ?,json_object('token',?,'job',job_key,'attempt',attempts,'started',started_at)
+    FROM pipeline_jobs WHERE job_key=? AND status='running'
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP
+    WHERE NOT EXISTS (SELECT 1 FROM pipeline_jobs j WHERE j.job_key=json_extract(system_state.value,'$.job')
+      AND j.status='running' AND j.attempts=json_extract(system_state.value,'$.attempt')
+      AND j.started_at=json_extract(system_state.value,'$.started'))`)
+    .bind(key, token, job.key).run();
+  if (!claim.meta.changes) {
+    const err: any = new Error('movie enrichment already in progress');
+    err.deferred = true;
+    err.retryAfter = 60;
+    throw err;
+  }
+  try { await enrichOwned(env, job, key, token); }
+  finally {
+    await env.MOOVIBE_LIBRARY.prepare(`DELETE FROM system_state WHERE key=? AND json_extract(value,'$.token')=?`).bind(key, token).run();
+  }
+}
+
+async function enrichOwned(env: Env, job: Job, lockKey: string, lockToken: string) {
   const id = Number(job.payload.tmdb_id),
     traceId = crypto.randomUUID();
   const movie = await movieRecord(env, id);
@@ -888,10 +914,18 @@ async function enrich(env: Env, job: Job) {
     throw error;
   }
   const e = result.data as any;
-  await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO movie_enrichments(movie_id,moods_json,themes_json,atmosphere_json,visual_style_json,pace,emotional_valence,energy,intimacy,surrealism,darkness,humor,romanticism,narrative_density,melancholy_level,tension_level,confidence,model,schema_version,source_context,provenance_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(movie_id) DO UPDATE SET moods_json=excluded.moods_json,themes_json=excluded.themes_json,atmosphere_json=excluded.atmosphere_json,visual_style_json=excluded.visual_style_json,pace=excluded.pace,emotional_valence=excluded.emotional_valence,energy=excluded.energy,intimacy=excluded.intimacy,surrealism=excluded.surrealism,darkness=excluded.darkness,humor=excluded.humor,romanticism=excluded.romanticism,narrative_density=excluded.narrative_density,melancholy_level=excluded.melancholy_level,tension_level=excluded.tension_level,confidence=excluded.confidence,model=excluded.model,source_context=excluded.source_context,provenance_json=excluded.provenance_json,updated_at=CURRENT_TIMESTAMP`)
-    .bind(movie.id, JSON.stringify(e.moods), JSON.stringify(e.themes), JSON.stringify(e.atmosphere), JSON.stringify(e.visual_style), e.pace, e.emotional_valence, e.energy, e.intimacy, e.surrealism, e.darkness, e.humor, e.romanticism, e.narrative_density, e.melancholy_level, e.tension_level, e.confidence, result.model, 'style-v2', context, JSON.stringify({ provider: result.provider, wiki: wiki ? ['tmdb', { source: 'wikipedia', url: wiki.url }] : ['tmdb'] }))
-    .run();
-  await env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET enrichment_status='complete',enriched_at=CURRENT_TIMESTAMP,embedding_status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(movie.id).run();
+  const saved = await env.MOOVIBE_LIBRARY.batch([
+    env.MOOVIBE_LIBRARY.prepare(`INSERT INTO movie_enrichments(movie_id,moods_json,themes_json,atmosphere_json,visual_style_json,pace,emotional_valence,energy,intimacy,surrealism,darkness,humor,romanticism,narrative_density,melancholy_level,tension_level,confidence,model,schema_version,source_context,provenance_json) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM system_state WHERE key=? AND json_extract(value,'$.token')=?) ON CONFLICT(movie_id) DO UPDATE SET moods_json=excluded.moods_json,themes_json=excluded.themes_json,atmosphere_json=excluded.atmosphere_json,visual_style_json=excluded.visual_style_json,pace=excluded.pace,emotional_valence=excluded.emotional_valence,energy=excluded.energy,intimacy=excluded.intimacy,surrealism=excluded.surrealism,darkness=excluded.darkness,humor=excluded.humor,romanticism=excluded.romanticism,narrative_density=excluded.narrative_density,melancholy_level=excluded.melancholy_level,tension_level=excluded.tension_level,confidence=excluded.confidence,model=excluded.model,source_context=excluded.source_context,provenance_json=excluded.provenance_json,updated_at=CURRENT_TIMESTAMP`)
+    .bind(movie.id, JSON.stringify(e.moods), JSON.stringify(e.themes), JSON.stringify(e.atmosphere), JSON.stringify(e.visual_style), e.pace, e.emotional_valence, e.energy, e.intimacy, e.surrealism, e.darkness, e.humor, e.romanticism, e.narrative_density, e.melancholy_level, e.tension_level, e.confidence, result.model, 'style-v2', context, JSON.stringify({ provider: result.provider, wiki: wiki ? ['tmdb', { source: 'wikipedia', url: wiki.url }] : ['tmdb'] }), lockKey, lockToken),
+    env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET enrichment_status='complete',enriched_at=CURRENT_TIMESTAMP,embedding_status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND EXISTS (SELECT 1 FROM system_state WHERE key=? AND json_extract(value,'$.token')=?)`).bind(movie.id, lockKey, lockToken)
+  ]);
+  if (!saved[0].meta.changes) {
+    const err: any = new Error('movie enrichment ownership changed before persistence');
+    err.deferred = true;
+    err.retryAfter = 60;
+    throw err;
+  }
+
   if (!job.payload.inline)
     await enqueue(env, {
       type: 'EMBED_MOVIE',
