@@ -13,7 +13,7 @@
     "MOVIE_GENERATION_PROVIDER": "groq",
     "MOVIE_GENERATION_MODEL": "openai/gpt-oss-120b",
     "MOVIE_GENERATION_ENABLED": "true",
-    "MOVIE_GENERATION_PILOT_LIMIT": "3"
+    "MOVIE_GENERATION_PILOT_LIMIT": "500"
   },
   "d1_databases": [{
     "binding": "MOOVIBE_LIBRARY",
