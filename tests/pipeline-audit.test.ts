@@ -620,12 +620,13 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
   });
   it('26. scheduler nao deixa queued bloquear orcamento: novos filmes sao agendados', async () => {
     // 8 primeiros candidatos (por updated_at) com jobs queued VENCIDOS mas
-    // RECENTES (<5min): o outbox ainda nao os alcancou (threshold 5min), e o
+    // com publicacao confirmada: o outbox respeita a retencao da Queue, e o
     // backlog NAO pode consumi-los — prova que queued nao bloqueia orcamento.
     for (let i = 3001; i <= 3008; i++) {
       db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status,updated_at) VALUES(?,'Q','complete','pending',datetime('now','-2 day'))`).run(i);
       db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,available_at,updated_at) VALUES(?,'ENRICH_MOVIE',?,'queued',CURRENT_TIMESTAMP,datetime('now','-1 minute'))`).run(`enrich:${i}:v2`, JSON.stringify({ tmdb_id: i }));
     }
+    db.exec(`UPDATE pipeline_jobs SET queue_lease_until=datetime('now','+25 hours') WHERE job_key LIKE 'enrich:30%'`);
     for (let i = 4001; i <= 4300; i++)
       db.prepare(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status,updated_at) VALUES(?,'N','complete','pending',CURRENT_TIMESTAMP)`).run(i);
     const { env, sent } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true' });
@@ -638,7 +639,7 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
     expect(enrichKeys.some((k: number) => k <= 3008)).toBe(false);
     // Recuperação dos queued e EXCLUSIVA do outbox: apos o threshold (5min),
     // o cron os reenvia — sem duplicar com o backlog (que nunca os toca).
-    db.prepare(`UPDATE pipeline_jobs SET updated_at=datetime('now','-10 minutes') WHERE job_key LIKE 'enrich:30%'`).run();
+    db.prepare(`UPDATE pipeline_jobs SET queue_lease_until=datetime('now','-1 minute') WHERE job_key LIKE 'enrich:30%'`).run();
     const before = sent.length;
     await schedule(env);
     const fresh = sent.slice(before).filter((s: any) => s.type === 'ENRICH_MOVIE').map((s: any) => s.key);

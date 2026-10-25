@@ -435,3 +435,62 @@ describe('recent releases discovery',()=>{
     vi.unstubAllGlobals();
   });
 });
+
+
+describe('durable Queue transport',()=>{
+  it('does not republish valid queued deliveries over repeated cron runs',async()=>{
+    const {env,sent}=makeEnv(db);
+    await updatePipelineControl(env.MOOVIBE_LIBRARY,{historical_enabled:false,recent_enabled:false});
+    db.exec(`INSERT INTO movies(tmdb_id,title,collection_status) VALUES(98765,'Transport','complete')`);
+    await schedule(env);
+    db.exec(`UPDATE pipeline_jobs SET updated_at=datetime('now','-2 hours')`);
+    await schedule(env);
+    expect(sent.filter(j=>j.key==='enrich:98765:v2')).toHaveLength(1);
+  });
+  it('stops after the first 10253 and keeps jobs without execution attempts',async()=>{
+    const {env}=makeEnv(db);
+    const send=vi.fn().mockRejectedValue(new Error('FreeTierLimitExceeded (10253)'));
+    env.PIPELINE_QUEUE.send=send;
+    for(let i=0;i<100;i++) db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES(?,'EMBED_MOVIE','{}','queued')`).run('quota:'+i);
+    const result=await schedule(env);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ok:false,queue:'limited'});
+    await schedule(env);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(db.prepare(`SELECT SUM(attempts) n FROM pipeline_jobs`).get()).toMatchObject({n:0});
+  });
+});
+
+
+describe('Queue transport recovery boundaries',()=>{
+  it('repairs unpublished and expired messages but leaves future deferrals alone',async()=>{
+    const {env,sent}=makeEnv(db);
+    await updatePipelineControl(env.MOOVIBE_LIBRARY,{historical_enabled:false,recent_enabled:false});
+    db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,queue_lease_until,available_at) VALUES
+      ('unsent','EMBED_MOVIE','{}','queued',NULL,CURRENT_TIMESTAMP),
+      ('expired','EMBED_MOVIE','{}','queued',datetime('now','-1 minute'),CURRENT_TIMESTAMP),
+      ('deferred','EMBED_MOVIE','{}','queued',NULL,datetime('now','+1 hour'))`);
+    await schedule(env);
+    expect(sent.map(j=>j.key).sort()).toEqual(['expired','unsent']);
+    await schedule(env);
+    expect(sent).toHaveLength(2);
+  });
+  it('resumes after cooldown and rejects new publications at the local budget',async()=>{
+    const {env,sent}=makeEnv(db);
+    await updatePipelineControl(env.MOOVIBE_LIBRARY,{historical_enabled:false,recent_enabled:false});
+    db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('waiting','EMBED_MOVIE','{}','queued');
+      UPDATE queue_transport SET day=date('now'),estimated_operations=6000`);
+    expect(await schedule(env)).toMatchObject({ok:false,queue:'limited'});
+    expect(sent).toHaveLength(0);
+    db.exec(`UPDATE queue_transport SET day=date('now','-1 day'),blocked_until=datetime('now','-1 minute')`);
+    expect(await schedule(env)).toMatchObject({ok:true});
+    expect(sent).toHaveLength(1);
+  });
+  it('returns safe administrative JSON when Queue capacity is exhausted',async()=>{
+    const {env}=makeEnv(db);env.ADMIN_TOKEN='test';
+    env.PIPELINE_QUEUE.send=vi.fn().mockRejectedValue(Error('10253'));
+    const response=await pipelineWorker.fetch(new Request('https://example.com/admin/run',{headers:{authorization:'Bearer test'}}),env);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ok:false,scheduler:'completed',queue:'limited'});
+  });
+});

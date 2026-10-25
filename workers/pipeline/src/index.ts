@@ -73,11 +73,43 @@ async function tmdb(env: Env, path: string, params: Record<string, unknown> = {}
   return response.json<any>();
 }
 
+// Six operations reserved per publication: write/read/delete plus retry/DLQ margin.
+// This is a local admission estimate, never account-wide Cloudflare usage.
+const QUEUE_DAILY_BUDGET = 6000;
+async function queueTransportStatus(env: Env) {
+  return env.MOOVIBE_LIBRARY.prepare(`SELECT *, 'local_reservation_estimate' AS measurement FROM queue_transport WHERE id=1`).first<any>();
+}
+async function publishJob(env: Env, job: Job, options: { delaySeconds?: number } = {}) {
+  const existing = await env.MOOVIBE_LIBRARY.prepare(`SELECT job_key FROM pipeline_jobs WHERE job_key=? AND status='queued' AND (queue_lease_until IS NULL OR queue_lease_until<=CURRENT_TIMESTAMP)`).bind(job.key).first();
+  if (!existing) return false;
+  const gate = await env.MOOVIBE_LIBRARY.prepare(`UPDATE queue_transport SET
+    estimated_operations=CASE WHEN day=date('now') THEN estimated_operations+6 ELSE 6 END,day=date('now')
+    WHERE id=1 AND (blocked_until IS NULL OR blocked_until<=CURRENT_TIMESTAMP)
+    AND (day<>date('now') OR estimated_operations+6<=?)`).bind(QUEUE_DAILY_BUDGET).run();
+  if (!gate.meta.changes) return false;
+  // Lease before send bounds the unavoidable D1/Queue ambiguity to five minutes.
+  const token = crypto.randomUUID();
+  const lease = await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET queue_publication_token=?,queue_lease_until=datetime('now','+5 minutes') WHERE job_key=? AND status='queued' AND (queue_lease_until IS NULL OR queue_lease_until<=CURRENT_TIMESTAMP)`).bind(token, job.key).run();
+  if (!lease.meta.changes) return false;
+  try {
+    await env.PIPELINE_QUEUE.send(job, options);
+    // Free retention is 24h; add grace before declaring a delivery lost.
+    await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET queue_lease_until=datetime('now','+25 hours') WHERE job_key=? AND status='queued' AND queue_publication_token=?`).bind(job.key, token).run();
+    return true;
+  } catch (error: any) {
+    const limited = /10253|FreeTierLimitExceeded|daily.*operations.*limit/i.test(String(error?.message || error));
+    const changed = await env.MOOVIBE_LIBRARY.prepare(`UPDATE queue_transport SET blocked_until=CASE WHEN ? THEN datetime('now','start of day','+1 day','+5 minutes') ELSE datetime('now','+15 minutes') END,reason=? WHERE id=1 AND (blocked_until IS NULL OR blocked_until<=CURRENT_TIMESTAMP)`)
+      .bind(limited ? 1 : 0, limited ? 'QUEUE_FREE_TIER_10253' : 'QUEUE_UNAVAILABLE').run();
+    if (changed.meta.changes) log('queue_transport_blocked', { classification: limited ? 'QUEUE_FREE_TIER_10253' : 'QUEUE_UNAVAILABLE', stage: 'publish', durable_jobs_preserved: true });
+    return false;
+  }
+}
+
 async function enqueue(env: Env, job: Job, delaySeconds = 0) {
   // Never reset attempts on error->queued: the job keeps its retry budget so a
   // persistent cause cannot loop forever. Explicit recovery resets attempts.
   const result = await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,available_at) VALUES(?,?,?,'queued',datetime('now',?)) ON CONFLICT(job_key) DO UPDATE SET type=excluded.type,payload_json=excluded.payload_json,status='queued',last_error=NULL,available_at=excluded.available_at,started_at=NULL,completed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE pipeline_jobs.status='paused' OR (pipeline_jobs.status='done' AND (pipeline_jobs.available_at IS NULL OR pipeline_jobs.available_at<=CURRENT_TIMESTAMP))`).bind(job.key, job.type, JSON.stringify(job.payload), `+${delaySeconds} seconds`).run();
-  if (result.meta.changes) await env.PIPELINE_QUEUE.send(job, { delaySeconds });
+  if (result.meta.changes) return publishJob(env, job, { delaySeconds });
   return Boolean(result.meta.changes);
 }
 
@@ -160,7 +192,7 @@ async function recoverJobs(env: Env) {
       if (changed.meta.changes) {
         const payload = JSON.parse(row.payload_json);
         if (row.type === 'DISCOVER_QUERY') await env.MOOVIBE_LIBRARY.prepare(`UPDATE collection_queries SET status='pending',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE query_id=? AND is_executable=1 AND status='running'`).bind(error, String(payload.query_id)).run();
-        await env.PIPELINE_QUEUE.send({ type: row.type as JobType, key: row.job_key, payload });
+        if (!await publishJob(env, { type: row.type as JobType, key: row.job_key, payload })) break;
         recovered++;
         log('job_retry', { job_key: row.job_key, type: row.type, attempt: row.attempts, error });
       }
@@ -169,11 +201,12 @@ async function recoverJobs(env: Env) {
     }
   }
   // Outbox repair: a crash between the D1 insert and Queue.send must not strand work.
-  const stranded = await env.MOOVIBE_LIBRARY.prepare(`SELECT job_key,type,payload_json FROM pipeline_jobs WHERE status='queued' AND updated_at<datetime('now','-5 minutes') AND (available_at IS NULL OR available_at<=CURRENT_TIMESTAMP) ORDER BY updated_at LIMIT 100`).all<any>();
+  const stranded = await env.MOOVIBE_LIBRARY.prepare(`SELECT job_key,type,payload_json FROM pipeline_jobs WHERE status='queued' AND (queue_lease_until IS NULL OR queue_lease_until<=CURRENT_TIMESTAMP) AND (available_at IS NULL OR available_at<=CURRENT_TIMESTAMP) ORDER BY updated_at LIMIT 100`).all<any>();
   let repaired = 0;
   for (const row of stranded.results) {
+    if (row.type === 'ENRICH_MOVIE' && !isMovieGenerationEnabled(env as any)) continue;
     try {
-      await env.PIPELINE_QUEUE.send({ type: row.type, key: row.job_key, payload: JSON.parse(row.payload_json) });
+      if (!await publishJob(env, { type: row.type, key: row.job_key, payload: JSON.parse(row.payload_json) })) break;
       await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='queued'`).bind(row.job_key).run();
       repaired++;
     } catch (error: any) {
@@ -313,7 +346,7 @@ export async function recoverGenerationBacklog(env: Env, limit = 25, dryRun = fa
       created = Boolean(ins.meta.changes);
       if (!created) { skipped.push(p.job_key); continue; }
     }
-    await env.PIPELINE_QUEUE.send({ type: p.type as any, key: p.job_key, payload: p.payload });
+    await publishJob(env, { type: p.type as any, key: p.job_key, payload: p.payload });
     requeued++;
   }
   // Toque das fontes INDEX em 'error' que originaram derivados (ou que foram
@@ -344,6 +377,7 @@ export async function providerStatusFull(env: Env) {
     capacityStatus(env.MOOVIBE_LIBRARY, env as any).catch(() => ({ unavailable: true }))
   ]);
   return {
+    queue: await queueTransportStatus(env),
     generation: { capacity, provider: String((env as any).MOVIE_GENERATION_PROVIDER || 'groq'), model: String((env as any).MOVIE_GENERATION_MODEL || DEFAULT_GROQ_MODEL), enabled: isMovieGenerationEnabled(env as any), pilot_limit: Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 3), pilot_used_today: stats.count, pilot_attempts_today: stats.attempts, pilot_success_today: stats.success, pilot_failed_today: stats.failed, state: gen.open ? 'LIMITADO' : 'OPERACIONAL', authentication: 'not_verified_by_status_endpoint', circuit: GENERATION_CIRCUIT, circuit_unknown: gen.unknown, cooldown_until: gen.until || null, cooldown_reason: gen.reason },
     embedding: { provider: 'gemini', model: String((env as any).EMBEDDING_MODEL || 'gemini-embedding-2'), dimensions: Number((env as any).EMBEDDING_DIMENSIONS || 768), state: (emb as any).open ? 'LIMITADO' : 'OPERACIONAL', cooldown_until: (emb as any).until || null }
   };
@@ -370,7 +404,7 @@ async function requeueKnownFailures(env: Env) {
         const reset = await env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET collection_status='discovered',last_error=? WHERE tmdb_id=? AND collection_status='complete'`).bind(`requeued after ${rule.reason}`, Number(payload.tmdb_id)).run();
         if (reset.meta.changes) moviesReset++;
       }
-      await env.PIPELINE_QUEUE.send({
+      await publishJob(env, {
         type: rule.type,
         key: row.job_key,
         payload
@@ -395,13 +429,15 @@ async function requeueKnownFailures(env: Env) {
   };
 }
 
-async function schedule(env: Env) {
+async function scheduleWork(env: Env) {
   log('cron_started');
+  const failedStages: string[] = [];
   // Version-gated bootstrap/sync: one 1-row read per cron and zero row writes
   // while definitions are unchanged. A seed failure must not stall the cron.
   try {
     await syncDiscoverySeed(env);
   } catch (error: any) {
+    failedStages.push('discovery_seed');
     log('discovery_seed_failed', {
       error: String(error?.message || error).slice(0, 300)
     });
@@ -410,6 +446,7 @@ async function schedule(env: Env) {
   try {
     recovery = await recoverJobs(env);
   } catch (error: any) {
+    failedStages.push('recover_jobs');
     log('cron_stage_failed', { stage: 'recover_jobs', classification: 'infrastructure', error: String(error?.message || error).slice(0, 300) });
   }
   // Safe mode + overscan: when generation is disabled, enrichment backlog is
@@ -496,7 +533,7 @@ async function schedule(env: Env) {
       historicalDiscoveryQueued++;
   const discoveryQueued = recentDiscoveryQueued + historicalDiscoveryQueued;
   await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO system_state(key,value) VALUES('last_cron_at',CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP`).run();
-  log('cron_complete', {
+  log('cron_scheduling_finished', {
     pipeline_jobs: pipelineQueued,
     discovery_jobs: discoveryQueued,
     recent_discovery_jobs: recentDiscoveryQueued,
@@ -507,6 +544,22 @@ async function schedule(env: Env) {
     recovered_stale: recovery.stale,
     recovered_stranded: recovery.stranded
   });
+  return failedStages;
+}
+
+async function schedule(env: Env) {
+  try {
+    const failedStages = await scheduleWork(env);
+    const transport = await queueTransportStatus(env);
+    const limited = transport && ((transport.blocked_until && transport.blocked_until > new Date().toISOString().replace('T',' ').slice(0,19)) || (transport.day === new Date().toISOString().slice(0,10) && transport.estimated_operations >= QUEUE_DAILY_BUDGET));
+    const result = { ok: !limited && !failedStages.length, failed_stages: failedStages, scheduler: 'completed', queue: limited ? 'limited' : 'available', transport, execution_completed: false };
+    await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO system_state(key,value) VALUES('last_scheduler_result',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP`).bind(JSON.stringify(result)).run();
+    log(result.ok ? 'cron_complete' : 'cron_partial', result);
+    return result;
+  } catch (error) {
+    log('cron_failed', { stage: 'scheduler', classification: 'infrastructure' });
+    return { ok: false, scheduler: 'interrupted', stage: 'scheduler', error: 'scheduler_infrastructure_failure' };
+  }
 }
 
 // Reserved static keys describe a RUNTIME window: concrete dates are computed
@@ -1115,7 +1168,7 @@ async function health(env: Env) {
   const counts = await env.MOOVIBE_LIBRARY.prepare(`SELECT COUNT(*) movies,SUM(enrichment_status='complete') enriched,SUM(embedding_status='complete') embedded FROM movies`).first();
   const jobs = await env.MOOVIBE_LIBRARY.prepare(`SELECT status,COUNT(*) count FROM pipeline_jobs GROUP BY status`).all();
   const state = await env.MOOVIBE_LIBRARY.prepare(`SELECT key,value,updated_at FROM system_state`).all();
-  return { ok: true, counts, jobs: jobs.results, state: state.results };
+  return { ok: true, counts, jobs: jobs.results, state: state.results, queue: await queueTransportStatus(env) };
 }
 
 const backlogCache = new WeakMap<object, { at: number; value: any }>();
@@ -1173,20 +1226,16 @@ export default {
     // sua mensagem e nunca derruba o batch inteiro para as demais.
     await Promise.all(batch.messages.map(async (message) => {
       try {
+        // Receiving a delivery ends its publication lease, including early deliveries.
+        await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET queue_lease_until=NULL,queue_publication_token=NULL WHERE job_key=? AND status='queued' AND queue_lease_until IS NOT NULL`).bind(message.body.key).run();
         const outcome = await processJob(env, message.body);
         // Adiamento administrativo (modo seguro / piloto esgotado) e durvel em
         // D1: a mensagem e reconhecida sem consumir entregas da fila, e o
         // outbox do cron a reenvia quando available_at vencer. Assim o job
         // nunca cai em DLQ por aguardar ativacao do administrador.
-        if (outcome.deferred) {
-          // A fresh delayed delivery does not consume Queue retries. D1 remains
-          // authoritative if sending fails; the bounded outbox recovers it.
-          if (outcome.delaySeconds && outcome.delaySeconds <= 900)
-            await env.PIPELINE_QUEUE.send(message.body, { delaySeconds: Math.ceil(outcome.delaySeconds) + 1 });
-          message.ack();
-        }
-        else if (outcome.retry) message.retry({ delaySeconds: outcome.delaySeconds });
-        else message.ack();
+        // Retry/defer is already persisted. Cron publishes only when due;
+        // no Queue retries or repeated quota polling while waiting.
+        message.ack();
       } catch (error: any) {
         log('queue_message_failed', { job_key: message.body?.key, type: message.body?.type, error: String(error?.message || error).slice(0, 300) });
         message.retry();
@@ -1269,8 +1318,8 @@ export default {
     }
     if (url.pathname === '/admin/run') {
       if (!admin()) return json({ error: 'unauthorized' }, 401);
-      await schedule(env);
-      return json({ ok: true });
+      const result = await schedule(env);
+      return json(result, result.ok ? 200 : 503);
     }
     if (url.pathname === '/admin/seed') {
       if (!admin()) return json({ error: 'unauthorized' }, 401);
