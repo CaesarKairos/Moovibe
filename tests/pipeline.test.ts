@@ -595,6 +595,16 @@ describe('throughput and bounded failure recovery',()=>{
     expect(db.prepare("SELECT COUNT(*) n FROM pipeline_jobs WHERE status='done'").get()).toEqual({n:2});
     expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key LIKE 'embedding-lock:%'`).get()).toEqual({n:0});
   });
+  it('disabled local Queue admission keeps publishing but still honors the provider circuit',async()=>{
+    const {env,sent}=makeEnv(db);env.QUEUE_LOCAL_ADMISSION_ENABLED='false';env.GROQ_CAPACITY_MODE='provider';
+    await updatePipelineControl(env.MOOVIBE_LIBRARY,{historical_enabled:false,recent_enabled:false});
+    db.exec(`UPDATE queue_transport SET day=date('now'),estimated_operations=9000;
+      INSERT INTO pipeline_jobs(job_key,type,payload_json) VALUES('unregulated','EMBED_MOVIE','{"tmdb_id":8810}')`);
+    expect(await schedule(env)).toMatchObject({ok:true,queue:'available'});expect(sent).toHaveLength(1);
+    db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json) VALUES('blocked','EMBED_MOVIE','{"tmdb_id":8811}');
+      UPDATE queue_transport SET blocked_until=datetime('now','+1 day'),reason='QUEUE_FREE_TIER_10253'`);
+    expect(await schedule(env)).toMatchObject({ok:false,queue:'limited'});expect(sent).toHaveLength(1);
+  });
   it('lightweight minute cron repairs due jobs without creating discoveries',async()=>{
     const {env,sent}=makeEnv(db);db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json) VALUES('embed:8804:movie-v1','EMBED_MOVIE','{"tmdb_id":8804}')`);
     vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-26T10:01:00Z'));

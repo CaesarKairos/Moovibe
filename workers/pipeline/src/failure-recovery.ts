@@ -64,10 +64,10 @@ export async function throughputStatus(db:D1Database,env:Record<string,unknown>=
   let recentDenial:any=null;try{recentDenial=JSON.parse(denial?.value||'null');}catch{}
   const reasons:string[]=[];
   if(blocked) reasons.push(queue.reason||'QUEUE_BLOCKED');
-  if(queue?.day===new Date().toISOString().slice(0,10)&&queue.estimated_operations+3>8000) reasons.push('QUEUE_LOCAL_BUDGET');
-  if(recentDenial?.until>Date.now()) reasons.push(recentDenial.reason);
-  if(capacity?.reserved_tokens>=config.tpd) reasons.push('GROQ_TPD');
-  if(capacity?.attempts>=Math.min(config.rpd,capacity?.server_rpd??config.rpd,capacity?.server_daily_ceiling??config.rpd)) reasons.push('GROQ_RPD');
+  if(env.QUEUE_LOCAL_ADMISSION_ENABLED!=='false' && queue?.day===new Date().toISOString().slice(0,10)&&queue.estimated_operations+3>8000) reasons.push('QUEUE_LOCAL_BUDGET');
+  if(env.GROQ_CAPACITY_MODE!=='provider' && recentDenial?.until>Date.now()) reasons.push(recentDenial.reason);
+  if(env.GROQ_CAPACITY_MODE!=='provider' && capacity?.reserved_tokens>=config.tpd) reasons.push('GROQ_TPD');
+  if(env.GROQ_CAPACITY_MODE!=='provider' && capacity?.attempts>=Math.min(config.rpd,capacity?.server_rpd??config.rpd,capacity?.server_daily_ceiling??config.rpd)) reasons.push('GROQ_RPD');
   if(capacity?.attempts>=Math.min(800,Number(env.MOVIE_GENERATION_PILOT_LIMIT??800))) reasons.push('ADMIN_ATTEMPT_CAP');
   if(capacity?.next_at>Date.now()) reasons.push('PROVIDER_COOLDOWN');
   if(jobs.ready&&!jobs.running) reasons.push('READY_WITHOUT_EXECUTION_EVIDENCE');

@@ -21,6 +21,8 @@ interface Env {
   GEMINI_API_KEY: string;
   TMDB_API_KEY: string;
   ADMIN_TOKEN?: string;
+  GROQ_CAPACITY_MODE?: string;
+  QUEUE_LOCAL_ADMISSION_ENABLED?: string;
   GEMINI_PROJECT_LABEL?: string;
   EMBEDDING_MODEL: string;
   EMBEDDING_DIMENSIONS: string;
@@ -79,7 +81,7 @@ async function tmdb(env: Env, path: string, params: Record<string, unknown> = {}
 const QUEUE_DAILY_BUDGET = 8000;
 async function queueTransportStatus(env: Env) {
   const row=await env.MOOVIBE_LIBRARY.prepare(`SELECT *, 'local_reservation_estimate' AS measurement FROM queue_transport WHERE id=1`).first<any>();
-  return {...row, daily_local_budget:QUEUE_DAILY_BUDGET, account_free_limit:10000, account_actual_operations:null, safety_operations:2000};
+  return {...row, daily_local_budget:QUEUE_DAILY_BUDGET, account_free_limit:10000, account_actual_operations:null, safety_operations:2000, local_admission_enabled:env.QUEUE_LOCAL_ADMISSION_ENABLED!=='false'};
 }
 async function publishJob(env: Env, job: Job, options: { delaySeconds?: number } = {}) {
   const token=crypto.randomUUID();
@@ -92,7 +94,7 @@ async function publishJob(env: Env, job: Job, options: { delaySeconds?: number }
   const gate=await env.MOOVIBE_LIBRARY.prepare(`UPDATE queue_transport SET
     estimated_operations=CASE WHEN day=date('now') THEN estimated_operations+3 ELSE 3 END,day=date('now')
     WHERE id=1 AND (blocked_until IS NULL OR blocked_until<=CURRENT_TIMESTAMP)
-    AND (day<>date('now') OR estimated_operations+3<=?)`).bind(QUEUE_DAILY_BUDGET).run();
+    AND (?=1 OR day<>date('now') OR estimated_operations+3<=?)`).bind(env.QUEUE_LOCAL_ADMISSION_ENABLED==='false'?1:0,QUEUE_DAILY_BUDGET).run();
   if(!gate.meta.changes) {
     await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET publication_state='queue_quota',queue_lease_until=NULL,queue_publication_token=NULL WHERE job_key=? AND queue_publication_token=?`).bind(job.key,token).run();
     return false;
@@ -221,7 +223,7 @@ async function recoverJobs(env: Env) {
   const stranded = await env.MOOVIBE_LIBRARY.prepare(`SELECT job_key,type,payload_json FROM pipeline_jobs WHERE status='queued' AND (queue_lease_until IS NULL OR queue_lease_until<=CURRENT_TIMESTAMP) AND (available_at IS NULL OR available_at<=CURRENT_TIMESTAMP) ORDER BY (type='DISCOVER_QUERY'),updated_at LIMIT 100`).all<any>();
   let repaired = 0;
   const generationCircuit=await circuitState(env.MOOVIBE_LIBRARY,GENERATION_CIRCUIT);
-  const generationReady=isMovieGenerationEnabled(env as any) && !generationCircuit.open && (await plannedCapacity(env.MOOVIBE_LIBRARY,env as any))>0;
+  const generationReady=isMovieGenerationEnabled(env as any) && !generationCircuit.open && (env.GROQ_CAPACITY_MODE==='provider' || (await plannedCapacity(env.MOOVIBE_LIBRARY,env as any))>0);
   for (const row of stranded.results) {
     if (row.type === 'ENRICH_MOVIE' && !generationReady) continue;
     try {
@@ -473,7 +475,7 @@ async function scheduleWork(env: Env) {
   const generationEnabled = isMovieGenerationEnabled(env as any);
   const genCircuit = await circuitState(env.MOOVIBE_LIBRARY, GENERATION_CIRCUIT);
   let generationRemaining = Math.max(0, Number(env.MOVIE_GENERATION_PILOT_LIMIT || 3) - await pilotCountToday(env.MOOVIBE_LIBRARY));
-  generationRemaining = Math.min(generationRemaining, await plannedCapacity(env.MOOVIBE_LIBRARY, env as any).catch(() => 0));
+  if(env.GROQ_CAPACITY_MODE!=='provider') generationRemaining = Math.min(generationRemaining, await plannedCapacity(env.MOOVIBE_LIBRARY, env as any).catch(() => 0));
   const embCircuit = await circuitState(env.MOOVIBE_LIBRARY, 'embedding-gemini');
   const over = BACKLOG_OVERSCAN;
   const [collection, enrichment, embedding] = await Promise.all([
@@ -529,7 +531,7 @@ async function scheduleWork(env: Env) {
   }
   const control = await readPipelineControl(env.MOOVIBE_LIBRARY);
   const pressure=await env.MOOVIBE_LIBRARY.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE status='queued' AND type<>'DISCOVER_QUERY'`).first<any>();
-  const discoveryUseful=Number(pressure?.n||0)<200;
+  const discoveryUseful=env.GROQ_CAPACITY_MODE==='provider' || Number(pressure?.n||0)<200;
   const [recentDue, historicalDue] = await Promise.all([control.recent_enabled && discoveryUseful ? env.MOOVIBE_LIBRARY.prepare(RECENT_DISCOVERY_DUE_SQL).bind(RECENT_DISCOVERY_BUDGET).all<{ query_id: string }>() : Promise.resolve({ results: [] as { query_id: string }[] }), control.historical_enabled && discoveryUseful ? env.MOOVIBE_LIBRARY.prepare(HISTORICAL_DISCOVERY_DUE_SQL).bind(HISTORICAL_DISCOVERY_BUDGET).all<{ query_id: string }>() : Promise.resolve({ results: [] as { query_id: string }[] })]);
   let recentDiscoveryQueued = 0,
     historicalDiscoveryQueued = 0;
@@ -571,7 +573,7 @@ async function schedule(env: Env) {
   try {
     const failedStages = await scheduleWork(env);
     const transport = await queueTransportStatus(env);
-    const limited = transport && ((transport.blocked_until && transport.blocked_until > new Date().toISOString().replace('T',' ').slice(0,19)) || (transport.day === new Date().toISOString().slice(0,10) && transport.estimated_operations + 3 > QUEUE_DAILY_BUDGET));
+    const limited = transport && ((transport.blocked_until && transport.blocked_until > new Date().toISOString().replace('T',' ').slice(0,19)) || (env.QUEUE_LOCAL_ADMISSION_ENABLED!=='false' && transport.day === new Date().toISOString().slice(0,10) && transport.estimated_operations + 3 > QUEUE_DAILY_BUDGET));
     const result = { ok: !limited && !failedStages.length, failed_stages: failedStages, scheduler: 'completed', queue: limited ? 'limited' : 'available', transport, execution_completed: false };
     await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO system_state(key,value) VALUES('last_scheduler_result',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP`).bind(JSON.stringify(result)).run();
     log(result.ok ? 'cron_complete' : 'cron_partial', result);
@@ -913,6 +915,7 @@ async function enrichOwned(env: Env, job: Job, lockKey: string, lockToken: strin
   };
   await assertCircuitAvailable();
   const provider = createMovieGenerationProvider(env);
+  provider.setLocalAdmissionEnabled(env.GROQ_CAPACITY_MODE!=='provider');
   const pilotLimit = Number(env.MOVIE_GENERATION_PILOT_LIMIT || 3);
   // One atomic slot per real HTTP, including the bounded internal retry.
   let reservation: { day: string; tokens: number } | null = null;

@@ -98,6 +98,18 @@ describe('durable Groq admission', () => {
     }
     expect(total).toBe(70);expect(row()).toMatchObject({attempts:70,reserved_tokens:70000});
   });
+  it('provider mode records concurrent attempts without applying local minute or daily budgets',async()=>{
+    const env={GROQ_CAPACITY_MODE:'provider',GROQ_RPM:0,GROQ_TPM:0,GROQ_TPD:0};
+    const results=await Promise.allSettled(Array.from({length:100},()=>reserveCapacity(db,env,1000,now)));
+    expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(100);
+    expect(row()).toMatchObject({attempts:100,reserved_tokens:100000});
+  });
+  it.each([false,true])('predictive cooldown follows local admission mode %s',async enabled=>{
+    const client=new GroqClient('test','model',async()=>new Response(JSON.stringify({choices:[{message:{content:'{}'}}]}),{headers:{'x-ratelimit-remaining-tokens':'100','x-ratelimit-reset-tokens':'2m'}}));
+    client.setLocalAdmissionEnabled(enabled);const cooldown=vi.fn(async()=>{});client.setCooldownReporter(cooldown);
+    await expect(client.generateJson({system:'test',prompt:'test',schema:{}})).rejects.toThrow();
+    expect(cooldown).toHaveBeenCalledTimes(enabled?1:0);
+  });
   it('D1 failure denies network admission', async () => {
     await expect(reserveCapacity({prepare(){throw Error('offline');}} as any,{},1000,now)).rejects.toMatchObject({deferred:true,retryAfter:300});
   });

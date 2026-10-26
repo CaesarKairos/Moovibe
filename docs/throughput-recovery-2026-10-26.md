@@ -1,3 +1,5 @@
+> Atualiza??o posterior, por solicita??o do usu?rio: o wrangler agora configura `GROQ_CAPACITY_MODE=provider` e `QUEUE_LOCAL_ADMISSION_ENABLED=false`. Os gates estimados locais de RPM/TPM/TPD e opera??es da Queue est?o desativados; os contadores continuam como telemetria. Permanecem o teto de 800 tentativas, idempot?ncia, locks, leases e circuitos por resposta real 429/10253. A suspens?o autom?tica de descoberta por volume de backlog tamb?m fica desativada nesse modo. O servi?o Free passa a ser a autoridade de quota; a estimativa local n?o garante saldo global nem confirma o plano contratado. A descri??o abaixo registra a implementa??o anterior dos gates, ainda dispon?vel no modo local.
+
 # Throughput e recuperação de falhas
 
 ## Evidência e limites do diagnóstico

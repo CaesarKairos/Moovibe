@@ -52,6 +52,8 @@ export function groqCooldown(headers: Headers, status: number, message = '', req
 
 export class GroqClient implements GenerationProvider {
   readonly name = 'groq';
+  private localAdmissionEnabled = true;
+  setLocalAdmissionEnabled(enabled: boolean): void { this.localAdmissionEnabled = enabled; }
   private budget: ((reservation: number) => Promise<boolean>) | null = null;
   private reporter: ((outcome: Outcome) => Promise<void>) | null = null;
   private cooldownReporter: ((seconds: number, reason: string) => Promise<void>) | null = null;
@@ -100,7 +102,7 @@ export class GroqClient implements GenerationProvider {
           // A 429 always yields to the durable queue/circuit, never a short retry.
           throw new GroqError(`Groq ${response.status}: ${this.redact(text)}`, response.status, cooldown.seconds, cooldown.daily);
         }
-        const cooldown = groqCooldown(response.headers, response.status, '', new TextEncoder().encode(body).length + this.maxCompletionTokens + 256);
+        const cooldown = groqCooldown(response.headers, response.status, '', this.localAdmissionEnabled ? new TextEncoder().encode(body).length + this.maxCompletionTokens + 256 : 0);
         if (cooldown.seconds && this.cooldownReporter) await this.cooldownReporter(cooldown.seconds, cooldown.daily ? 'Groq daily request limit' : 'Groq token limit');
         let data: any;
         try { data = await response.json(); }

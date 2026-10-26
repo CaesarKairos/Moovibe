@@ -24,6 +24,16 @@ export async function reserveCapacity(db: D1Database, env: Record<string, unknow
     const error = new GroqError(`Groq capacity deferred: ${reason}`);
     error.deferred = true; error.retryAfter = Math.max(1, seconds); throw error;
   };
+  // Provider-controlled mode records usage without local RPM/TPM/TPD admission.
+  // The administrative attempt cap and provider cooldown remain in the caller.
+  if(env.GROQ_CAPACITY_MODE==='provider') {
+    try {
+      await db.prepare(`INSERT INTO groq_capacity(day) VALUES(?) ON CONFLICT(day) DO NOTHING`).bind(day).run();
+      const id=crypto.randomUUID();
+      await db.prepare(`INSERT INTO groq_admissions(id,day,admitted_at,tokens) VALUES(?,?,?,?)`).bind(id,day,now,tokens).run();
+      return {id,day,tokens};
+    } catch {return denied(300,'D1 unavailable; fail closed');}
+  }
   const reset = Math.ceil((Date.parse(day)+86400000-now)/1000);
   if (!Number.isSafeInteger(tokens) || tokens<1 || c.rpm<1 || c.rpd<1 || tokens>c.tpd || tokens>c.tpm || tokens>(c.itpm??Infinity) || 2048>(c.otpm??Infinity))
     return denied(reset, 'request exceeds configured budget');
