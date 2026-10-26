@@ -4,7 +4,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
-  "triggers": { "crons": ["*/15 * * * *"] },
+  "triggers": { "crons": ["* * * * *"] },
   "vars": {
     "EMBEDDING_MODEL": "gemini-embedding-2",
     "EMBEDDING_DIMENSIONS": "768",

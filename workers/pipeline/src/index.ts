@@ -1,3 +1,4 @@
+import { diagnoseFailures, recoverFailures, recoveryProgress, throughputStatus } from './failure-recovery';
 import { moviePrompt, MOVIE_SYSTEM } from './movie-prompt';
 import { reserveCapacity, recordCapacity, capacityStatus, plannedCapacity } from './groq-capacity';
 import { GeminiClient, RetryableError } from '../../../functions/_lib/gemini.js';
@@ -5,14 +6,14 @@ import { buildMovieDocument, EMBEDDING_SCHEMA_VERSION } from '../../../functions
 import { writeAudit } from '../../../functions/_lib/audit.js';
 import { runGeminiHealth } from '../../../functions/_lib/gemini-health.js';
 import { discoveryQueries, splitDateInterval } from './queries';
-import { BACKLOG_OVERSCAN, COLLECTION_BACKLOG_BUDGET, COLLECTION_BACKLOG_SQL, EMBEDDING_BACKLOG_BUDGET, EMBEDDING_BACKLOG_SQL, ENRICHMENT_BACKLOG_BUDGET, ENRICHMENT_BACKLOG_SQL, HISTORICAL_DISCOVERY_BUDGET, HISTORICAL_DISCOVERY_DUE_SQL, PIPELINE_BUDGET, RECENT_DISCOVERY_BUDGET, RECENT_DISCOVERY_DUE_SQL, STALE_JOBS_SQL, STALE_JOB_MINUTES, retryDelaySeconds, shouldRetry, stableDiscoveryKey } from './job-policy';
+import { MAX_JOB_ATTEMPTS, BACKLOG_OVERSCAN, COLLECTION_BACKLOG_BUDGET, COLLECTION_BACKLOG_SQL, EMBEDDING_BACKLOG_BUDGET, EMBEDDING_BACKLOG_SQL, ENRICHMENT_BACKLOG_BUDGET, ENRICHMENT_BACKLOG_SQL, HISTORICAL_DISCOVERY_BUDGET, HISTORICAL_DISCOVERY_DUE_SQL, PIPELINE_BUDGET, RECENT_DISCOVERY_BUDGET, RECENT_DISCOVERY_DUE_SQL, STALE_JOBS_SQL, STALE_JOB_MINUTES, retryDelaySeconds, shouldRetry, stableDiscoveryKey } from './job-policy';
 import { classifyProviderError } from './provider-errors';
 import { closeCircuit, circuitState, openCircuit, validateEnrichment, ENRICHMENT_JSON_SCHEMA } from './generation-provider';
 import { createMovieGenerationProvider, isMovieGenerationEnabled, DEFAULT_GROQ_MODEL, GENERATION_CIRCUIT } from './generation-factory';
 import { laneEnabled, queryDiscoveryLane, readPipelineControl, updatePipelineControl } from './pipeline-control';
 
 type JobType = 'DISCOVER_QUERY' | 'INDEX_MOVIE' | 'FETCH_MOVIE' | 'ENRICH_MOVIE' | 'EMBED_MOVIE' | 'REFRESH_MOVIE' | 'REEMBED_MOVIE';
-type Job = { type: JobType; key: string; payload: Record<string, unknown> };
+type Job = { type: JobType; key: string; payload: Record<string, unknown>; publicationToken?: string };
 interface Env {
   MOOVIBE_LIBRARY: D1Database;
   MOVIE_VECTORS: VectorizeIndex;
@@ -73,34 +74,46 @@ async function tmdb(env: Env, path: string, params: Record<string, unknown> = {}
   return response.json<any>();
 }
 
-// Six operations reserved per publication: write/read/delete plus retry/DLQ margin.
-// This is a local admission estimate, never account-wide Cloudflare usage.
-const QUEUE_DAILY_BUDGET = 6000;
+// Three standard operations (write/read/delete), plus 2,000 reserved account
+// operations for retries, DLQ and other producers. This is NOT account telemetry.
+const QUEUE_DAILY_BUDGET = 8000;
 async function queueTransportStatus(env: Env) {
-  return env.MOOVIBE_LIBRARY.prepare(`SELECT *, 'local_reservation_estimate' AS measurement FROM queue_transport WHERE id=1`).first<any>();
+  const row=await env.MOOVIBE_LIBRARY.prepare(`SELECT *, 'local_reservation_estimate' AS measurement FROM queue_transport WHERE id=1`).first<any>();
+  return {...row, daily_local_budget:QUEUE_DAILY_BUDGET, account_free_limit:10000, account_actual_operations:null, safety_operations:2000};
 }
 async function publishJob(env: Env, job: Job, options: { delaySeconds?: number } = {}) {
-  const existing = await env.MOOVIBE_LIBRARY.prepare(`SELECT job_key FROM pipeline_jobs WHERE job_key=? AND status='queued' AND (queue_lease_until IS NULL OR queue_lease_until<=CURRENT_TIMESTAMP)`).bind(job.key).first();
-  if (!existing) return false;
-  const gate = await env.MOOVIBE_LIBRARY.prepare(`UPDATE queue_transport SET
-    estimated_operations=CASE WHEN day=date('now') THEN estimated_operations+6 ELSE 6 END,day=date('now')
+  const token=crypto.randomUUID();
+  // Acquire ownership BEFORE charging: duplicate publishers spend no Queue budget.
+  const lease=await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET queue_publication_token=?,publication_state='publishing',queue_lease_until=datetime('now','+5 minutes')
+    WHERE job_key=? AND status='queued' AND (available_at IS NULL OR available_at<=datetime('now',?))
+    AND (queue_lease_until IS NULL OR queue_lease_until<=CURRENT_TIMESTAMP)`)
+    .bind(token,job.key,`+${Math.min(43200,Math.max(0,options.delaySeconds||0))} seconds`).run();
+  if(!lease.meta.changes) return false;
+  const gate=await env.MOOVIBE_LIBRARY.prepare(`UPDATE queue_transport SET
+    estimated_operations=CASE WHEN day=date('now') THEN estimated_operations+3 ELSE 3 END,day=date('now')
     WHERE id=1 AND (blocked_until IS NULL OR blocked_until<=CURRENT_TIMESTAMP)
-    AND (day<>date('now') OR estimated_operations+6<=?)`).bind(QUEUE_DAILY_BUDGET).run();
-  if (!gate.meta.changes) return false;
-  // Lease before send bounds the unavoidable D1/Queue ambiguity to five minutes.
-  const token = crypto.randomUUID();
-  const lease = await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET queue_publication_token=?,queue_lease_until=datetime('now','+5 minutes') WHERE job_key=? AND status='queued' AND (queue_lease_until IS NULL OR queue_lease_until<=CURRENT_TIMESTAMP)`).bind(token, job.key).run();
-  if (!lease.meta.changes) return false;
+    AND (day<>date('now') OR estimated_operations+3<=?)`).bind(QUEUE_DAILY_BUDGET).run();
+  if(!gate.meta.changes) {
+    await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET publication_state='queue_quota',queue_lease_until=NULL,queue_publication_token=NULL WHERE job_key=? AND queue_publication_token=?`).bind(job.key,token).run();
+    return false;
+  }
   try {
-    await env.PIPELINE_QUEUE.send(job, options);
-    // Free retention is 24h; add grace before declaring a delivery lost.
-    await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET queue_lease_until=datetime('now','+25 hours') WHERE job_key=? AND status='queued' AND queue_publication_token=?`).bind(job.key, token).run();
+    // Mark ambiguity BEFORE crossing the network boundary: a Worker crash
+    // after send must never turn a real message into a five-minute lease.
+    await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET publication_state='publication_unknown',queue_lease_until=datetime('now','+24 hours','+5 minutes') WHERE job_key=? AND queue_publication_token=?`).bind(job.key,token).run();
+    await env.PIPELINE_QUEUE.send({...job,publicationToken:token},options);
+    // Confirmed delivery is protected for retention + five-minute grace.
+    await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET publication_state='awaiting_delivery',queue_lease_until=datetime('now','+24 hours','+5 minutes') WHERE job_key=? AND status='queued' AND queue_publication_token=?`).bind(job.key,token).run();
     return true;
-  } catch (error: any) {
-    const limited = /10253|FreeTierLimitExceeded|daily.*operations.*limit/i.test(String(error?.message || error));
-    const changed = await env.MOOVIBE_LIBRARY.prepare(`UPDATE queue_transport SET blocked_until=CASE WHEN ? THEN datetime('now','start of day','+1 day','+5 minutes') ELSE datetime('now','+15 minutes') END,reason=? WHERE id=1 AND (blocked_until IS NULL OR blocked_until<=CURRENT_TIMESTAMP)`)
-      .bind(limited ? 1 : 0, limited ? 'QUEUE_FREE_TIER_10253' : 'QUEUE_UNAVAILABLE').run();
-    if (changed.meta.changes) log('queue_transport_blocked', { classification: limited ? 'QUEUE_FREE_TIER_10253' : 'QUEUE_UNAVAILABLE', stage: 'publish', durable_jobs_preserved: true });
+  } catch(error:any) {
+    const limited=/10253|FreeTierLimitExceeded|daily.*operations.*limit/i.test(String(error?.message||error));
+    // Explicit rejection means no message exists. Network errors are ambiguous;
+    // preserve ownership for retention instead of blindly resending.
+    await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET publication_state=?,queue_lease_until=CASE WHEN ? THEN NULL ELSE datetime('now','+24 hours','+5 minutes') END WHERE job_key=? AND queue_publication_token=?`)
+      .bind(limited?'queue_quota':'publication_unknown',limited?1:0,job.key,token).run();
+    const changed=await env.MOOVIBE_LIBRARY.prepare(`UPDATE queue_transport SET blocked_until=CASE WHEN ? THEN datetime('now','start of day','+1 day','+5 minutes') ELSE datetime('now','+15 minutes') END,reason=? WHERE id=1 AND (blocked_until IS NULL OR blocked_until<=CURRENT_TIMESTAMP)`)
+      .bind(limited?1:0,limited?'QUEUE_FREE_TIER_10253':'QUEUE_UNAVAILABLE').run();
+    if(changed.meta.changes) log('queue_transport_blocked',{classification:limited?'QUEUE_FREE_TIER_10253':'QUEUE_UNAVAILABLE',stage:'publish',durable_jobs_preserved:true});
     return false;
   }
 }
@@ -188,6 +201,10 @@ async function recoverJobs(env: Env) {
   for (const row of stale.results) {
     try {
       const error = `stale lease recovered after ${STALE_JOB_MINUTES} minutes`;
+      if(row.attempts>=MAX_JOB_ATTEMPTS) {
+        await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='error',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='running' AND updated_at<datetime('now',?)`).bind('[STALE_RETRY_EXHAUSTED] '+error,row.job_key,`-${STALE_JOB_MINUTES} minutes`).run();
+        continue;
+      }
       const changed = await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET status='queued',last_error=?,available_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='running' AND updated_at < datetime('now',?)`).bind(error, row.job_key, `-${STALE_JOB_MINUTES} minutes`).run();
       if (changed.meta.changes) {
         const payload = JSON.parse(row.payload_json);
@@ -201,10 +218,12 @@ async function recoverJobs(env: Env) {
     }
   }
   // Outbox repair: a crash between the D1 insert and Queue.send must not strand work.
-  const stranded = await env.MOOVIBE_LIBRARY.prepare(`SELECT job_key,type,payload_json FROM pipeline_jobs WHERE status='queued' AND (queue_lease_until IS NULL OR queue_lease_until<=CURRENT_TIMESTAMP) AND (available_at IS NULL OR available_at<=CURRENT_TIMESTAMP) ORDER BY updated_at LIMIT 100`).all<any>();
+  const stranded = await env.MOOVIBE_LIBRARY.prepare(`SELECT job_key,type,payload_json FROM pipeline_jobs WHERE status='queued' AND (queue_lease_until IS NULL OR queue_lease_until<=CURRENT_TIMESTAMP) AND (available_at IS NULL OR available_at<=CURRENT_TIMESTAMP) ORDER BY (type='DISCOVER_QUERY'),updated_at LIMIT 100`).all<any>();
   let repaired = 0;
+  const generationCircuit=await circuitState(env.MOOVIBE_LIBRARY,GENERATION_CIRCUIT);
+  const generationReady=isMovieGenerationEnabled(env as any) && !generationCircuit.open && (await plannedCapacity(env.MOOVIBE_LIBRARY,env as any))>0;
   for (const row of stranded.results) {
-    if (row.type === 'ENRICH_MOVIE' && !isMovieGenerationEnabled(env as any)) continue;
+    if (row.type === 'ENRICH_MOVIE' && !generationReady) continue;
     try {
       if (!await publishJob(env, { type: row.type, key: row.job_key, payload: JSON.parse(row.payload_json) })) break;
       await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND status='queued'`).bind(row.job_key).run();
@@ -276,7 +295,7 @@ async function pilotTally(db: D1Database, field: 'success' | 'failed'): Promise<
 // Virada de dia UTC: dia<>hoje reinicia em 1 automaticamente.
 async function pilotConsume(db: D1Database, limit: number): Promise<boolean> {
   const day = new Date().toISOString().slice(0, 10);
-  const cap = Math.max(1, Math.min(10000, Number(limit) || 3));
+  const cap = Math.max(1, Math.min(800, Number(limit) || 3));
   try {
     await db.prepare(`INSERT INTO system_state(key,value,updated_at) VALUES('gen_pilot_count:groq',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO NOTHING`)
       .bind(JSON.stringify({ day: '', count: 0, attempts: 0, success: 0, failed: 0 })).run();
@@ -346,8 +365,7 @@ export async function recoverGenerationBacklog(env: Env, limit = 25, dryRun = fa
       created = Boolean(ins.meta.changes);
       if (!created) { skipped.push(p.job_key); continue; }
     }
-    await publishJob(env, { type: p.type as any, key: p.job_key, payload: p.payload });
-    requeued++;
+    if (await publishJob(env, { type: p.type as any, key: p.job_key, payload: p.payload })) requeued++;
   }
   // Toque das fontes INDEX em 'error' que originaram derivados (ou que foram
   // planejadas como INDEX direto mas nao reativaram — ja tocadas pelo UPDATE
@@ -378,7 +396,7 @@ export async function providerStatusFull(env: Env) {
   ]);
   return {
     queue: await queueTransportStatus(env),
-    generation: { capacity, provider: String((env as any).MOVIE_GENERATION_PROVIDER || 'groq'), model: String((env as any).MOVIE_GENERATION_MODEL || DEFAULT_GROQ_MODEL), enabled: isMovieGenerationEnabled(env as any), pilot_limit: Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 3), pilot_used_today: stats.count, pilot_attempts_today: stats.attempts, pilot_success_today: stats.success, pilot_failed_today: stats.failed, state: gen.open ? 'LIMITADO' : 'OPERACIONAL', authentication: 'not_verified_by_status_endpoint', circuit: GENERATION_CIRCUIT, circuit_unknown: gen.unknown, cooldown_until: gen.until || null, cooldown_reason: gen.reason },
+    generation: { capacity, provider: String((env as any).MOVIE_GENERATION_PROVIDER || 'groq'), model: String((env as any).MOVIE_GENERATION_MODEL || DEFAULT_GROQ_MODEL), enabled: isMovieGenerationEnabled(env as any), pilot_limit: Math.min(800,Number((env as any).MOVIE_GENERATION_PILOT_LIMIT || 3)), pilot_used_today: stats.count, pilot_attempts_today: stats.attempts, pilot_success_today: stats.success, pilot_failed_today: stats.failed, state: gen.open ? 'LIMITADO' : 'OPERACIONAL', authentication: 'not_verified_by_status_endpoint', circuit: GENERATION_CIRCUIT, circuit_unknown: gen.unknown, cooldown_until: gen.until || null, cooldown_reason: gen.reason },
     embedding: { provider: 'gemini', model: String((env as any).EMBEDDING_MODEL || 'gemini-embedding-2'), dimensions: Number((env as any).EMBEDDING_DIMENSIONS || 768), state: (emb as any).open ? 'LIMITADO' : 'OPERACIONAL', cooldown_until: (emb as any).until || null }
   };
 }
@@ -478,7 +496,7 @@ async function scheduleWork(env: Env) {
       ...enrichment.results.slice(0, ENRICHMENT_BACKLOG_BUDGET)
     ].slice(0, PIPELINE_BUDGET)
   };
-  let pipelineQueued = 0, generationScheduled = 0;
+  let pipelineQueued = 0;
   for (const movie of pending.results) {
     const needsGeneration = movie.enrichment_status !== 'complete';
     if (needsGeneration && generationRemaining <= 0) continue;
@@ -497,7 +515,7 @@ async function scheduleWork(env: Env) {
           type: 'ENRICH_MOVIE',
           key: `enrich:${movie.tmdb_id}:v2`,
           payload: { tmdb_id: movie.tmdb_id }
-        }, Math.min(840, generationScheduled++ * 60))
+        })
       );
     else if (movie.embedding_status !== 'complete')
       pipelineQueued += Number(
@@ -510,7 +528,9 @@ async function scheduleWork(env: Env) {
     if (needsGeneration && pipelineQueued > before) generationRemaining--;
   }
   const control = await readPipelineControl(env.MOOVIBE_LIBRARY);
-  const [recentDue, historicalDue] = await Promise.all([control.recent_enabled ? env.MOOVIBE_LIBRARY.prepare(RECENT_DISCOVERY_DUE_SQL).bind(RECENT_DISCOVERY_BUDGET).all<{ query_id: string }>() : Promise.resolve({ results: [] as { query_id: string }[] }), control.historical_enabled ? env.MOOVIBE_LIBRARY.prepare(HISTORICAL_DISCOVERY_DUE_SQL).bind(HISTORICAL_DISCOVERY_BUDGET).all<{ query_id: string }>() : Promise.resolve({ results: [] as { query_id: string }[] })]);
+  const pressure=await env.MOOVIBE_LIBRARY.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE status='queued' AND type<>'DISCOVER_QUERY'`).first<any>();
+  const discoveryUseful=Number(pressure?.n||0)<200;
+  const [recentDue, historicalDue] = await Promise.all([control.recent_enabled && discoveryUseful ? env.MOOVIBE_LIBRARY.prepare(RECENT_DISCOVERY_DUE_SQL).bind(RECENT_DISCOVERY_BUDGET).all<{ query_id: string }>() : Promise.resolve({ results: [] as { query_id: string }[] }), control.historical_enabled && discoveryUseful ? env.MOOVIBE_LIBRARY.prepare(HISTORICAL_DISCOVERY_DUE_SQL).bind(HISTORICAL_DISCOVERY_BUDGET).all<{ query_id: string }>() : Promise.resolve({ results: [] as { query_id: string }[] })]);
   let recentDiscoveryQueued = 0,
     historicalDiscoveryQueued = 0;
   for (const q of recentDue.results)
@@ -551,7 +571,7 @@ async function schedule(env: Env) {
   try {
     const failedStages = await scheduleWork(env);
     const transport = await queueTransportStatus(env);
-    const limited = transport && ((transport.blocked_until && transport.blocked_until > new Date().toISOString().replace('T',' ').slice(0,19)) || (transport.day === new Date().toISOString().slice(0,10) && transport.estimated_operations >= QUEUE_DAILY_BUDGET));
+    const limited = transport && ((transport.blocked_until && transport.blocked_until > new Date().toISOString().replace('T',' ').slice(0,19)) || (transport.day === new Date().toISOString().slice(0,10) && transport.estimated_operations + 3 > QUEUE_DAILY_BUDGET));
     const result = { ok: !limited && !failedStages.length, failed_stages: failedStages, scheduler: 'completed', queue: limited ? 'limited' : 'available', transport, execution_completed: false };
     await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO system_state(key,value) VALUES('last_scheduler_result',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP`).bind(JSON.stringify(result)).run();
     log(result.ok ? 'cron_complete' : 'cron_partial', result);
@@ -997,6 +1017,32 @@ async function indexMovie(env: Env, job: Job) {
 }
 
 async function embed(env: Env, job: Job) {
+  // Cross-job mutex in existing D1 state, tied to the existing job lease.
+  // A competing INDEX/EMBED defers durably without spending a job attempt.
+  // An abandoned owner becomes reclaimable through existing job recovery.
+  const key = `embedding-lock:${Number(job.payload.tmdb_id)}`;
+  const token = crypto.randomUUID();
+  const claim = await env.MOOVIBE_LIBRARY.prepare(`INSERT INTO system_state(key,value)
+    SELECT ?,json_object('token',?,'job',job_key,'attempt',attempts,'started',started_at)
+    FROM pipeline_jobs WHERE job_key=? AND status='running'
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP
+    WHERE NOT EXISTS (SELECT 1 FROM pipeline_jobs j WHERE j.job_key=json_extract(system_state.value,'$.job')
+      AND j.status='running' AND j.attempts=json_extract(system_state.value,'$.attempt')
+      AND j.started_at=json_extract(system_state.value,'$.started'))`)
+    .bind(key, token, job.key).run();
+  if (!claim.meta.changes) {
+    const err: any = new Error('movie embedding already in progress');
+    err.deferred = true;
+    err.retryAfter = 60;
+    throw err;
+  }
+  try { await embedOwned(env, job); }
+  finally {
+    await env.MOOVIBE_LIBRARY.prepare(`DELETE FROM system_state WHERE key=? AND json_extract(value,'$.token')=?`).bind(key, token).run();
+  }
+}
+
+async function embedOwned(env: Env, job: Job) {
   const id = Number(job.payload.tmdb_id),
     traceId = crypto.randomUUID();
   const movie = await movieRecord(env, id);
@@ -1075,7 +1121,7 @@ async function embed(env: Env, job: Job) {
       }
     }
   ]);
-  await env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET embedding_status='complete',embedding_model=?,embedding_dimensions=?,embedding_schema_version=?,semantic_document_hash=?,embedded_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+  await env.MOOVIBE_LIBRARY.prepare(`UPDATE movies SET collection_status=CASE WHEN details_fetched_at IS NOT NULL THEN 'complete' ELSE collection_status END,embedding_status='complete',embedding_model=?,embedding_dimensions=?,embedding_schema_version=?,semantic_document_hash=?,embedded_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
     .bind(model, dimensions, env.EMBEDDING_SCHEMA_VERSION || EMBEDDING_SCHEMA_VERSION, digest, movie.id)
     .run();
   log('movie_embedded', { tmdb_id: id, model, dimensions });
@@ -1189,6 +1235,7 @@ async function pipelineControlStatus(env: Env) {
   ]);
   return {
     control,
+    throughput: await throughputStatus(env.MOOVIBE_LIBRARY,env as any),
     backlog: {
       total: Number(backlog?.total) || 0,
       awaiting_collection: Number(backlog?.awaiting_collection) || 0,
@@ -1218,7 +1265,7 @@ async function pipelineControlStatus(env: Env) {
 
 export default {
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(schedule(env).catch((error: any) => log('cron_failed', { stage: 'scheduler', classification: 'critical', error: String(error?.message || error).slice(0, 300) })));
+    ctx.waitUntil((new Date().getUTCMinutes()%15===0 ? schedule(env) : recoverJobs(env)).catch((error: any) => log('cron_failed', { stage: 'scheduler', classification: 'critical', error: String(error?.message || error).slice(0, 300) })));
   },
   async queue(batch: MessageBatch<Job>, env: Env) {
     // Sem head-of-line blocking: o lote processa em paralelo e cada mensagem
@@ -1226,8 +1273,10 @@ export default {
     // sua mensagem e nunca derruba o batch inteiro para as demais.
     await Promise.all(batch.messages.map(async (message) => {
       try {
-        // Receiving a delivery ends its publication lease, including early deliveries.
-        await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET queue_lease_until=NULL,queue_publication_token=NULL WHERE job_key=? AND status='queued' AND queue_lease_until IS NOT NULL`).bind(message.body.key).run();
+        const owner=await env.MOOVIBE_LIBRARY.prepare(`SELECT queue_publication_token FROM pipeline_jobs WHERE job_key=? AND status='queued'`).bind(message.body.key).first<any>();
+        if(owner?.queue_publication_token && owner.queue_publication_token!==message.body.publicationToken) {message.ack();return;}
+        // Only the owning delivery may release a current publication lease.
+        await env.MOOVIBE_LIBRARY.prepare(`UPDATE pipeline_jobs SET publication_state='delivered',queue_lease_until=NULL,queue_publication_token=NULL WHERE job_key=? AND status='queued' AND (queue_publication_token IS NULL OR queue_publication_token=?)`).bind(message.body.key,message.body.publicationToken||null).run();
         const outcome = await processJob(env, message.body);
         // Adiamento administrativo (modo seguro / piloto esgotado) e durvel em
         // D1: a mensagem e reconhecida sem consumir entregas da fila, e o
@@ -1274,6 +1323,15 @@ export default {
         dimensions: Number(env.EMBEDDING_DIMENSIONS || 768)
       });
       return json({ service: 'worker', ...result });
+    }
+    if (url.pathname === '/admin/failures') {
+      if (!admin()) return json({error:'unauthorized'},401);
+      if (request.method==='GET') return json(url.searchParams.has('batch') ? await recoveryProgress(env.MOOVIBE_LIBRARY,url.searchParams.get('batch')!) : await diagnoseFailures(env.MOOVIBE_LIBRARY,url.searchParams.get('filter')||'',Number(url.searchParams.get('limit'))||25));
+      if(request.method!=='POST') return json({error:'method_not_allowed'},405);
+      const body:any=await request.json().catch(()=>({}));
+      if(body.confirm!==true || !Array.isArray(body.keys) || body.keys.length>50 || !body.keys.length) return json({error:'confirmed_bounded_batch_required'},422);
+      try {return json(await recoverFailures(env.MOOVIBE_LIBRARY,body.keys));}
+      catch {return json({error:'recovery_failed'},503);}
     }
     if (url.pathname === '/admin/status') {
       if (!admin()) return json({ error: 'unauthorized' }, 401);

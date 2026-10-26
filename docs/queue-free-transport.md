@@ -1,3 +1,5 @@
+> Historical description of migration 0008. Current implementation and validation: [Throughput and recovery, migration 0009](throughput-recovery-2026-10-26.md).
+
 # Queue Free transport
 
 Apply migration 0008 before deploying the Worker (`npm run db:migrate`). No plan change is required. This patch has not been deployed automatically.

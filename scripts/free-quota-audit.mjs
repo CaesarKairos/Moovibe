@@ -6,8 +6,10 @@ if (!file || /^(https?:|remote:)/i.test(file)) throw new Error('Usage: node scri
 const db = new Database(path.resolve(file), { readonly: true, fileMustExist: true });
 const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(x=>x.name));
 const queries = {
+  queue_transport: "SELECT *, 'local estimate; not account usage' measurement FROM queue_transport",
+
   movies: "SELECT collection_status,enrichment_status,embedding_status,COUNT(*) n FROM movies GROUP BY collection_status,enrichment_status,embedding_status",
-  pipeline_jobs: "SELECT type,status,COUNT(*) n FROM pipeline_jobs GROUP BY type,status",
+  pipeline_jobs: "SELECT type,status,COUNT(*) n,SUM(status='queued' AND available_at>CURRENT_TIMESTAMP) cooldown,SUM(status='queued' AND queue_lease_until>CURRENT_TIMESTAMP) awaiting_lease,SUM(status='queued' AND (available_at IS NULL OR available_at<=CURRENT_TIMESTAMP) AND (queue_lease_until IS NULL OR queue_lease_until<=CURRENT_TIMESTAMP)) ready FROM pipeline_jobs GROUP BY type,status",
   groq_capacity: "SELECT day,attempts,reserved_tokens,measured,total_tokens,cached_tokens FROM groq_capacity ORDER BY day DESC LIMIT 7"
 };
 for(const [table,sql] of Object.entries(queries)) {

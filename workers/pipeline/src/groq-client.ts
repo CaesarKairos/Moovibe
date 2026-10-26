@@ -93,7 +93,7 @@ export class GroqClient implements GenerationProvider {
         } catch (e: any) { throw new GroqError(`Groq fetch failed: ${this.redact(e?.message || e)}`); }
         event.status = response.status;
         event.headers = {};
-        response.headers.forEach((value, key) => { if (key.startsWith('x-ratelimit-')) event.headers![key] = value; });
+        response.headers.forEach((value, key) => { if (key.startsWith('x-ratelimit-') || key==='retry-after') event.headers![key] = value; });
         if (!response.ok) {
           const text = await response.text().catch(() => 'unreadable response body');
           const cooldown = groqCooldown(response.headers, response.status, text);

@@ -17,7 +17,7 @@ class Statement {
 const makeEnv = (db: Database.Database, extra: any = {}) => {
   const sent: any[] = [];
   const env: any = { MOOVIBE_LIBRARY: { prepare: (sql: string) => new Statement(db, sql), batch: async (xs: Statement[]) => db.transaction(() => xs.map((x) => x.runSync()))() },
-    PIPELINE_QUEUE: { send: async (j: any) => { sent.push(j); } }, MOVIE_VECTORS: { upsert: vi.fn() },
+    PIPELINE_QUEUE: { send: async (j: any) => { const {publicationToken,...job}=j;sent.push(job); } }, MOVIE_VECTORS: { upsert: vi.fn() },
     GEMINI_API_KEY: 'x', XAI_API_KEY: 'x', TMDB_API_KEY: 'x', EMBEDDING_MODEL: 'gemini-embedding-2',
     EMBEDDING_DIMENSIONS: '768', EMBEDDING_SCHEMA_VERSION: 'movie-v1',
     MOVIE_GENERATION_PROVIDER: 'groq', MOVIE_GENERATION_MODEL: 'openai/gpt-oss-120b',
@@ -253,7 +253,7 @@ describe('auditoria-b', () => {
       db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES(?, 'ENRICH_MOVIE', ?, 'queued')`).run(`enrich:${i}:v2`, JSON.stringify({ tmdb_id: i }));
     }
     const { env } = makeEnv(db, { MOVIE_GENERATION_ENABLED: 'true', MOVIE_GENERATION_PILOT_LIMIT: '2' });
-    for (let i = 31; i <= 34; i++) { db.exec('UPDATE groq_capacity SET next_at=0'); await processJob(env, { type: 'ENRICH_MOVIE', key: `enrich:${i}:v2`, payload: { tmdb_id: i } }); }
+    for (let i = 31; i <= 34; i++) { db.exec('UPDATE groq_admissions SET admitted_at=0; UPDATE groq_capacity SET next_at=0'); await processJob(env, { type: 'ENRICH_MOVIE', key: `enrich:${i}:v2`, payload: { tmdb_id: i } }); }
     expect((db.prepare(`SELECT COUNT(*) n FROM pipeline_jobs WHERE status='done' AND type='ENRICH_MOVIE'`).get() as any).n).toBe(2);
   });
   it('9. embeddings Gemini 768d compativeis', async () => {
@@ -512,7 +512,7 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
     expect((globalThis as any).__http).toBe(1); // immediate internal retry is paced
     expect(db.prepare(`SELECT attempts,status FROM pipeline_jobs WHERE job_key=?`).get(job.key)).toEqual({attempts:0,status:'queued'});
     for(let i=0;i<2;i++) {
-      db.exec('UPDATE groq_capacity SET next_at=0');
+      db.exec('UPDATE groq_admissions SET admitted_at=0; UPDATE groq_capacity SET next_at=0');
       db.prepare(`UPDATE pipeline_jobs SET available_at=CURRENT_TIMESTAMP WHERE job_key=?`).run(job.key);
       await (pipelineWorker as any).queue({messages:[msg(job)]},env);
     }
@@ -538,7 +538,7 @@ describe('auditoria-d (orquestracao de fila e piloto)', () => {
     db.prepare(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('enrich:914:v2','ENRICH_MOVIE','{\"tmdb_id\":914}','queued')`).run();
     await (pipelineWorker as any).queue({ messages: [msg({ type: 'ENRICH_MOVIE', key: 'enrich:913:v2', payload: { tmdb_id: 913 } })] }, env2);
     expect((globalThis as any).__http).toBe(1);
-    db.exec('UPDATE groq_capacity SET next_at=0');
+    db.exec('UPDATE groq_admissions SET admitted_at=0; UPDATE groq_capacity SET next_at=0');
     await (pipelineWorker as any).queue({ messages: [msg({ type: 'ENRICH_MOVIE', key: 'enrich:914:v2', payload: { tmdb_id: 914 } })] }, env2);
     expect((globalThis as any).__http).toBe(2);
     // 3o job: teto atingido — deferido antes da rede, attempts do job intactos.

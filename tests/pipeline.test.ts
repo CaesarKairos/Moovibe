@@ -29,7 +29,7 @@ class Statement {
 }
 const makeEnv=(db:Database.Database)=>{
   const sent:any[]=[];
-  const env:any={MOOVIBE_LIBRARY:{prepare:(sql:string)=>new Statement(db,sql),batch:async(xs:Statement[])=>Promise.all(xs.map(x=>x.run()))},PIPELINE_QUEUE:{send:async(j:any)=>{sent.push(j);}},MOVIE_VECTORS:{upsert:vi.fn()},GEMINI_API_KEY:'x',XAI_API_KEY:'x',TMDB_API_KEY:'x',EMBEDDING_MODEL:'gemini-embedding-2',EMBEDDING_DIMENSIONS:'768',EMBEDDING_SCHEMA_VERSION:'movie-v1',MOVIE_GENERATION_PROVIDER:'groq',MOVIE_GENERATION_MODEL:'openai/gpt-oss-120b',MOVIE_GENERATION_ENABLED:'true',MOVIE_GENERATION_PILOT_LIMIT:'10000'};
+  const env:any={MOOVIBE_LIBRARY:{prepare:(sql:string)=>new Statement(db,sql),batch:async(xs:Statement[])=>Promise.all(xs.map(x=>x.run()))},PIPELINE_QUEUE:{send:async(j:any)=>{const {publicationToken,...job}=j;sent.push(job);}},MOVIE_VECTORS:{upsert:vi.fn()},GEMINI_API_KEY:'x',XAI_API_KEY:'x',TMDB_API_KEY:'x',EMBEDDING_MODEL:'gemini-embedding-2',EMBEDDING_DIMENSIONS:'768',EMBEDDING_SCHEMA_VERSION:'movie-v1',MOVIE_GENERATION_PROVIDER:'groq',MOVIE_GENERATION_MODEL:'openai/gpt-oss-120b',MOVIE_GENERATION_ENABLED:'true',MOVIE_GENERATION_PILOT_LIMIT:'10000'};
   return {env,sent};
 };
 const trackRowWrites=(env:any,table?:string)=>{
@@ -479,7 +479,7 @@ describe('Queue transport recovery boundaries',()=>{
     const {env,sent}=makeEnv(db);
     await updatePipelineControl(env.MOOVIBE_LIBRARY,{historical_enabled:false,recent_enabled:false});
     db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status) VALUES('waiting','EMBED_MOVIE','{}','queued');
-      UPDATE queue_transport SET day=date('now'),estimated_operations=6000`);
+      UPDATE queue_transport SET day=date('now'),estimated_operations=7998`);
     expect(await schedule(env)).toMatchObject({ok:false,queue:'limited'});
     expect(sent).toHaveLength(0);
     db.exec(`UPDATE queue_transport SET day=date('now','-1 day'),blocked_until=datetime('now','-1 minute')`);
@@ -492,5 +492,113 @@ describe('Queue transport recovery boundaries',()=>{
     const response=await pipelineWorker.fetch(new Request('https://example.com/admin/run',{headers:{authorization:'Bearer test'}}),env);
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ok:false,scheduler:'completed',queue:'limited'});
+  });
+});
+
+
+describe('throughput and bounded failure recovery',()=>{
+  it('recovers a failed movie to complete, preserves history and counts unique movies once',async()=>{
+    const {recoverFailures,recoveryProgress,throughputStatus,diagnoseFailures}=await import('../workers/pipeline/src/failure-recovery');
+    db.exec(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status,embedding_status,details_fetched_at) VALUES(8801,'Recovery','error','complete','error',CURRENT_TIMESTAMP);
+      INSERT INTO movie_enrichments(movie_id,model,schema_version) SELECT id,'test','v2' FROM movies WHERE tmdb_id=8801;
+      INSERT INTO pipeline_jobs(job_key,type,payload_json,status,attempts,last_error) VALUES('embed:8801:movie-v1','EMBED_MOVIE','{"tmdb_id":8801}','error',5,'[UNKNOWN] vector service unavailable')`);
+    const {env,sent}=makeEnv(db);
+    const before=db.prepare('SELECT * FROM pipeline_jobs').all();
+    const diagnosis=await diagnoseFailures(env.MOOVIBE_LIBRARY,'UNKNOWN',10);
+    expect(diagnosis.items).toHaveLength(1);expect(diagnosis.items[0].eligible).toBe(true);
+    expect(db.prepare('SELECT * FROM pipeline_jobs').all()).toEqual(before);expect(sent).toHaveLength(0);
+    const result=await recoverFailures(env.MOOVIBE_LIBRARY,['embed:8801:movie-v1']);
+    expect(result).toMatchObject({recovered:1,completed:0,pending:1});expect(sent).toHaveLength(0);
+    const again=await recoverFailures(env.MOOVIBE_LIBRARY,['embed:8801:movie-v1']);expect(again.recovered).toBe(0);
+    const job={key:'embed:8801:movie-v1',type:'EMBED_MOVIE' as const,payload:{tmdb_id:8801}};
+    await Promise.all([processJob(env,job),processJob(env,job)]);
+    expect(db.prepare('SELECT collection_status,enrichment_status,embedding_status,last_error FROM movies').get()).toEqual({collection_status:'complete',enrichment_status:'complete',embedding_status:'complete',last_error:null});
+    expect(await recoveryProgress(env.MOOVIBE_LIBRARY,result.batch_id)).toMatchObject({completed:1,pending:0,failed_again:0});
+    const stats=await throughputStatus(env.MOOVIBE_LIBRARY);expect(stats.completed).toMatchObject({unique_completed:1,recovered_movies:1});expect(stats.attempts).toMatchObject({total:1,successful:1,failed:0});
+    expect(db.prepare(`SELECT outcome,error FROM pipeline_attempts ORDER BY id`).all()).toEqual([{outcome:'failed',error:'[UNKNOWN] vector service unavailable'},{outcome:'success',error:null}]);
+    await processJob(env,job);expect(db.prepare('SELECT COUNT(*) n FROM movie_completions').get()).toEqual({n:1});
+  });
+  it('rejects oversized batches and configuration failures while preserving terminal intent',async()=>{
+    const {recoverFailures,diagnoseFailures}=await import('../workers/pipeline/src/failure-recovery');const {env}=makeEnv(db);
+    db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,last_error) VALUES('bad','ENRICH_MOVIE','{"tmdb_id":1}','error','[INVALID_CREDENTIAL] Groq invalid key')`);
+    await expect(recoverFailures(env.MOOVIBE_LIBRARY,Array(51).fill('bad'))).rejects.toThrow('invalid_recovery_batch');
+    expect((await diagnoseFailures(env.MOOVIBE_LIBRARY)).items[0]).toMatchObject({eligible:false,ineligible_reason:'configuration_or_source_fix_required'});
+    expect((await recoverFailures(env.MOOVIBE_LIBRARY,['bad'])).recovered).toBe(0);
+    expect(db.prepare('SELECT status FROM pipeline_jobs').get()).toEqual({status:'error'});
+  });
+  it('does not report publication failure as recovered generation',async()=>{
+    const {recoverGenerationBacklog}=await import('../workers/pipeline/src/index');const {env}=makeEnv(db);
+    db.exec(`INSERT INTO movies(tmdb_id,title,collection_status) VALUES(8802,'No queue','complete');
+      INSERT INTO pipeline_jobs(job_key,type,payload_json,status,last_error) VALUES('enrich:8802:v2','ENRICH_MOVIE','{"tmdb_id":8802}','error','Groq transient');
+      UPDATE queue_transport SET blocked_until=datetime('now','+1 day'),reason='QUEUE_FREE_TIER_10253'`);
+    expect(await recoverGenerationBacklog(env,1,false)).toMatchObject({requeued:0});
+    expect(db.prepare('SELECT status,publication_state FROM pipeline_jobs').get()).toEqual({status:'queued',publication_state:'queue_quota'});
+  });
+  it('reconciles duplicate publishers without wasting operations and repairs expired publication intent',async()=>{
+    const {env,sent}=makeEnv(db);await updatePipelineControl(env.MOOVIBE_LIBRARY,{historical_enabled:false,recent_enabled:false});
+    db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json) VALUES('embed:8803:movie-v1','EMBED_MOVIE','{"tmdb_id":8803}')`);
+    await Promise.all([schedule(env),schedule(env)]);expect(sent).toHaveLength(1);
+    expect(db.prepare('SELECT estimated_operations FROM queue_transport').get()).toEqual({estimated_operations:3});
+    db.exec(`UPDATE pipeline_jobs SET queue_lease_until=datetime('now','-1 minute'),publication_state='publishing'`);
+    await schedule(env);expect(sent).toHaveLength(2);
+    expect(db.prepare('SELECT publication_state FROM pipeline_jobs').get()).toEqual({publication_state:'awaiting_delivery'});
+  });
+  it('ignores obsolete publication tokens without releasing the new owner',async()=>{
+    const {env}=makeEnv(db);db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json,queue_publication_token,queue_lease_until,publication_state) VALUES('embed:8805:movie-v1','EMBED_MOVIE','{"tmdb_id":8805}','current',datetime('now','+24 hours'),'awaiting_delivery')`);
+    const message={body:{key:'embed:8805:movie-v1',type:'EMBED_MOVIE',payload:{tmdb_id:8805},publicationToken:'obsolete'},ack:vi.fn(),retry:vi.fn()};
+    await pipelineWorker.queue({messages:[message]} as any,env);expect(message.ack).toHaveBeenCalledOnce();
+    expect(db.prepare('SELECT status,attempts,queue_publication_token,publication_state FROM pipeline_jobs').get()).toEqual({status:'queued',attempts:0,queue_publication_token:'current',publication_state:'awaiting_delivery'});
+  });
+  it('terminates repeatedly abandoned execution leases instead of retrying forever',async()=>{
+    const {env,sent}=makeEnv(db);await updatePipelineControl(env.MOOVIBE_LIBRARY,{historical_enabled:false,recent_enabled:false});
+    db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json,status,attempts,updated_at) VALUES('embed:8806:movie-v1','EMBED_MOVIE','{"tmdb_id":8806}','running',5,datetime('now','-1 hour'))`);
+    await schedule(env);expect(sent).toHaveLength(0);expect(db.prepare('SELECT status,last_error FROM pipeline_jobs').get()).toMatchObject({status:'error',last_error:expect.stringContaining('STALE_RETRY_EXHAUSTED')});
+  });
+  it('protects ambiguous sends for retention instead of republishing after five minutes',async()=>{
+    const {env}=makeEnv(db);await updatePipelineControl(env.MOOVIBE_LIBRARY,{historical_enabled:false,recent_enabled:false});
+    db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json) VALUES('ambiguous','EMBED_MOVIE','{"tmdb_id":8807}')`);
+    env.PIPELINE_QUEUE.send=vi.fn(async()=>{throw Error('network connection lost');});await schedule(env);
+    expect(db.prepare('SELECT publication_state FROM pipeline_jobs').get()).toEqual({publication_state:'publication_unknown'});
+    db.exec(`UPDATE queue_transport SET blocked_until=datetime('now','-1 minute')`);await schedule(env);
+    expect(env.PIPELINE_QUEUE.send).toHaveBeenCalledOnce();
+  });
+  it('reports failures again and stops after the normal retry budget',async()=>{
+    const {recoverFailures,recoveryProgress}=await import('../workers/pipeline/src/failure-recovery');const {env}=makeEnv(db);
+    db.exec(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status) VALUES(8808,'No enrichment','complete','error');
+      INSERT INTO pipeline_jobs(job_key,type,payload_json,status,last_error) VALUES('retry-budget','EMBED_MOVIE','{"tmdb_id":8808}','error','[UNKNOWN] old failure')`);
+    const batch=await recoverFailures(env.MOOVIBE_LIBRARY,['retry-budget']);
+    const job={key:'retry-budget',type:'EMBED_MOVIE' as const,payload:{tmdb_id:8808}};
+    for(let attempt=0;attempt<6;attempt++){db.exec(`UPDATE pipeline_jobs SET available_at=CURRENT_TIMESTAMP`);await processJob(env,job);}
+    expect(await recoveryProgress(env.MOOVIBE_LIBRARY,batch.batch_id)).toMatchObject({completed:0,failed_again:1,pending:0});
+    expect(db.prepare('SELECT status,attempts FROM pipeline_jobs').get()).toEqual({status:'error',attempts:5});
+    expect(db.prepare('SELECT total,failed,successful FROM pipeline_attempt_totals').get()).toEqual({total:5,failed:5,successful:0});
+    await recoverFailures(env.MOOVIBE_LIBRARY,['retry-budget']);
+    expect(await recoveryProgress(env.MOOVIBE_LIBRARY,batch.batch_id)).toMatchObject({failed_again:1,pending:0});
+  });
+  it('requires explicit confirmation and authentication for recovery writes',async()=>{
+    const {env}=makeEnv(db);env.ADMIN_TOKEN='admin';
+    const url='https://worker.test/admin/failures';
+    expect((await pipelineWorker.fetch(new Request(url,{method:'POST',body:'{}'}),env)).status).toBe(401);
+    expect((await pipelineWorker.fetch(new Request(url,{method:'POST',headers:{authorization:'Bearer admin'},body:JSON.stringify({keys:['one']})}),env)).status).toBe(422);
+    expect(db.prepare('SELECT COUNT(*) n FROM recovery_batches').get()).toEqual({n:0});
+  });
+  it('serializes INDEX and EMBED for the same movie without duplicating embeddings',async()=>{
+    const {env}=makeEnv(db);
+    db.exec(`INSERT INTO movies(tmdb_id,title,collection_status,enrichment_status,details_fetched_at) VALUES(8809,'Concurrent embedding','complete','complete',CURRENT_TIMESTAMP);
+      INSERT INTO movie_enrichments(movie_id,model,schema_version) SELECT id,'test','v2' FROM movies WHERE tmdb_id=8809;
+      INSERT INTO pipeline_jobs(job_key,type,payload_json) VALUES('index:8809:v1','INDEX_MOVIE','{"tmdb_id":8809}'),('embed:8809:movie-v1','EMBED_MOVIE','{"tmdb_id":8809}')`);
+    const jobs=[{key:'index:8809:v1',type:'INDEX_MOVIE' as const,payload:{tmdb_id:8809}},{key:'embed:8809:movie-v1',type:'EMBED_MOVIE' as const,payload:{tmdb_id:8809}}];
+    const outcomes=await Promise.all(jobs.map(j=>processJob(env,j)));expect(env.MOVIE_VECTORS.upsert).toHaveBeenCalledOnce();
+    expect(outcomes.filter(o=>o.deferred)).toHaveLength(1);
+    db.exec(`UPDATE pipeline_jobs SET available_at=CURRENT_TIMESTAMP WHERE status='queued'`);
+    await Promise.all(jobs.map(j=>processJob(env,j)));expect(env.MOVIE_VECTORS.upsert).toHaveBeenCalledOnce();
+    expect(db.prepare("SELECT COUNT(*) n FROM pipeline_jobs WHERE status='done'").get()).toEqual({n:2});
+    expect(db.prepare(`SELECT COUNT(*) n FROM system_state WHERE key LIKE 'embedding-lock:%'`).get()).toEqual({n:0});
+  });
+  it('lightweight minute cron repairs due jobs without creating discoveries',async()=>{
+    const {env,sent}=makeEnv(db);db.exec(`INSERT INTO pipeline_jobs(job_key,type,payload_json) VALUES('embed:8804:movie-v1','EMBED_MOVIE','{"tmdb_id":8804}')`);
+    vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-26T10:01:00Z'));
+    let work:Promise<any>|undefined;pipelineWorker.scheduled({} as any,env,{waitUntil(p:Promise<any>){work=p;}} as any);await work;
+    vi.useRealTimers();expect(sent).toHaveLength(1);expect(sent[0].type).toBe('EMBED_MOVIE');expect(db.prepare('SELECT COUNT(*) n FROM collection_queries').get()).toEqual({n:0});
   });
 });

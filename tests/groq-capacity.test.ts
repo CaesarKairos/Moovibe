@@ -11,23 +11,26 @@ let db: D1Database;
 const now = Date.parse('2026-10-21T10:00:00Z');
 beforeEach(() => {
   sqlite = new Database(':memory:');
-  sqlite.exec('CREATE TABLE system_state(key TEXT PRIMARY KEY,value TEXT)');
-  sqlite.exec(fs.readFileSync('migrations/0007_groq_capacity.sql','utf8').split('CREATE INDEX')[0]);
-  db = { prepare(sql: string) {
+  for(const file of fs.readdirSync('migrations').filter(x=>x.endsWith('.sql')).sort()) sqlite.exec(fs.readFileSync('migrations/'+file,'utf8'));
+  db = { batch: async (xs:any[])=>sqlite.transaction(()=>xs.map(x=>x.runSync()))(), prepare(sql: string) {
     let values: any[] = [];
-    return { bind(...args: any[]) { values=args; return this; }, async run() { const r=sqlite.prepare(sql).run(...values); return {meta:{changes:r.changes}}; }, async first() { return sqlite.prepare(sql).get(...values); } };
+    return { bind(...args: any[]) { values=args; return this; }, runSync() { const r=sqlite.prepare(sql).run(...values); return {meta:{changes:r.changes}}; }, async run() { return this.runSync(); }, async first() { return sqlite.prepare(sql).get(...values); } };
   } } as any;
 });
 afterEach(() => { sqlite.close(); vi.restoreAllMocks(); });
 const row = () => sqlite.prepare('SELECT * FROM groq_capacity ORDER BY day DESC').get() as any;
 describe('durable Groq admission', () => {
-  it('admits only one of 100 simultaneous requests across independent callers', async () => {
-    const admitted = await Promise.allSettled(Array.from({length:100},()=>reserveCapacity(db,{},1000,now)));
-    expect(admitted.filter(r=>r.status==='fulfilled')).toHaveLength(1);
-    expect(row()).toMatchObject({attempts:1,reserved_tokens:1000});
-    await expect(reserveCapacity(db,{},1000,now+spacing(capacityConfig({}),1000)-1)).rejects.toMatchObject({deferred:true});
-    await reserveCapacity(db,{},1000,now+spacing(capacityConfig({}),1000));
-    expect(row().attempts).toBe(2);
+  it('admits seven of 100 concurrent reservations within 7200 TPM and expires the rolling window', async () => {
+    const admitted=await Promise.allSettled(Array.from({length:100},()=>reserveCapacity(db,{},1000,now)));
+    expect(admitted.filter(r=>r.status==='fulfilled')).toHaveLength(7);
+    expect(row()).toMatchObject({attempts:7,reserved_tokens:7000});
+    await expect(reserveCapacity(db,{},1000,now+59999)).rejects.toMatchObject({deferred:true});
+    await reserveCapacity(db,{},1000,now+60000);
+    expect(row().attempts).toBe(8);
+  });
+  it('bounds RPM independently of tokens',async()=>{
+    const admitted=await Promise.allSettled(Array.from({length:100},()=>reserveCapacity(db,{GROQ_RPM:2,GROQ_SAFETY_MARGIN:0},100,now)));
+    expect(admitted.filter(r=>r.status==='fulfilled')).toHaveLength(2);
   });
   it.each([{GROQ_RPD:1}, {GROQ_TPD:1000}])('stops at daily configured budget and resets UTC %j', async config => {
     const env = {...config,GROQ_SAFETY_MARGIN:0};
@@ -53,22 +56,47 @@ describe('durable Groq admission', () => {
   it('uses lower actual organization ceilings and never raises them with stale responses', async () => {
     const r=await reserveCapacity(db,{},3000,now);
     await recordCapacity(db,r,{headers:{'x-ratelimit-limit-tokens':'2000','x-ratelimit-limit-requests':'1'}});
-    await recordCapacity(db,{...r,tokens:0},{headers:{'x-ratelimit-limit-tokens':'8000'}});
+    const second=await reserveCapacity(db,{},1000,now+60000).catch(()=>null);
+    if(second) await recordCapacity(db,second,{headers:{'x-ratelimit-limit-tokens':'8000'}});
     expect(row()).toMatchObject({server_tpm:2000,server_rpd:1});
     await expect(reserveCapacity(db,{},3000,now+60000)).rejects.toMatchObject({deferred:true});
   });
   it('does not forget unmeasured HTTP attempts when introduced mid-day', async () => {
-    sqlite.prepare('INSERT INTO system_state VALUES(?,?)').run('gen_pilot_count:groq',JSON.stringify({day:'2026-10-21',count:436}));
+    sqlite.prepare('INSERT INTO system_state(key,value) VALUES(?,?)').run('gen_pilot_count:groq',JSON.stringify({day:'2026-10-21',count:436}));
     await expect(reserveCapacity(db,{},1000,now)).rejects.toMatchObject({deferred:true});
     expect(row()).toBeUndefined();
     await reserveCapacity(db,{},1000,now+86400000);
   });
   it('keeps the minute lease across a UTC daily reset', async () => {
     const midnight=Date.parse('2026-10-22T00:00:00Z');
-    await reserveCapacity(db,{},3000,midnight-1000);
-    await expect(reserveCapacity(db,{},3000,midnight)).rejects.toMatchObject({deferred:true,retryAfter:59});
-    await reserveCapacity(db,{},3000,midnight+60000);
+    await reserveCapacity(db,{},4000,midnight-1000);
+    await expect(reserveCapacity(db,{},4000,midnight)).rejects.toMatchObject({deferred:true,retryAfter:59});
+    await reserveCapacity(db,{},4000,midnight+60000);
     expect(row().attempts).toBe(1);
+  });
+  it('reconciles concurrent telemetry exactly once',async()=>{
+    const reservation=await reserveCapacity(db,{},3000,now);
+    const event={usage:{prompt_tokens:500,completion_tokens:200,total_tokens:700}};
+    await Promise.all([recordCapacity(db,reservation,event),recordCapacity(db,reservation,event)]);
+    expect(row()).toMatchObject({reserved_tokens:700,total_tokens:700,measured:1});
+  });
+  it('keeps lower organization ceilings but renews remaining daily requests',async()=>{
+    vi.spyOn(Date,'now').mockReturnValue(now);
+    const first=await reserveCapacity(db,{},1000,now);
+    await recordCapacity(db,first,{headers:{'x-ratelimit-limit-requests':'10','x-ratelimit-remaining-requests':'0','x-ratelimit-reset-requests':'60s','x-ratelimit-limit-tokens':'4000'}});
+    await expect(reserveCapacity(db,{},1000,now+60001)).rejects.toMatchObject({deferred:true});
+    const results=await Promise.allSettled(Array.from({length:10},()=>reserveCapacity(db,{},1000,now+86400000)));
+    expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(3);
+    expect(row()).toMatchObject({server_rpd:10,server_tpm:4000,server_daily_ceiling:1000,attempts:3});
+  });
+  it('sustains seven reservations per minute over ten minutes versus the old one per minute',async()=>{
+    let total=0;
+    for(let minute=0;minute<10;minute++){
+      const results=await Promise.allSettled(Array.from({length:8},()=>reserveCapacity(db,{},1000,now+minute*60000)));
+      const accepted=results.filter(r=>r.status==='fulfilled').length;
+      expect(accepted).toBe(7);total+=accepted;
+    }
+    expect(total).toBe(70);expect(row()).toMatchObject({attempts:70,reserved_tokens:70000});
   });
   it('D1 failure denies network admission', async () => {
     await expect(reserveCapacity({prepare(){throw Error('offline');}} as any,{},1000,now)).rejects.toMatchObject({deferred:true,retryAfter:300});
