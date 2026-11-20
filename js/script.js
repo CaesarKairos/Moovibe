@@ -421,7 +421,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (requestId !== autocompleteRequest || input.value.trim() !== termo) return;
                 if (!resp.ok) {
                     const errorData=await resp.json().catch(()=>({}));
-                    if(/^https?:|^spotify:/i.test(termo)){const copy=IDENTITY_COPY[lang]||IDENTITY_COPY.en;input.setCustomValidity(errorData.error?.code==='NOT_A_TRACK'?copy[5]:copy[4]);input.reportValidity();}
+                    if(/^https?:|^spotify:/i.test(termo)){const copy=IDENTITY_COPY[lang]||IDENTITY_COPY.en,resource=errorData.error?.resource;input.setCustomValidity(errorData.error?.code==='NOT_A_TRACK'?(copy[6]?.[resource]||copy[5]):copy[4]);input.reportValidity();}
                     renderSuggestionState('error');
                     return;
                 }

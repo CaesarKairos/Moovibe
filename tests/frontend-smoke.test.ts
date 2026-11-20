@@ -92,7 +92,7 @@ describe('public frontend boundary',()=>{
     const selectionSource=await readFile(path.join(root,'js','track-selection.js'),'utf8');
     for(const field of ['provider','providerId','artist','album','duration','lrclibId'])expect(selectionSource).toContain(`dataset.${field}`);
     expect(source).toContain("data.error?.code==='SONG_IDENTITY_REQUIRED'");
-    expect(source).toContain("errorData.error?.code==='NOT_A_TRACK'?copy[5]:copy[4]");
+    expect(source).toContain("errorData.error?.code==='NOT_A_TRACK'?(copy[6]?.[resource]||copy[5]):copy[4]");
     expect(source).not.toContain('resolverArtistaViaLrclib');
     expect(source).toContain('fetchSuggestions(termo, requestId)');
     expect(source).toMatch(/renderSuggestionState\('loading'\);\s*fetchSuggestions\(termo, requestId\);\s*\}, exactSpotify\?0:350\);/);
