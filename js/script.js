@@ -367,13 +367,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        function renderSuggestionState(state) {
+        function renderSuggestionState(state,overrideTitle='',overrideHint='') {
             const copy=AUTOCOMPLETE_COPY[lang]||AUTOCOMPLETE_COPY.en;
             const [title,hint]=copy[state]||[];
             autocompleteItems=[];autocompleteIndex=-1;dropdown.innerHTML='';
             const status=document.createElement('div');status.className=`autocomplete-status ${state}`;status.setAttribute('role','status');
-            const heading=document.createElement('strong');heading.textContent=title||'';status.appendChild(heading);
-            if(hint){const detail=document.createElement('span');detail.textContent=hint;status.appendChild(detail);}
+            const heading=document.createElement('strong');heading.textContent=overrideTitle||title||'';status.appendChild(heading);
+            const statusHint=overrideTitle?overrideHint:hint;
+            if(statusHint){const detail=document.createElement('span');detail.textContent=statusHint;status.appendChild(detail);}
             dropdown.appendChild(status);dropdown.classList.add('active');
         }
 
@@ -421,8 +422,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (requestId !== autocompleteRequest || input.value.trim() !== termo) return;
                 if (!resp.ok) {
                     const errorData=await resp.json().catch(()=>({}));
-                    if(/^https?:|^spotify:/i.test(termo)){const copy=IDENTITY_COPY[lang]||IDENTITY_COPY.en,resource=errorData.error?.resource;input.setCustomValidity(errorData.error?.code==='NOT_A_TRACK'?(copy[6]?.[resource]||copy[5]):copy[4]);input.reportValidity();}
-                    renderSuggestionState('error');
+                    if(/^https?:|^spotify:/i.test(termo)){const copy=IDENTITY_COPY[lang]||IDENTITY_COPY.en,resource=errorData.error?.resource,message=errorData.error?.code==='NOT_A_TRACK'?(copy[6]?.[resource]||copy[5]):copy[4];input.setCustomValidity(message);renderSuggestionState('error',message);}
+                    else renderSuggestionState('error');
                     return;
                 }
                 const data = await resp.json();
@@ -438,6 +439,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         input.addEventListener('input', () => {
             const termo = input.value.trim();
+            input.setCustomValidity('');
             autocompleteRequest += 1;
             const requestId = autocompleteRequest;
             clearTimeout(autocompleteTimer);

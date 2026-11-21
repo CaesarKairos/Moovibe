@@ -313,6 +313,7 @@ h1, h2, h3, h4, .font-display {
    ========================================================================== */
 .autocomplete-group {
     position: relative;
+    --song-action-space: 56px;
 }
 
 .autocomplete-dropdown {
@@ -331,6 +332,12 @@ h1, h2, h3, h4, .font-display {
 
 .autocomplete-dropdown.active {
     display: block;
+}
+
+/* O feedback pertence ao campo, não ao botão de adicionar/remover. */
+.autocomplete-group > .autocomplete-dropdown,
+.extra-song-row .autocomplete-dropdown {
+    right: var(--song-action-space);
 }
 
 .autocomplete-status {
@@ -1225,10 +1232,7 @@ h1, h2, h3, h4, .font-display {
 
 /* Dropdown de autocomplete nos campos extras: alinhado ao input,
    descontando o botão de remover (48px) + gap (8px) */
-.extra-song-row .autocomplete-dropdown {
-    left: 0;
-    right: 56px;
-}
+.extra-song-row { --song-action-space: 56px; }
 
 .extra-song-row .selected-track-card{margin-right:0}
 
@@ -1542,6 +1546,10 @@ h1, h2, h3, h4, .font-display {
     /* Multiple songs */
     .song-input-row {
         gap: 6px;
+    }
+    .autocomplete-group,
+    .extra-song-row {
+        --song-action-space: 50px;
     }
     .add-song-btn {
         width: 44px;
