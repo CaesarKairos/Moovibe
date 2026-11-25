@@ -6,7 +6,7 @@ import { createResultExporter } from './result-export.js';
 import { ERROR_COPY } from './i18n/locales.js';
 import { describeError, fetchRecommendation } from './recommendation-error.js';
 import { createTopGlobalView } from './top-global.js';
-import { ABOUT_LINK_COPY, TOP_GLOBAL_COPY } from './i18n/locales.js';
+import { ABOUT_LINK_COPY, TOP_GLOBAL_COPY, TOP_GLOBAL_TITLES } from './i18n/locales.js';
 import { howDescription, renderHowItWorks } from './how-it-works.js';
 /**
  * Moovibe - Frontend Logic
@@ -61,7 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function atualizarMetaPorView(targetView) {
         const rota = VIEW_ROUTES[targetView?.id];
         if (!rota) return;
-        const [title,description]=rota.meta==='ranking' ? ['Moovibe — TOP 50 GLOBAL',TOP_GLOBAL_COPY[lang][0]]
+        const [title,description]=rota.meta==='ranking' ? [`Moovibe — ${TOP_GLOBAL_TITLES[lang]}`,TOP_GLOBAL_COPY[lang][0]]
             : PAGE_METADATA[lang]?.[rota.meta]||PAGE_METADATA.en[rota.meta];
         document.title = title;
         const pageDescription = rota.meta === 'how' ? howDescription(lang) : description;

@@ -5,7 +5,7 @@ import { validateRanking } from '../functions/_lib/top-global-source.js';
 import { SNAPSHOT, updateTopGlobal } from '../functions/_lib/top-global.js';
 import { onRequestGet } from '../functions/top-global.js';
 import { letterboxdUrl, rankingMovement } from '../js/top-global.js';
-import { LANGUAGES, TOP_GLOBAL_COPY } from '../js/i18n/locales.js';
+import { LANGUAGES, TOP_GLOBAL_COPY, TOP_GLOBAL_TITLES } from '../js/i18n/locales.js';
 
 const id = (n:number) => String(n).padStart(22,'0');
 function feed(numbers=Array.from({length:50},(_,i)=>i+1), date='2026-01-01') {
@@ -105,6 +105,9 @@ describe('Top 50 Global',()=>{
 
   it('localizes all sections and uses exact Letterboxd IDs and movement direction',()=>{
     expect(Object.keys(TOP_GLOBAL_COPY).sort()).toEqual(Object.keys(LANGUAGES).sort());
+    expect(Object.keys(TOP_GLOBAL_TITLES).sort()).toEqual(Object.keys(LANGUAGES).sort());
+    expect(TOP_GLOBAL_TITLES['pt-BR']).toBe('TOP 50 MUNDIAL');
+    expect(TOP_GLOBAL_TITLES.ja).toBe('世界トップ50');
     expect(letterboxdUrl(123)).toBe('https://letterboxd.com/tmdb/123');
     expect(letterboxdUrl(0)).toBeNull();
     expect(rankingMovement({movement:'change',delta:-2})).toEqual(['↓ 2','down']);

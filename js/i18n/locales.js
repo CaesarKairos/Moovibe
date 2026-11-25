@@ -38,6 +38,16 @@ ja:{export_image:'画像を書き出す',generating:'画像を作成中…',down
 export const translations=Object.freeze(Object.fromEntries(Object.entries(baseTranslations).map(([code,dictionary])=>{const [about_p1,about_p2,about_p3,about_p4]=PERSONAL_ABOUT[code];return [code,Object.freeze({...dictionary,about_p1,about_p2,about_p3,about_p4})];})));
 
 export {LANGUAGES,detectLanguage,normalizeLanguage};
+export const TOP_GLOBAL_TITLES = Object.freeze({
+    en: 'TOP 50 GLOBAL',
+    'pt-BR': 'TOP 50 MUNDIAL',
+    es: 'TOP 50 MUNDIAL',
+    fr: 'TOP 50 MONDIAL',
+    de: 'GLOBALE TOP 50',
+    ru: 'МИРОВОЙ ТОП-50',
+    'zh-CN': '全球前 50 名',
+    ja: '世界トップ50',
+});
 export const ABOUT_LINK_COPY = {
     "en": {"byline":"Developed by","role":"Software developer","automation":"AI and automation","contact":"Get in touch","portfolio":"View portfolio","other":"Other links","repository":"Repository"},
     "pt-BR": {"byline":"Desenvolvido por","role":"Desenvolvedor de software","automation":"IA e automação","contact":"Entrar em contato","portfolio":"Ver portfólio","other":"Outros links","repository":"Repositório"},

@@ -1,4 +1,4 @@
-import { PRESENTATION_COPY, TOP_GLOBAL_COPY } from './i18n/locales.js';
+import { PRESENTATION_COPY, TOP_GLOBAL_COPY, TOP_GLOBAL_TITLES } from './i18n/locales.js';
 import { spotifyTrackUrl } from './spotify-presentation.js';
 
 export function rankingMovement(track, language) {
@@ -46,6 +46,8 @@ function mediaBlock({url, image, title, subtitle, className, lazy}) {
 }
 
 export function createTopGlobalView(getLanguage) {
+    const heading = document.getElementById('top-global-title');
+    const navigation = document.querySelector('[data-view="view-top-global"]');
     const description = document.getElementById('ranking-description');
     const source = document.getElementById('ranking-source');
     const updated = document.getElementById('ranking-updated');
@@ -55,12 +57,18 @@ export function createTopGlobalView(getLanguage) {
 
     function localize() {
         const language = getLanguage();
+        const title = TOP_GLOBAL_TITLES[language] || TOP_GLOBAL_TITLES.en;
+        heading.textContent = title;
+        navigation.textContent = title;
         const movementCopy = PRESENTATION_COPY[language] || PRESENTATION_COPY.en;
         const [intro, dateLabel, loading, unavailable, pending] = TOP_GLOBAL_COPY[language] || TOP_GLOBAL_COPY.en;
         description.textContent = intro;
         status.textContent = snapshot ? '' : inFlight ? loading : unavailable;
         status.classList.toggle('ranking-unavailable', !snapshot && !inFlight);
-        if (!snapshot) return;
+        if (!snapshot) {
+            source.setAttribute('aria-label', `${movementCopy[5]}: ${source.textContent}`);
+            return;
+        }
         if (snapshot.source === 'charts') {
             source.href = 'https://charts.spotify.com/charts/view/regional-global-daily/latest';
             source.textContent = 'Spotify Charts';
