@@ -1349,19 +1349,20 @@ export async function onRequest(context) {
   } catch (error) {
     const classified=classifyRecommendationError(error);
     console.error(JSON.stringify({event:'recommendation_failed',request_id:failureEvent.request_id,stage:classified.stage,error_class:error?.constructor?.name||'Error',error_code:classified.code,safe_message:classified.safeMessage,duration_ms:Date.now()-startedAt,canonical_songs:failureEvent.songs?.map(s=>({title:s.title,artist:s.artist,provider:s.provider,provider_id:s.provider_id}))}));
-    await recordRecommendation(env,{...failureEvent,duration_ms:Date.now()-startedAt,success:0,error_code:classified.code,error_message:String(error?.message||error).slice(0,300)});
-    return jsonResponse({ error: { message: 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.', code: classified.code } }, 500);
+    await recordRecommendation(env,{...failureEvent,duration_ms:Date.now()-startedAt,success:0,error_code:classified.code,error_message:classified.safeMessage});
+    const status = ['D1_QUOTA_EXCEEDED','D1_READ_FAILED','GEMINI_UNAVAILABLE','EMBEDDING_FAILED','VECTOR_QUERY_FAILED'].includes(classified.code) ? 503 : 500;
+    return jsonResponse({ request_id: failureEvent.request_id, error: { message: classified.safeMessage, code: classified.code, stage: classified.stage } }, status);
   }
 }
 
 export function classifyRecommendationError(error){
   const message=String(error?.message||error||'');
   const result=/no such column|has no column named|SQLITE_ERROR.*column/i.test(message)?{code:'D1_SCHEMA_MISMATCH',stage:'catalog_read',safeMessage:'The D1 schema is incompatible with this application version.'}
-    :/D1.*(?:quota|limit)|(?:read|write)s? quota|too many requests/i.test(message)?{code:'D1_QUOTA_EXCEEDED',stage:'catalog_read',safeMessage:'D1 quota is temporarily unavailable.'}
+    :String(error?.code)==='7500'||/D1.*(?:quota|limit)|rows? (?:read|written).*limit/i.test(message)?{code:'D1_QUOTA_EXCEEDED',stage:'catalog_read',safeMessage:'D1 quota is temporarily unavailable.'}
     :/CATALOG_TOO_SMALL/.test(message)?{code:'CATALOG_TOO_SMALL',stage:'candidate_generation',safeMessage:'The eligible catalog is too small.'}
     :/vector/i.test(message)?{code:'VECTOR_QUERY_FAILED',stage:'candidate_generation',safeMessage:'Vector candidate retrieval failed.'}
     :/embed/i.test(message)?{code:'EMBEDDING_FAILED',stage:'song_embedding',safeMessage:'Song embedding failed.'}
-    :/gemini|429|503/i.test(message)?{code:'GEMINI_UNAVAILABLE',stage:'song_profile',safeMessage:'The AI provider is temporarily unavailable.'}
+    :error?.provider==='gemini'||/gemini/i.test(message)?{code:'GEMINI_UNAVAILABLE',stage:error?.stage||'song_profile',safeMessage:'The AI provider is temporarily unavailable.'}
     :/D1|database/i.test(message)?{code:'D1_READ_FAILED',stage:'catalog_read',safeMessage:'The catalog database could not be read.'}
     :{code:'UNKNOWN',stage:'unknown',safeMessage:'Recommendation failed unexpectedly.'};
   return result;
