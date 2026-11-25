@@ -1351,7 +1351,12 @@ export async function onRequest(context) {
     console.error(JSON.stringify({event:'recommendation_failed',request_id:failureEvent.request_id,stage:classified.stage,error_class:error?.constructor?.name||'Error',error_code:classified.code,safe_message:classified.safeMessage,duration_ms:Date.now()-startedAt,canonical_songs:failureEvent.songs?.map(s=>({title:s.title,artist:s.artist,provider:s.provider,provider_id:s.provider_id}))}));
     await recordRecommendation(env,{...failureEvent,duration_ms:Date.now()-startedAt,success:0,error_code:classified.code,error_message:classified.safeMessage});
     const status = ['D1_QUOTA_EXCEEDED','D1_READ_FAILED','GEMINI_UNAVAILABLE','EMBEDDING_FAILED','VECTOR_QUERY_FAILED'].includes(classified.code) ? 503 : 500;
-    return jsonResponse({ request_id: failureEvent.request_id, error: { message: classified.safeMessage, code: classified.code, stage: classified.stage } }, status);
+    const provider = classified.code.startsWith('D1_') ? 'd1'
+      : classified.code === 'GEMINI_UNAVAILABLE' ? 'gemini'
+      : classified.code === 'VECTOR_QUERY_FAILED' ? 'vectorize' : undefined;
+    return jsonResponse({ request_id: failureEvent.request_id, error: {
+      message: classified.safeMessage, code: classified.code, stage: classified.stage, provider,
+    } }, status);
   }
 }
 

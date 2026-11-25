@@ -3,6 +3,8 @@ import { clearTrackSelection, getTrackSelection, resetTrackField, setTrackSelect
 import { buildMediaSlots } from './result-presentation.js';
 import { spotifyArtwork, spotifyTrackUrl } from './spotify-presentation.js';
 import { createResultExporter } from './result-export.js';
+import { ERROR_COPY } from './i18n/locales.js';
+import { describeError, fetchRecommendation } from './recommendation-error.js';
 /**
  * Moovibe - Frontend Logic
  * Handles SPA navigation, loading states, and dynamic content injection.
@@ -87,7 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
         atualizarMetaPorView(document.querySelector('.view-section.active'));
         document.querySelectorAll('.extra-song-input').forEach(input=>{input.placeholder=dictionary.add_song;});
         document.querySelectorAll('.remove-song-btn').forEach(button=>button.setAttribute('aria-label',dictionary.remove_song));
-        if(errorMessage&&viewError?.classList.contains('active'))errorMessage.textContent=dictionary.error_message;
+        if(viewError?.classList.contains('active'))renderError();
         const identityCopy=IDENTITY_COPY[lang]||IDENTITY_COPY.en;
         if(songInput) songInput.placeholder=identityCopy[0];
         const identityTitle=document.getElementById('identity-title'),identityInstruction=document.getElementById('identity-instruction'),identityCancel=document.getElementById('identity-cancel');
@@ -132,6 +134,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const loadingInteraction=document.getElementById('loading-interaction');
     const errorMessage = document.getElementById('error-message');
     const btnRetry = document.getElementById('btn-retry');
+    const errorNode = id => document.getElementById(id);
+    let currentError = null;
+    let retryRecommendation = null;
+    let retryTimer;
+    let diagnostic = '';
     const btnAddSong = document.getElementById('btn-add-song');
     const extraSongsContainer = document.getElementById('extra-songs-container');
     const MAX_SONGS = 3;
@@ -197,11 +204,52 @@ document.addEventListener('DOMContentLoaded', () => {
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    function showError(message) {
-        if (errorMessage) {
-            errorMessage.textContent = message;
-        }
+    function canRetry() {
+        return Boolean(retryRecommendation && currentError?.retryable !== false &&
+            (!currentError?.retryAt || Date.now() >= currentError.retryAt));
+    }
+
+    function renderError() {
+        if (!currentError) return;
+        const copy = ERROR_COPY[lang] || ERROR_COPY.en;
+        const { title, description, status, code, stage, provider, requestId, time } = currentError;
+        const http = errorNode('error-http');
+        http.hidden = !status;
+        http.textContent = status ? `HTTP ${status}` : '';
+        errorNode('error-title').textContent = copy[title];
+        errorMessage.textContent = copy[description];
+        const preserved = errorNode('error-preserved');
+        preserved.hidden = !getTrackSelection(songInput);
+        preserved.textContent = copy.preserved;
+        btnRetry.textContent = copy.retry;
+        btnRetry.hidden = !retryRecommendation;
+        btnRetry.disabled = !canRetry();
+        errorNode('btn-error-back').textContent = copy.back;
+        errorNode('error-details-title').textContent = copy.details;
+        errorNode('error-copy').textContent = copy.copy;
+        errorNode('error-copy-status').textContent = '';
+        const fields = { code, status, stage, provider, requestId,
+            time: new Intl.DateTimeFormat(lang, { dateStyle: 'medium', timeStyle: 'long' }).format(new Date(time)),
+            retryable: canRetry() ? copy.yes : copy.no };
+        const rows = Object.entries(fields).filter(([, value]) => value != null);
+        errorNode('error-fields').replaceChildren(...rows.flatMap(([key, value]) => {
+            const term = document.createElement('dt');
+            const detail = document.createElement('dd');
+            term.textContent = copy[key];
+            detail.textContent = value;
+            return [term, detail];
+        }));
+        diagnostic = rows.map(([key, value]) => `${copy[key]}: ${key === 'time' ? time : value}`).join('\n');
+    }
+
+    function showError(error) {
+        currentError = describeError(error);
+        clearTimeout(retryTimer);
+        if (currentError.retryAt) retryTimer = setTimeout(renderError, Math.max(0, currentError.retryAt - Date.now()));
+        errorNode('error-details').open = false;
+        renderError();
         switchView(viewError);
+        errorNode('error-title').focus({preventScroll:true});
     }
 
     function startLoadingSequence(fetchPromise) {
@@ -218,7 +266,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (data?.cancelled) {
                     returnHomePreservingSearch();
                 } else if (data && data.error && data.error.message) {
-                    showError(data.error.message);
+                    showError(data.error);
                 } else {
                     injectResults(data);
                     switchView(viewResults);
@@ -232,14 +280,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if(run!==loadingRun)return;
                 stopLoading();
                 setProcessingState(PROCESSING_STATES.FAILED);
-                console.error('Erro na requisição:', error);
-                if(error.code==='D1_QUOTA_EXCEEDED'){
-                    showError(lang==='pt-BR'
-                        ? 'O catálogo atingiu o limite diário de leitura. Sua seleção foi preservada.'
-                        : 'The catalog reached its daily read limit. Your song selection was preserved.');
-                } else {
-                    showError(i18n[lang].error_message);
-                }
+                showError(error?.code ? error : {code:'FRONTEND_ERROR'});
             });
     }
 
@@ -332,6 +373,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function startNewSearch() {
+        retryRecommendation = null;
         resultExporter?.setData(null);
         resetSearch();
         switchView(viewHome, true);
@@ -857,7 +899,7 @@ document.addEventListener('DOMContentLoaded', () => {
             })
             .then(data => {
                 if (data && data.error && data.error.message) {
-                    showError(data.error.message);
+                    showError({code:'SHARED_RESULT_ERROR', requestId:data.request_id});
                 } else {
                     injectResults(data);
                     switchView(viewResults);
@@ -865,7 +907,7 @@ document.addEventListener('DOMContentLoaded', () => {
             })
             .catch(error => {
                 console.error('Erro ao carregar link compartilhado:', error);
-                showError(i18n[lang]?.error_message || 'Este link não está mais disponível. Tente fazer uma nova busca.');
+                showError({code:'SHARED_RESULT_ERROR'});
             });
     } else {
         // 2) Acesso direto a /about, /how-it-works ou /hall-of-fame (F5/link direto)
@@ -879,6 +921,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     searchForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+        if (viewLoading.classList.contains('active')) return;
         const primary=getTrackSelection(songInput);
         if (!primary) { songInput.setCustomValidity((TRACK_SELECTION_COPY[lang]||TRACK_SELECTION_COPY.en)[2]); songInput.reportValidity(); songInput.focus(); return; }
 
@@ -905,14 +948,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 musicas_extras: extraSongs
             };
         async function requestRecommendation(body) {
-          const response=await fetch('/recommend', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(body)
-          });
-          const data=await response.json();
+          const {response, data, metadata}=await fetchRecommendation(body);
+          if(!data || typeof data !== 'object') throw {...metadata, code:'INVALID_RESPONSE'};
           if(response.status===422&&data.error?.code==='SONG_IDENTITY_REQUIRED'){
             pauseLoadingForDialog();
             const unresolved=data.error.unresolved_songs?.[0],dialog=document.getElementById('identity-dialog'),container=document.getElementById('identity-candidates');
@@ -937,18 +974,32 @@ document.addEventListener('DOMContentLoaded', () => {
             const copy=LOADING_INTERACTION_COPY[lang]||LOADING_INTERACTION_COPY.en;setProcessingState(PROCESSING_STATES.WAITING_FOR_USER,copy.paused);loadingInteraction.hidden=false;loadingInteraction.innerHTML=`<h2>${escapeHtml(copy.insufficient)}</h2><div class="loading-choice"><button type="button" data-insufficient-cancel>${escapeHtml(copy.cancel)}</button></div>`;
             await new Promise(resolve=>loadingInteraction.querySelector('[data-insufficient-cancel]')?.addEventListener('click',resolve,{once:true}));return {cancelled:true};
           }
-          if(!response.ok)throw Object.assign(new Error(data.error?.message||`HTTP ${response.status}`),{code:data.error?.code});
+          if(!response.ok || data.error) throw {...metadata, code:metadata.code || 'UNKNOWN'};
+          if(!data.movie || typeof data.movie.title !== 'string') throw {...metadata, code:'INVALID_RESPONSE'};
           track('recommend_success'); return data;
         }
-        track('recommend_started');
-        startLoadingSequence(requestRecommendation(payload));
+        retryRecommendation = () => {
+            track('recommend_started');
+            startLoadingSequence(requestRecommendation(payload));
+        };
+        retryRecommendation();
     });
 
     btnSearchAgain.addEventListener('click', startNewSearch);
 
-    if (btnRetry) {
-        btnRetry.addEventListener('click', returnHomePreservingSearch);
-    }
+    btnRetry.addEventListener('click', () => {
+        if (viewError.classList.contains('active') && canRetry()) retryRecommendation();
+    });
+    errorNode('btn-error-back').addEventListener('click', () => {
+        returnHomePreservingSearch();
+        songInput.focus();
+    });
+    errorNode('error-copy').addEventListener('click', async () => {
+        let success = false;
+        try { await navigator.clipboard.writeText(diagnostic); success = true; } catch {}
+        const copy = ERROR_COPY[lang] || ERROR_COPY.en;
+        errorNode('error-copy-status').textContent = success ? copy.copied : copy.copyFailed;
+    });
 
     tagButtons.forEach(btn => {
         btn.addEventListener('click', (e) => {

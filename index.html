@@ -227,14 +227,23 @@
             </div>
         </section>
 
-        <section id="view-error" class="view-section">
+        <section id="view-error" class="view-section" aria-labelledby="error-title">
             <div class="error-container">
                 <div class="tape red-tape top-center"></div>
-                <h2 class="error-title" data-i18n="error_title">SOMETHING WENT WRONG</h2>
-                <p id="error-message" class="error-text" data-i18n="error_message">Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.</p>
-                <button id="btn-retry" class="btn-primary" data-i18n="btn_try_again">
-                    &larr; TRY AGAIN
-                </button>
+                <p id="error-http" class="error-http" hidden></p>
+                <h2 id="error-title" tabindex="-1"></h2>
+                <p id="error-message"></p>
+                <p id="error-preserved" hidden></p>
+                <div class="error-actions">
+                    <button id="btn-retry" class="btn-primary" type="button"></button>
+                    <button id="btn-error-back" class="btn-primary" type="button"></button>
+                </div>
+                <details id="error-details">
+                    <summary id="error-details-title"></summary>
+                    <dl id="error-fields"></dl>
+                    <button id="error-copy" type="button"></button>
+                    <span id="error-copy-status" role="status"></span>
+                </details>
             </div>
         </section>
 
