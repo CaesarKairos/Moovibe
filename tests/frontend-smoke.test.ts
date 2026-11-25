@@ -74,7 +74,7 @@ describe('public frontend boundary',()=>{
     expect(source).toContain("searchForm.addEventListener('submit'");
     expect(source).toContain('setTrackSelection(input,item');
     expect(source).toContain('const primary=getTrackSelection(songInput)');
-    expect(source).toContain("btnRetry.addEventListener('click', startNewSearch)");
+    expect(source).toContain("btnRetry.addEventListener('click', returnHomePreservingSearch)");
     expect(source).toContain("btnSearchAgain.addEventListener('click', startNewSearch)");
     expect(source).toMatch(/e\.preventDefault\(\);\s*selectSuggestion\(autocompleteItems\[autocompleteIndex\]\)/);
     expect(source.indexOf('setTrackSelection(input,item')).toBeLessThan(source.indexOf("track('recommend_started')"));

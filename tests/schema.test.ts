@@ -8,6 +8,10 @@ beforeEach(()=>{db=new Database(':memory:');for(const file of fs.readdirSync('mi
 afterEach(()=>db.close());
 
 describe('D1 schema idempotency',()=>{
+  it('uses the partial index for the completion trigger lookup',()=>{
+    const plan=db.prepare("EXPLAIN QUERY PLAN SELECT 1 FROM pipeline_attempts WHERE tmdb_id=? AND outcome='failed' LIMIT 1").all(123);
+    expect(JSON.stringify(plan)).toMatch(/SEARCH pipeline_attempts USING (?:COVERING )?INDEX idx_attempts_failed_tmdb/);
+  });
   it('deduplicates movies, discovery memberships, relations and queue jobs',()=>{
     db.prepare(`INSERT INTO movies(tmdb_id,title) VALUES(?,?) ON CONFLICT(tmdb_id) DO UPDATE SET title=excluded.title`).run(10,'A');
     db.prepare(`INSERT INTO movies(tmdb_id,title) VALUES(?,?) ON CONFLICT(tmdb_id) DO UPDATE SET title=excluded.title`).run(10,'A updated');

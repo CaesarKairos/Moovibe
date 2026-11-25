@@ -233,7 +233,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 stopLoading();
                 setProcessingState(PROCESSING_STATES.FAILED);
                 console.error('Erro na requisição:', error);
-                showError(i18n[lang]?.error_message || 'Não foi possível encontrar a vibe dessa música. Tente novamente ou escolha outra faixa.');
+                if(error.code==='D1_QUOTA_EXCEEDED'){
+                    showError(lang==='pt-BR'
+                        ? 'O catálogo atingiu o limite diário de leitura. Sua seleção foi preservada.'
+                        : 'The catalog reached its daily read limit. Your song selection was preserved.');
+                } else {
+                    showError(i18n[lang].error_message);
+                }
             });
     }
 
@@ -931,7 +937,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const copy=LOADING_INTERACTION_COPY[lang]||LOADING_INTERACTION_COPY.en;setProcessingState(PROCESSING_STATES.WAITING_FOR_USER,copy.paused);loadingInteraction.hidden=false;loadingInteraction.innerHTML=`<h2>${escapeHtml(copy.insufficient)}</h2><div class="loading-choice"><button type="button" data-insufficient-cancel>${escapeHtml(copy.cancel)}</button></div>`;
             await new Promise(resolve=>loadingInteraction.querySelector('[data-insufficient-cancel]')?.addEventListener('click',resolve,{once:true}));return {cancelled:true};
           }
-          if(!response.ok)throw new Error(data.error?.message||`HTTP ${response.status}`);
+          if(!response.ok)throw Object.assign(new Error(data.error?.message||`HTTP ${response.status}`),{code:data.error?.code});
           track('recommend_success'); return data;
         }
         track('recommend_started');
@@ -941,7 +947,7 @@ document.addEventListener('DOMContentLoaded', () => {
     btnSearchAgain.addEventListener('click', startNewSearch);
 
     if (btnRetry) {
-        btnRetry.addEventListener('click', startNewSearch);
+        btnRetry.addEventListener('click', returnHomePreservingSearch);
     }
 
     tagButtons.forEach(btn => {
