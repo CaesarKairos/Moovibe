@@ -1,11 +1,13 @@
-import { TOP_GLOBAL_COPY } from './i18n/locales.js';
+import { PRESENTATION_COPY, TOP_GLOBAL_COPY } from './i18n/locales.js';
 import { spotifyTrackUrl } from './spotify-presentation.js';
 
-export function rankingMovement(track) {
-    if (track.movement === 'NEW' || track.movement === 'RE') return [track.movement, ''];
+export function rankingMovement(track, language) {
+    const copy = PRESENTATION_COPY[language];
+    const numbers = new Intl.NumberFormat(language);
+    if (track.movement === 'NEW' || track.movement === 'RE') return [copy?.[track.movement === 'NEW' ? 0 : 1] || track.movement, ''];
     if (track.movement !== 'change') return ['', ''];
-    if (track.delta > 0) return [`↑ ${track.delta}`, 'up'];
-    if (track.delta < 0) return [`↓ ${-track.delta}`, 'down'];
+    if (track.delta > 0) return [`↑ ${numbers.format(track.delta)}`, 'up'];
+    if (track.delta < 0) return [`↓ ${numbers.format(-track.delta)}`, 'down'];
     return ['—', ''];
 }
 
@@ -53,6 +55,7 @@ export function createTopGlobalView(getLanguage) {
 
     function localize() {
         const language = getLanguage();
+        const movementCopy = PRESENTATION_COPY[language] || PRESENTATION_COPY.en;
         const [intro, dateLabel, loading, unavailable, pending] = TOP_GLOBAL_COPY[language] || TOP_GLOBAL_COPY.en;
         description.textContent = intro;
         status.textContent = snapshot ? '' : inFlight ? loading : unavailable;
@@ -65,14 +68,20 @@ export function createTopGlobalView(getLanguage) {
             source.href = 'https://open.spotify.com/playlist/37i9dQZEVXbMDoHDwVN2tF';
             source.textContent = 'Spotify';
         }
+        source.setAttribute('aria-label', `${movementCopy[5]}: ${source.textContent}`);
         const date = new Date(snapshot.updated_at);
         updated.dateTime = Number.isNaN(+date) ? '' : date.toISOString();
         updated.textContent = updated.dateTime ? `${dateLabel} ${new Intl.DateTimeFormat(language, {dateStyle:'medium'}).format(date)}` : '';
         list.replaceChildren(...snapshot.tracks.map(track => {
             const row = node('li', `ranking-row${track.position === 1 ? ' ranking-leader' : ''}`);
-            const [movement, direction] = rankingMovement(track);
-            const rank = node('span', 'ranking-position', String(track.position).padStart(2,'0'));
-            if (movement) rank.append(node('small', `ranking-movement ${direction}`, movement));
+            const [movement, direction] = rankingMovement(track, language);
+            const rank = node('span', 'ranking-position', new Intl.NumberFormat(language,{minimumIntegerDigits:2}).format(track.position));
+            if (movement) {
+                const indicator = node('small', `ranking-movement ${direction}`, movement);
+                if (direction || movement === '—') indicator.setAttribute('aria-label', direction
+                    ? `${movementCopy[direction === 'up' ? 2 : 3]} ${Math.abs(track.delta)}` : movementCopy[4]);
+                rank.append(indicator);
+            }
             row.append(rank,mediaBlock({
                 url:spotifyTrackUrl('spotify', track.spotify_id), image:track.cover, title:track.title,
                 subtitle:track.artist, className:'ranking-song', lazy:track.position > 1,
@@ -82,7 +91,7 @@ export function createTopGlobalView(getLanguage) {
             row.append(arrow);
             const movie = track.movie;
             row.append(movie ? mediaBlock({
-                url:letterboxdUrl(movie.tmdb_id), image:movie.poster, title:movie.title || movie.original_title,
+                url:letterboxdUrl(movie.tmdb_id), image:movie.poster, title:movie.localized_titles?.[language] || movie.title || movie.original_title,
                 subtitle:movie.year, className:'ranking-film', lazy:track.position > 1,
             }) : node('span', 'ranking-pending', pending));
             return row;

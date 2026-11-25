@@ -257,31 +257,9 @@
             <ol id="ranking-list" class="ranking-list"></ol>
         </section>
 
-        <section id="view-how-it-works" class="view-section">
-            <div class="hiw-container">
-                <h2 class="hiw-title" data-i18n="how_it_works_title">HOW IT WORKS</h2>
-                <div class="hiw-steps">
-                    <div class="hiw-step">
-                        <div class="step-number">01</div>
-                        <h3 data-i18n="step1_title">INGEST: lyrics + context</h3>
-                        <p data-i18n="step1_text">We take your song and pull together lyrics and meaning from multiple sources—LRCLIB, Genius, DuckDuckGo, Wikipedia PT/EN, and Brave Search—so the recommendation has real musical context, not just a title match. The result is cached for 30 days to avoid repeating the same lookups.</p>
-                    </div>
-                    <div class="hiw-step">
-                        <div class="step-number">02</div>
-                        <h3 data-i18n="step2_title">ENRICH: cover + audio preview</h3>
-                        <p data-i18n="step2_text">We fetch the album cover and a short audio preview from Apple Music, with fallbacks to Deezer and MusicBrainz + Cover Art Archive. These extras give the model a concrete visual and sonic reference for the song’s identity.</p>
-                    </div>
-                    <div class="hiw-step">
-                        <div class="step-number">03</div>
-                        <h3 data-i18n="step3_title">MATCH: AI + TMDb</h3>
-                        <p data-i18n="step3_text">A strict JSON prompt asks the model to choose one real TMDb film—complete with a poetic justification, vibe title, tags, and lyric-based quotes. If TMDb is missing data, Wikipedia or Brave Search backfills the gaps.</p>
-                    </div>
-                    <div class="hiw-step">
-                        <div class="step-number">04</div>
-                        <h3 data-i18n="step4_title">PERSIST + share</h3>
-                        <p data-i18n="step4_text">The final match is stored in Cloudflare KV history and rendered as poster, stills, quotes, and links. A share link with dynamic Open Graph is generated so the movie poster and synopsis appear when shared on social media. The same logic also runs in the local Python terminal version.</p>
-                    </div>
-                </div>
+        <section id="view-how-it-works" class="view-section" aria-labelledby="how-title">
+            <div id="how-content" class="how-content">
+                <h2 id="how-title" data-i18n="how_it_works_title">HOW IT WORKS</h2>
             </div>
         </section>
 
@@ -328,7 +306,7 @@
 
     <dialog id="result-export-dialog" class="result-export-dialog" aria-labelledby="result-export-title">
         <div class="result-export-shell">
-            <div class="result-export-heading"><span>MOOVIBE / SHARE EDITION</span><h2 id="result-export-title">EXPORT IMAGE</h2></div>
+            <div class="result-export-heading"><span id="result-export-edition"></span><h2 id="result-export-title">EXPORT IMAGE</h2></div>
             <div class="result-export-stage" aria-live="polite">
                 <canvas id="result-export-canvas" width="1800" height="1440" aria-label="Moovibe recommendation image preview"></canvas>
                 <div id="result-export-status" class="result-export-status" hidden></div>

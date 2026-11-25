@@ -7,6 +7,7 @@ import { ERROR_COPY } from './i18n/locales.js';
 import { describeError, fetchRecommendation } from './recommendation-error.js';
 import { createTopGlobalView } from './top-global.js';
 import { TOP_GLOBAL_COPY } from './i18n/locales.js';
+import { howDescription, renderHowItWorks } from './how-it-works.js';
 /**
  * Moovibe - Frontend Logic
  * Handles SPA navigation, loading states, and dynamic content injection.
@@ -63,10 +64,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const [title,description]=rota.meta==='ranking' ? ['Moovibe — TOP 50 GLOBAL',TOP_GLOBAL_COPY[lang][0]]
             : PAGE_METADATA[lang]?.[rota.meta]||PAGE_METADATA.en[rota.meta];
         document.title = title;
+        const pageDescription = rota.meta === 'how' ? howDescription(lang) : description;
         const metaDesc = document.querySelector('meta[name="description"]');
-        if (metaDesc) metaDesc.setAttribute('content', description);
+        if (metaDesc) metaDesc.setAttribute('content', pageDescription);
         document.querySelectorAll('meta[property="og:title"],meta[name="twitter:title"]').forEach(meta=>meta.setAttribute('content',title));
-        document.querySelectorAll('meta[property="og:description"],meta[name="twitter:description"]').forEach(meta=>meta.setAttribute('content',description));
+        document.querySelectorAll('meta[property="og:description"],meta[name="twitter:description"]').forEach(meta=>meta.setAttribute('content',pageDescription));
     }
 
     function applyLanguage() {
@@ -101,6 +103,8 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('input.identity-confirmed').forEach(input=>{const selected=getTrackSelection(input);if(selected)setTrackSelection(input,selected,{changeLabel:selectionCopy[0],confirmedLabel:selectionCopy[1]});});
         resultExporter?.localize();
         topGlobal.localize();
+        renderHowItWorks(lang);
+        if(viewLoading?.classList.contains('active')) updateLoadingLanguage();
     }
 
     const languagePicker=document.querySelector('.language-picker');
@@ -153,6 +157,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const PROCESSING_STATES=Object.freeze({IDLE:'IDLE',IDENTIFYING:'IDENTIFYING',CHECKING_LYRICS:'CHECKING_LYRICS',CHECKING_AUDIO:'CHECKING_AUDIO',WAITING_FOR_USER:'WAITING_FOR_USER',BUILDING_PROFILE:'BUILDING_PROFILE',GENERATING_EMBEDDING:'GENERATING_EMBEDDING',RECOMMENDING:'RECOMMENDING',COMPLETED:'COMPLETED',FAILED:'FAILED',CANCELLED:'CANCELLED'});
     let processingState=PROCESSING_STATES.IDLE;
+    let loadingShared = false;
+    function updateLoadingLanguage() {
+        const copy = LOADING_INTERACTION_COPY[lang] || LOADING_INTERACTION_COPY.en;
+        const dictionary = i18n[lang] || i18n.en;
+        loadingText.textContent = loadingShared ? dictionary.loading_shared
+            : processingState === PROCESSING_STATES.WAITING_FOR_USER ? copy.paused
+            : processingState === PROCESSING_STATES.CHECKING_AUDIO ? copy.resume
+            : dictionary.loading_initial;
+    }
     const setProcessingState=(state,message)=>{processingState=state;if(message)loadingText.textContent=message;const waiting=state===PROCESSING_STATES.WAITING_FOR_USER;loadingContainer?.classList.toggle('waiting',waiting);if(!waiting&&loadingInteraction){loadingInteraction.hidden=true;loadingInteraction.innerHTML='';}};
     applyLanguage();
 
@@ -258,6 +271,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function startLoadingSequence(fetchPromise) {
+        loadingShared = false;
         stopLoading();
         const run=loadingRun;
         switchView(viewLoading);
@@ -293,7 +307,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let loadingInterval = null;
     function stopLoading(){loadingRun++;if(loadingInterval){clearInterval(loadingInterval);loadingInterval=null;}}
     function pauseLoadingForDialog(){if(loadingInterval){clearInterval(loadingInterval);loadingInterval=null;}}
-    function resumeLoadingAfterDialog(){switchView(viewLoading);setProcessingState(PROCESSING_STATES.CHECKING_LYRICS,i18n[lang].step1_title);}
+    function resumeLoadingAfterDialog(){switchView(viewLoading);setProcessingState(PROCESSING_STATES.CHECKING_LYRICS);updateLoadingLanguage();}
 
     function waitForLyricsDecision(missing) {
       const copy=LOADING_INTERACTION_COPY[lang]||LOADING_INTERACTION_COPY.en;
@@ -820,7 +834,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const sharedSlug = decodeURIComponent(sharedMatch[1]);
         // Pula a tela inicial e faz fetch GET para buscar o share
         switchView(viewLoading);
-        loadingText.textContent = i18n[lang]?.loading_shared || "Loading shared vibe...";
+        loadingShared = true;
+        updateLoadingLanguage();
 
         fetch('/recommend?slug=' + encodeURIComponent(sharedSlug))
             .then(response => {
