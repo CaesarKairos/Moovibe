@@ -39,14 +39,14 @@ export const translations=Object.freeze(Object.fromEntries(Object.entries(baseTr
 
 export {LANGUAGES,detectLanguage,normalizeLanguage};
 export const ABOUT_LINK_COPY = {
-    en: {email:'Email', portfolio:'Portfolio'},
-    'pt-BR': {email:'E-mail', portfolio:'Portfólio'},
-    es: {email:'Correo', portfolio:'Portafolio'},
-    fr: {email:'E-mail', portfolio:'Portfolio'},
-    de: {email:'E-Mail', portfolio:'Portfolio'},
-    ru: {email:'Почта', portfolio:'Портфолио'},
-    'zh-CN': {email:'邮箱', portfolio:'作品集'},
-    ja: {email:'メール', portfolio:'ポートフォリオ'},
+    "en": {"byline":"Developed by","role":"Software developer","automation":"AI and automation","contact":"Get in touch","portfolio":"View portfolio","other":"Other links"},
+    "pt-BR": {"byline":"Desenvolvido por","role":"Desenvolvedor de software","automation":"IA e automação","contact":"Entrar em contato","portfolio":"Ver portfólio","other":"Outros links"},
+    "es": {"byline":"Desarrollado por","role":"Desarrollador de software","automation":"IA y automatización","contact":"Contactar","portfolio":"Ver portafolio","other":"Otros enlaces"},
+    "fr": {"byline":"Développé par","role":"Développeur logiciel","automation":"IA et automatisation","contact":"Prendre contact","portfolio":"Voir le portfolio","other":"Autres liens"},
+    "de": {"byline":"Entwickelt von","role":"Softwareentwickler","automation":"KI und Automatisierung","contact":"Kontakt aufnehmen","portfolio":"Portfolio ansehen","other":"Weitere Links"},
+    "ru": {"byline":"Разработчик","role":"Разработчик ПО","automation":"ИИ и автоматизация","contact":"Связаться","portfolio":"Открыть портфолио","other":"Другие ссылки"},
+    "zh-CN": {"byline":"开发者","role":"软件开发者","automation":"AI 与自动化","contact":"联系","portfolio":"查看作品集","other":"其他链接"},
+    "ja": {"byline":"開発者","role":"ソフトウェア開発者","automation":"AI と自動化","contact":"お問い合わせ","portfolio":"ポートフォリオを見る","other":"その他のリンク"},
 };
 // Ranking movement, source label, and export artwork copy.
 export const PRESENTATION_COPY = {"en":["New","Return","Up","Down","Unchanged","Source","Share edition","Recommendation image preview","Music → film"],"pt-BR":["Nova","Retorno","Subiu","Caiu","Sem mudança","Fonte","Edição para compartilhar","Prévia da imagem da recomendação","Música → cinema"],"es":["Nueva","Regreso","Subió","Bajó","Sin cambios","Fuente","Edición para compartir","Vista previa de la imagen de recomendación","Música → cine"],"fr":["Nouveau","Retour","Monte","Baisse","Stable","Source","Édition à partager","Aperçu de l’image de recommandation","Musique → cinéma"],"de":["Neu","Zurück","Gestiegen","Gefallen","Unverändert","Quelle","Ausgabe zum Teilen","Vorschau des Empfehlungsbildes","Musik → Film"],"ru":["Новая","Возврат","Подъём","Снижение","Без изменений","Источник","Версия для публикации","Предпросмотр изображения рекомендации","Музыка → кино"],"zh-CN":["新入榜","回榜","上升","下降","不变","来源","分享版","推荐图片预览","音乐 → 电影"],"ja":["初登場","再登場","上昇","下降","変動なし","出典","共有版","おすすめ画像のプレビュー","音楽 → 映画"]};

@@ -1166,10 +1166,17 @@ h1, h2, h3, h4, .font-display {
     grid-template-columns: repeat(2,minmax(0,1fr));
     gap: .75rem;
 }
+.about-sidebar { display: grid; gap: 1.5rem; min-width: 0; }
 .about-profile { border: var(--brutalist-border); padding: clamp(1rem, 2vw, 1.5rem); background: var(--bg-paper); box-shadow: var(--brutalist-shadow); }
-.about-author { display: flex; align-items: center; gap: .8rem; margin-bottom: 1rem; padding-bottom: .8rem; border-bottom: 1px dashed var(--text-dark); }
-.about-author h3 { font: clamp(1.5rem, 3vw, 2rem)/1.2 var(--font-display); }
-.about-author img { flex: none; }
+.about-profile h3 { font: clamp(1.7rem, 3vw, 2.15rem)/1.2 var(--font-display); text-transform: uppercase; }
+.about-byline { font: 700 .73rem var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--accent-red); margin-bottom: .6rem; }
+.about-role { font: .9rem var(--font-mono); margin: .45rem 0 1rem; }
+.about-skills { display: flex; flex-wrap: wrap; gap: .4rem; list-style: none; padding: 0 0 1rem; margin: 0 0 1rem; border-bottom: 1px dashed var(--text-dark); }
+.about-skills li { padding: .2rem .4rem; border: 1px solid var(--text-dark); font: .75rem var(--font-mono); }
+.about-actions { display: grid; gap: .65rem; }
+.about-other { padding-top: .85rem; border-top: var(--brutalist-border); }
+.about-other h3 { font: 1.3rem var(--font-display); text-transform: uppercase; margin-bottom: .8rem; }
+.about-arrow { margin-inline-start: auto; font: 700 .85rem var(--font-mono); }
 .social-btn {
     display: inline-flex;
     align-items: center;
@@ -1191,12 +1198,12 @@ h1, h2, h3, h4, .font-display {
     transform: translate(-2px, -2px);
     box-shadow: 8px 8px 0px var(--text-dark);
 }
-.social-btn svg {
+.social-btn svg, .social-btn img {
     width: 18px;
     height: 18px;
     flex: none;
 }
-.social-btn.about-portfolio { background: var(--accent-gold); }
+.social-btn.about-contact { background: var(--accent-gold); font-family: var(--font-display); font-size: 1.15rem; font-weight: 400; }
 
 @media (max-width: 900px) {
     .hiw-steps {
