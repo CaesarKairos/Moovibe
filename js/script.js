@@ -6,7 +6,7 @@ import { createResultExporter } from './result-export.js';
 import { ERROR_COPY } from './i18n/locales.js';
 import { describeError, fetchRecommendation } from './recommendation-error.js';
 import { createTopGlobalView } from './top-global.js';
-import { TOP_GLOBAL_COPY } from './i18n/locales.js';
+import { ABOUT_LINK_COPY, TOP_GLOBAL_COPY } from './i18n/locales.js';
 import { howDescription, renderHowItWorks } from './how-it-works.js';
 /**
  * Moovibe - Frontend Logic
@@ -102,6 +102,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const selectionCopy=TRACK_SELECTION_COPY[lang]||TRACK_SELECTION_COPY.en;
         document.querySelectorAll('input.identity-confirmed').forEach(input=>{const selected=getTrackSelection(input);if(selected)setTrackSelection(input,selected,{changeLabel:selectionCopy[0],confirmedLabel:selectionCopy[1]});});
         resultExporter?.localize();
+        const aboutLinks = ABOUT_LINK_COPY[lang] || ABOUT_LINK_COPY.en;
+        document.querySelectorAll('[data-about-copy]').forEach(element => {
+            element.textContent = aboutLinks[element.dataset.aboutCopy];
+        });
         topGlobal.localize();
         renderHowItWorks(lang);
         if(viewLoading?.classList.contains('active')) updateLoadingLanguage();
