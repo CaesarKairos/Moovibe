@@ -25,6 +25,16 @@ fr:['Ce projet a été créé par un amoureux du cinéma — sans prétendre êt
 ja:['このプロジェクトは、批評家や「シネフィル」を名乗るつもりはないものの、映画を愛し、音楽とサウンドトラックにも夢中な一人の人間が作りました。同じように感じる人たちのためのプロジェクトです。','曲に心を大きく動かされ、もっと長く続いてほしいと思ったことはありませんか。たとえば、Harry Styles の Sign of the Times が持つメランコリックな壮大さのように。曲が伝えるすべてを受け止めるには、三分では足りないことがほとんどです。私はずっと、その感覚を引き延ばしたいと思っていました。曲が二時間ずっとあなたを抱きしめることはできなくても、映画ならできます。','Moovibe はその思いから生まれました。お気に入りの曲とまったく同じ空気、色、雰囲気を持つ完璧な映画を自動で見つける橋を作りたかったのです。','この体験が何かを感じさせてくれた、素敵な夜のための映画に出会えた、あるいは単純にアイデアを気に入ってくれたなら、SNS をフォローしたり、何らかの形でプロジェクトを応援してもらえたら嬉しいです。開発者の方には、GitHub でオープンソースのコードも待っています。']
 });
 
+export const EXPORT_COPY=Object.freeze({
+en:{export_image:'EXPORT IMAGE',generating:'GENERATING IMAGE…',download:'DOWNLOAD PNG',share:'SHARE IMAGE',close:'CLOSE',error:'COULD NOT GENERATE IMAGE. TRY AGAIN.',report:'VIBE REPORT',song:'THE SONG',stills:'FILM STILLS',tagline:'Every song already has a film. We find it.'},
+'pt-BR':{export_image:'EXPORTAR IMAGEM',generating:'GERANDO IMAGEM…',download:'BAIXAR PNG',share:'COMPARTILHAR IMAGEM',close:'FECHAR',error:'NÃO FOI POSSÍVEL GERAR A IMAGEM. TENTE NOVAMENTE.',report:'RELATÓRIO DE VIBE',song:'A MÚSICA',stills:'CENAS DO FILME',tagline:'Cada música já tem um filme. Nós encontramos.'},
+'zh-CN':{export_image:'导出图片',generating:'正在生成图片…',download:'下载 PNG',share:'分享图片',close:'关闭',error:'无法生成图片，请重试。',report:'氛围报告',song:'歌曲',stills:'电影画面',tagline:'每首歌都有一部电影。我们来找到它。'},
+ru:{export_image:'ЭКСПОРТ ИЗОБРАЖЕНИЯ',generating:'СОЗДАЁМ ИЗОБРАЖЕНИЕ…',download:'СКАЧАТЬ PNG',share:'ПОДЕЛИТЬСЯ',close:'ЗАКРЫТЬ',error:'НЕ УДАЛОСЬ СОЗДАТЬ ИЗОБРАЖЕНИЕ. ПОПРОБУЙТЕ СНОВА.',report:'ОТЧЁТ ОБ АТМОСФЕРЕ',song:'ПЕСНЯ',stills:'КАДРЫ ИЗ ФИЛЬМА',tagline:'У каждой песни уже есть свой фильм. Мы его найдём.'},
+es:{export_image:'EXPORTAR IMAGEN',generating:'GENERANDO IMAGEN…',download:'DESCARGAR PNG',share:'COMPARTIR IMAGEN',close:'CERRAR',error:'NO SE PUDO GENERAR LA IMAGEN. INTÉNTALO DE NUEVO.',report:'INFORME DE VIBRA',song:'LA CANCIÓN',stills:'FOTOGRAMAS',tagline:'Cada canción ya tiene una película. La encontramos.'},
+de:{export_image:'BILD EXPORTIEREN',generating:'BILD WIRD ERSTELLT…',download:'PNG HERUNTERLADEN',share:'BILD TEILEN',close:'SCHLIESSEN',error:'DAS BILD KONNTE NICHT ERSTELLT WERDEN. VERSUCHE ES ERNEUT.',report:'STIMMUNGSBERICHT',song:'DER SONG',stills:'FILMSZENEN',tagline:'Jeder Song hat bereits einen Film. Wir finden ihn.'},
+fr:{export_image:'EXPORTER L’IMAGE',generating:'CRÉATION DE L’IMAGE…',download:'TÉLÉCHARGER LE PNG',share:'PARTAGER L’IMAGE',close:'FERMER',error:'IMPOSSIBLE DE CRÉER L’IMAGE. RÉESSAYEZ.',report:'RAPPORT DE VIBE',song:'LA CHANSON',stills:'IMAGES DU FILM',tagline:'Chaque chanson a déjà un film. Nous le trouvons.'},
+ja:{export_image:'画像を書き出す',generating:'画像を作成中…',download:'PNG をダウンロード',share:'画像を共有',close:'閉じる',error:'画像を作成できませんでした。もう一度お試しください。',report:'雰囲気レポート',song:'曲',stills:'映画のシーン',tagline:'すべての曲には、すでに映画がある。私たちが見つけます。'}
+});
 export const translations=Object.freeze(Object.fromEntries(Object.entries(baseTranslations).map(([code,dictionary])=>{const [about_p1,about_p2,about_p3,about_p4]=PERSONAL_ABOUT[code];return [code,Object.freeze({...dictionary,about_p1,about_p2,about_p3,about_p4})];})));
 
 export {LANGUAGES,detectLanguage,normalizeLanguage};

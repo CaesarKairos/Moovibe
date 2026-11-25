@@ -2,6 +2,7 @@ import { AUTOCOMPLETE_COPY, BETA_COPY, IDENTITY_COPY, LANGUAGES, LOADING_INTERAC
 import { clearTrackSelection, getTrackSelection, resetTrackField, setTrackSelection } from './track-selection.js';
 import { buildMediaSlots } from './result-presentation.js';
 import { spotifyArtwork, spotifyTrackUrl } from './spotify-presentation.js';
+import { createResultExporter } from './result-export.js';
 /**
  * Moovibe - Frontend Logic
  * Handles SPA navigation, loading states, and dynamic content injection.
@@ -18,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let lang = normalizeLanguage(storedLanguage || detectLanguage(navigator.languages || [navigator.language]));
 
     const i18n = translations;
+    let resultExporter=null;
 
     // Mapeamento view → URL, título e descrição (SEO)
     const VIEW_ROUTES = {
@@ -92,6 +94,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if(identityTitle)identityTitle.textContent=identityCopy[1];if(identityInstruction)identityInstruction.textContent=identityCopy[2];if(identityCancel)identityCancel.textContent=identityCopy[3];
         const selectionCopy=TRACK_SELECTION_COPY[lang]||TRACK_SELECTION_COPY.en;
         document.querySelectorAll('input.identity-confirmed').forEach(input=>{const selected=getTrackSelection(input);if(selected)setTrackSelection(input,selected,{changeLabel:selectionCopy[0],confirmedLabel:selectionCopy[1]});});
+        resultExporter?.localize();
     }
 
     const languagePicker=document.querySelector('.language-picker');
@@ -135,6 +138,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let extraSongCount = 0;
     let extraSongInputs = [];
     const sessionLyrics=new Map();
+    resultExporter=createResultExporter({getLanguage:()=>lang});
 
     const PROCESSING_STATES=Object.freeze({IDLE:'IDLE',IDENTIFYING:'IDENTIFYING',CHECKING_LYRICS:'CHECKING_LYRICS',CHECKING_AUDIO:'CHECKING_AUDIO',WAITING_FOR_USER:'WAITING_FOR_USER',BUILDING_PROFILE:'BUILDING_PROFILE',GENERATING_EMBEDDING:'GENERATING_EMBEDDING',RECOMMENDING:'RECOMMENDING',COMPLETED:'COMPLETED',FAILED:'FAILED',CANCELLED:'CANCELLED'});
     let processingState=PROCESSING_STATES.IDLE;
@@ -322,6 +326,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function startNewSearch() {
+        resultExporter?.setData(null);
         resetSearch();
         switchView(viewHome, true);
     }
@@ -598,6 +603,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const movie = data && data.movie ? data.movie : {};
         const safeStr = (val) => (val !== null && val !== undefined && typeof val === 'string') ? val : '';
         const safeArr = (val) => Array.isArray(val) ? val : [];
+        resultExporter?.setData(data);
 
         // Meta
         const song = safeStr(data && data.song);

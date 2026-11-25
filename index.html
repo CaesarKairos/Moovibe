@@ -39,6 +39,7 @@
     </script>
 
     <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="/css/result-export.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Anton&family=Courier+Prime:ital,wght@0,400;0,700;1,400&family=Playfair+Display:ital,wght@0,400;0,600;0,800;1,400;1,600&display=swap" rel="stylesheet">
@@ -221,6 +222,7 @@
             </div>
 
             <div class="action-footer">
+                 <button class="btn-export" id="btn-export-result" hidden>EXPORT IMAGE</button>
                  <button class="btn-secondary" id="btn-search-again" data-i18n="btn_new_search">&larr; NEW SEARCH</button>
             </div>
         </section>
@@ -312,6 +314,22 @@
     </main>
 
     <dialog id="identity-dialog" class="lyrics-dialog"><form method="dialog"><span class="dialog-kicker">MOOVIBE / IDENTITY</span><h2 id="identity-title">WHICH SONG DID YOU MEAN?</h2><p id="identity-instruction"></p><div id="identity-candidates"></div><div class="lyrics-actions"><button value="cancel" id="identity-cancel">None of these</button></div></form></dialog>
+
+    <dialog id="result-export-dialog" class="result-export-dialog" aria-labelledby="result-export-title">
+        <div class="result-export-shell">
+            <div class="result-export-heading"><span>MOOVIBE / SHARE EDITION</span><h2 id="result-export-title">EXPORT IMAGE</h2></div>
+            <div class="result-export-stage" aria-live="polite">
+                <canvas id="result-export-canvas" width="1800" height="1440" aria-label="Moovibe recommendation image preview"></canvas>
+                <div id="result-export-status" class="result-export-status" hidden></div>
+            </div>
+            <p id="result-export-error" class="result-export-error" role="alert" hidden></p>
+            <div class="result-export-actions">
+                <button type="button" id="result-export-download">DOWNLOAD PNG</button>
+                <button type="button" id="result-export-share" hidden>SHARE IMAGE</button>
+                <button type="button" id="result-export-close">CLOSE</button>
+            </div>
+        </div>
+    </dialog>
 
     <script type="module" src="/js/script.js"></script>
 </body>
