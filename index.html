@@ -67,7 +67,7 @@
             <span id="beta-badge" class="beta-badge">PUBLIC BETA<br>CATALOG IN PROGRESS</span>
         </div>
         <nav class="nav-links">
-            <a href="#" data-view="view-hall-of-fame" data-i18n="hall_of_fame">HALL OF FAME</a>
+            <a href="/top-50-global" data-view="view-top-global">TOP 50 GLOBAL</a>
             <a href="#" data-view="view-how-it-works" data-i18n="how_it_works">HOW IT WORKS</a>
             <a href="#" data-view="view-about" data-i18n="about">ABOUT</a>
             <div class="language-picker"><button id="language-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="Choose language"><span class="language-code">EN</span><svg class="language-chevron" viewBox="0 0 12 8" aria-hidden="true"><path d="m1 1 5 5 5-5"/></svg></button><div id="language-menu" role="listbox" aria-label="Languages"></div></div>
@@ -247,12 +247,14 @@
             </div>
         </section>
 
-        <section id="view-hall-of-fame" class="view-section">
-            <div class="hall-container">
-                <h2 class="hall-title" data-i18n="hall_of_fame_title">HALL OF FAME</h2>
-                <p class="hall-subtitle" data-i18n="hall_subtitle">The greatest music-to-film matches ever discovered.</p>
-                <div id="hall-grid" class="hall-grid"></div>
-            </div>
+        <section id="view-top-global" class="view-section" aria-labelledby="top-global-title">
+            <header class="ranking-header">
+                <h2 id="top-global-title">TOP 50 GLOBAL</h2>
+                <p id="ranking-description"></p>
+                <p class="ranking-source"><a id="ranking-source" target="_blank" rel="noopener noreferrer" href="https://open.spotify.com/playlist/37i9dQZEVXbMDoHDwVN2tF">Spotify</a><time id="ranking-updated"></time></p>
+            </header>
+            <p id="ranking-status" role="status"></p>
+            <ol id="ranking-list" class="ranking-list"></ol>
         </section>
 
         <section id="view-how-it-works" class="view-section">

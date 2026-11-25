@@ -105,7 +105,7 @@ function keepJustificationPrimaryOnly(curation,slate,lang) {
   return {...curation,justification:primaryOnlyJustification(lang)};
 }
 
-export async function recommendFromCatalog({env,songs,lyrics,context,lang='en',history={specific:[],global:[],available:false}}) {
+export async function recommendFromCatalog({env,songs,lyrics,context,lang='en',history={specific:[],global:[],available:false},excludedTmdbIds=[],requireCuration=false}) {
   if(!env.MOOVIBE_LIBRARY) throw new Error('MOOVIBE_LIBRARY D1 binding is missing');
   const gemini=new GeminiClient(env.GEMINI_API_KEY);
   const requestId=crypto.randomUUID(), embeddingModel=env.EMBEDDING_MODEL||'gemini-embedding-2',dimensions=Number(env.EMBEDDING_DIMENSIONS||768);
@@ -161,7 +161,8 @@ export async function recommendFromCatalog({env,songs,lyrics,context,lang='en',h
     if(ch.numeric_score!=null) movie.numeric_score=ch.numeric_score;
     movie.channels=ch.channels||[];
   }
-  const ranked=rerank(movies,analysis.data);
+  const excluded = new Set(excludedTmdbIds.map(Number));
+  const ranked=rerank(movies.filter(movie => !excluded.has(Number(movie.tmdb_id))),analysis.data);
   const historical=applyRecommendationHistory(ranked,history);
   const slate=diversify(historical.ranked,CANDIDATE_LIMIT);
   if(slate.length<3) throw new Error('CATALOG_TOO_SMALL');
@@ -191,6 +192,7 @@ export async function recommendFromCatalog({env,songs,lyrics,context,lang='en',h
     if(isWeakJustification(curation.justification))console.warn(JSON.stringify({event:'weak_justification',request_id:requestId,length:String(curation.justification||'').length}));
   } catch(error) {
     await writeAudit(env,{request_id:requestId,timestamp:new Date().toISOString(),stage:'final_curation',success:false,error:String(error?.message||error)});
+    if (requireCuration) throw error;
     // Deterministic fallback: never search externally for a replacement.
     const fallback=FALLBACKS[lang]||FALLBACKS.en; curation={primary_tmdb_id:Number(slate[0].tmdb_id),alternative_tmdb_ids:slate.slice(1,3).map(x=>Number(x.tmdb_id)),justification:fallback[0],vibe_title:'CINEMATIC ECHO',tags:[...(analysis.data.moods||[]),...(analysis.data.atmosphere||[])].slice(0,4).map(x=>String(x).toUpperCase()),alternative_calls:fallback.slice(1)};
   }

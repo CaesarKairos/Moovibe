@@ -5,6 +5,8 @@ import { spotifyArtwork, spotifyTrackUrl } from './spotify-presentation.js';
 import { createResultExporter } from './result-export.js';
 import { ERROR_COPY } from './i18n/locales.js';
 import { describeError, fetchRecommendation } from './recommendation-error.js';
+import { createTopGlobalView } from './top-global.js';
+import { TOP_GLOBAL_COPY } from './i18n/locales.js';
 /**
  * Moovibe - Frontend Logic
  * Handles SPA navigation, loading states, and dynamic content injection.
@@ -37,9 +39,9 @@ document.addEventListener('DOMContentLoaded', () => {
             path: '/how-it-works',
             meta: 'how'
         },
-        'view-hall-of-fame': {
-            path: '/hall-of-fame',
-            meta: 'hall'
+        'view-top-global': {
+            path: '/top-50-global',
+            meta: 'ranking'
         }
     };
 
@@ -58,7 +60,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function atualizarMetaPorView(targetView) {
         const rota = VIEW_ROUTES[targetView?.id];
         if (!rota) return;
-        const [title,description]=PAGE_METADATA[lang]?.[rota.meta]||PAGE_METADATA.en[rota.meta];
+        const [title,description]=rota.meta==='ranking' ? ['Moovibe — TOP 50 GLOBAL',TOP_GLOBAL_COPY[lang][0]]
+            : PAGE_METADATA[lang]?.[rota.meta]||PAGE_METADATA.en[rota.meta];
         document.title = title;
         const metaDesc = document.querySelector('meta[name="description"]');
         if (metaDesc) metaDesc.setAttribute('content', description);
@@ -97,6 +100,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const selectionCopy=TRACK_SELECTION_COPY[lang]||TRACK_SELECTION_COPY.en;
         document.querySelectorAll('input.identity-confirmed').forEach(input=>{const selected=getTrackSelection(input);if(selected)setTrackSelection(input,selected,{changeLabel:selectionCopy[0],confirmedLabel:selectionCopy[1]});});
         resultExporter?.localize();
+        topGlobal.localize();
     }
 
     const languagePicker=document.querySelector('.language-picker');
@@ -128,7 +132,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const viewLoading = document.getElementById('view-loading');
     const viewResults = document.getElementById('view-results');
     const viewError = document.getElementById('view-error');
-    const viewHallOfFame = document.getElementById('view-hall-of-fame');
+    const topGlobal = createTopGlobalView(() => lang);
     const loadingText = document.getElementById('loading-text');
     const loadingContainer=document.querySelector('.loading-container');
     const loadingInteraction=document.getElementById('loading-interaction');
@@ -193,6 +197,7 @@ document.addEventListener('DOMContentLoaded', () => {
             view.classList.remove('active');
         });
         targetView.classList.add('active');
+        if (targetView.id === 'view-top-global') topGlobal.load();
         // SEO: atualiza URL (apenas quando a navegação vem da UI) + título + meta description
         const novaUrl = viewToPath(targetView);
         if (novaUrl !== null) {
@@ -543,59 +548,6 @@ document.addEventListener('DOMContentLoaded', () => {
         setupAutocomplete(songInput, songSuggestions);
     }
 
-    async function loadHallOfFame() {
-        const grid = document.getElementById('hall-grid');
-        if (!grid) return;
-
-        grid.innerHTML = '<p class="hall-subtitle">' + (i18n[lang]?.hall_subtitle || 'Loading matches...') + '</p>';
-
-        try {
-            const response = await fetch('/recommend', { method: 'GET' });
-            if (!response.ok) {
-                throw new Error('Failed to load history');
-            }
-            const items = await response.json();
-
-            if (!Array.isArray(items) || items.length === 0) {
-                grid.innerHTML = '<p class="hall-subtitle">' + (i18n[lang]?.hall_subtitle || 'No matches yet. Be the first to discover one.') + '</p>';
-                return;
-            }
-
-            grid.innerHTML = '';
-            items.slice(0, 25).forEach((item) => {
-                const movie = item?.movie || {};
-                const poster = movie.poster_url || '';
-                const title = movie.title || 'Unknown';
-                const year = movie.release_year || '';
-                const song = item.song || '';
-                const artist = item.artist || '';
-
-                const card = document.createElement('div');
-                card.className = 'hall-card';
-
-                const img = document.createElement('img');
-                img.src = poster;
-                img.alt = title;
-                img.loading = 'lazy';
-
-                const meta = document.createElement('div');
-                meta.className = 'hall-meta';
-                const separator = ' — ';
-                meta.innerHTML = `<strong>${escapeHtml(title)}</strong><br>${escapeHtml(year)}<br>${escapeHtml(song)}${separator}${escapeHtml(artist)}`;
-
-                if (poster) {
-                    card.appendChild(img);
-                }
-                card.appendChild(meta);
-                aplicarOverlayHall(card, movie);
-                grid.appendChild(card);
-            });
-        } catch (err) {
-            console.error('Error loading Hall of Fame:', err);
-            const grid = document.getElementById('hall-grid');
-            if (grid) grid.innerHTML = '<p class="hall-subtitle">Could not load saved matches.</p>';
-        }
-    }
 
     function escapeHtml(str) {
         if (typeof str !== 'string') return '';
@@ -608,10 +560,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- SPA Navigation ---
 
-    const hallSubtitle = document.querySelector('#view-hall-of-fame .hall-subtitle');
-    if (hallSubtitle) {
-        hallSubtitle.textContent = i18n[lang]?.hall_subtitle || hallSubtitle.textContent;
-    }
 
     navLinks.forEach(link => {
         link.addEventListener('click', (e) => {
@@ -619,9 +567,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const targetId = link.getAttribute('data-view');
             const target = document.getElementById(targetId);
             switchView(target, true);
-            if (targetId === 'view-hall-of-fame') {
-                loadHallOfFame();
-            }
         });
     });
 
@@ -867,19 +812,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     }
 
-    function aplicarOverlayHall(card, movie) {
-        const overlay = document.createElement('div');
-        overlay.className = 'hall-overlay';
-        const vibe = movie.vibe_title || '';
-        const tags = Array.isArray(movie.tags) ? movie.tags : [];
-        let html = '';
-        if (vibe) html += '<span class="ho-vibe">' + escapeHtml(vibe) + '</span>';
-        if (tags.length > 0) {
-            html += '<div class="ho-tags">' + tags.map(function(t) { return '<span class="ho-tag">' + escapeHtml(t) + '</span>'; }).join('') + '</div>';
-        }
-        overlay.innerHTML = html;
-        card.appendChild(overlay);
-    }
 
     // --- Detecção de rota inicial ---
     // 1) Links compartilhados agora usam /share/{slug} (rota real, não query param)
@@ -910,7 +842,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 showError({code:'SHARED_RESULT_ERROR'});
             });
     } else {
-        // 2) Acesso direto a /about, /how-it-works ou /hall-of-fame (F5/link direto)
+        // Direct navigation to a public section.
         const viewInicial = pathToView(window.location.pathname);
         if (viewInicial) {
             switchView(viewInicial, false);

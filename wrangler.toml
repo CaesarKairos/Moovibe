@@ -9,6 +9,7 @@ EMBEDDING_MODEL = "gemini-embedding-2"
 EMBEDDING_DIMENSIONS = "768"
 RECOMMENDER_VERSION = "catalog-v5-rich-curation"
 GEMINI_PROJECT_LABEL = "Moovibe Recommendations"
+TOP_GLOBAL_DAILY_ATTEMPTS = "1"
 # Defina PIPELINE_WORKER_URL no ambiente Pages. PIPELINE_ADMIN_TOKEN deve ser
 # um secret e ter o mesmo valor de ADMIN_TOKEN no Worker.
 

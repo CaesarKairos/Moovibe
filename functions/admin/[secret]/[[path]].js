@@ -5,6 +5,8 @@ import { adminControlRoomScript,adminControlRoomStyles } from '../../_lib/admin-
 import { overallGeminiState,runGeminiHealth } from '../../_lib/gemini-health.js';
 import { cachedProductivity } from '../../_lib/admin-productivity.js';
 import { requestPipelineControl } from '../../_lib/pipeline-control-client.js';
+import { topGlobalStatus, updateTopGlobal } from '../../_lib/top-global.js';
+import { topGlobalAdminMarkup, topGlobalAdminScript } from '../../_lib/top-global-admin.js';
 
 const COOKIE='moovibe_admin';
 const response=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'}});
@@ -15,7 +17,7 @@ const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<
 
 function page(content){return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/svg+xml" href="/assets/moovibe-admin-lock.svg"><title>Moovibe — Private Archive / Control Room</title><style>${adminStyles}${adminProductivityStyles}${adminControlRoomStyles}</style></head><body>${content}</body></html>`}
 function loginPage(error=false){return page(loginMarkup(error));}
-function dashboard(csrf){return page(`${dashboardMarkup(csrf)}<script>${adminControlRoomScript}</script>`);}
+function dashboard(csrf){return page(`${dashboardMarkup(csrf)}${topGlobalAdminMarkup}<script>${adminControlRoomScript}${topGlobalAdminScript(csrf)}</script>`);}
 
 const AI_CACHE_KEY='admin:gemini-health:v2',AI_STALE_MS=15*60*1000,AI_RETENTION_SECONDS=60*60*24*30;
 const healthInFlight={pages:null,worker:null};
@@ -42,6 +44,21 @@ export async function onRequest({request,env,params}){if(!env.ADMIN_PATH_SECRET|
  if(request.method==='POST'&&!path){const form=await request.formData();if(!env.ADMIN_TOKEN||!safeEqual(form.get('admin_key'),env.ADMIN_TOKEN))return html(loginPage(true),401);const session=await createAdminSession(env.ADMIN_TOKEN);return new Response(null,{status:303,headers:{location:base,'set-cookie':`${COOKIE}=${session}; HttpOnly; Secure; SameSite=Strict; Path=${base}; Max-Age=43200`}});}
  const authenticated=env.ADMIN_TOKEN&&await verifyAdminSession(env.ADMIN_TOKEN,cookieValue(request,COOKIE));if(path==='logout'&&request.method==='POST')return new Response(null,{status:204,headers:{'set-cookie':`${COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path=${base}; Max-Age=0`}});if(!authenticated){if(path.startsWith('api/'))return response({error:'unauthorized'},401);return html(loginPage());}
  const session=cookieValue(request,COOKIE);if(!path){const csrf=await createCsrfToken(env.ADMIN_TOKEN,session);return html(dashboard(csrf));}if(!path.startsWith('api/'))return hidden(request);const name=path.slice(4),url=new URL(request.url);
+ if(name==='top-global'){
+  try {
+   if(request.method==='GET')return response(await topGlobalStatus(env));
+   if(request.method!=='POST')return response({error:'method_not_allowed'},405);
+   if(!validOrigin(request)||!await verifyCsrfToken(env.ADMIN_TOKEN,session,request.headers.get('x-csrf-token')))return response({error:'forbidden'},403);
+   if(Number(request.headers.get('content-length')||0)>96000)return response({error:'payload_too_large'},413);
+   const raw=await request.text();
+   if(raw.length>96000)return response({error:'payload_too_large'},413);
+   const body=JSON.parse(raw);
+   return response(await updateTopGlobal(env,body));
+  } catch(error) {
+   const code=String(error?.message||'');
+   return /^[A-Z][A-Z_]+$/.test(code)?response({error:code},422):response({error:'TOP_GLOBAL_UNAVAILABLE'},503);
+  }
+ }
  if(request.method==='POST'){
   if(!validOrigin(request))return response({error:'invalid_origin'},403);if(!await verifyCsrfToken(env.ADMIN_TOKEN,session,request.headers.get('x-csrf-token')))return response({error:'invalid_csrf'},403);if(Number(request.headers.get('content-length')||0)>8192)return response({error:'payload_too_large'},413);
   if(name==='ai/check'){const body=await request.json().catch(()=>({})),service=body.service;if(!['pages','worker'].includes(service))return response({error:'invalid_service'},422);const existing=await readAiState(env),checkedAt=existing[service]?.checked_at;if(checkedAt&&Date.now()-Date.parse(checkedAt)<60000)return response({error:'cooldown',service,retry_after_seconds:Math.ceil((60000-(Date.now()-Date.parse(checkedAt)))/1000)},429);return response(await runServiceHealth(env,service));}
