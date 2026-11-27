@@ -8,7 +8,7 @@ vi.mock('../functions/_lib/gemini.js',()=>({
   GeminiClient:class{constructor(_key?:string){}async generateJson(...args:any[]){return generateJson(...args);}async embed(...args:any[]){return embed(...args);}}
 }));
 
-import {buildCuratorSystem,compactCandidate,curationSchema,D1_ID_CHUNK_SIZE,hydrateMoviePresentation,isWeakJustification,loadMovies,recommendFromCatalog,selectBestPoster,selectBestStills} from '../functions/_lib/catalog.js';
+import {buildCuratorSystem,buildFallbackJustification,compactCandidate,curationSchema,D1_ID_CHUNK_SIZE,hydrateMoviePresentation,isWeakJustification,loadMovies,recommendFromCatalog,selectBestPoster,selectBestStills} from '../functions/_lib/catalog.js';
 import {persistLyricsBestEffort} from '../functions/_lib/song-library.js';
 
 class Statement {
@@ -152,13 +152,22 @@ describe('hybrid recommendation flow',()=>{
     expect(typeof result.diagnostics.top[0].components.numeric).toBe('number');
     expect(typeof result.diagnostics.top[0].components.final).toBe('number');
   });
+  it('continues with numeric catalog retrieval when the unchanged Gemini embedding fails',async()=>{
+    const {env,MOVIE_VECTORS}=makeEnv(db);
+    embed.mockRejectedValueOnce(new Error('Gemini transient 503: unavailable'));
+    const result=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'en',requestId:'embedding-fallback-test'});
+    expect(result.primary).toBeDefined();
+    expect(result.diagnostics).toMatchObject({embedding_fallback:true,semantic_retrieval_used:false,numeric_count:5});
+    expect(MOVIE_VECTORS.query).not.toHaveBeenCalled();
+    expect(env.EMBEDDING_MODEL).toBe('gemini-embedding-2');
+  });
   it('sends a compact payload with truncated overviews and score signals',async()=>{
     const {env}=makeEnv(db);
     const result=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'en'});
     const curationCall=generateJson.mock.calls.find(c=>c[0]?.schema?.properties?.primary_tmdb_id)!;
     const prompt=curationCall[0].prompt as string;
     expect(prompt).not.toContain('X'.repeat(550));  // overview capped at ~520 chars
-    expect(prompt).toContain('X'.repeat(450));
+    expect(prompt).toContain('X'.repeat(300));
     expect(prompt).toContain('numeric_vibe_score');
     expect(prompt).toContain('final_score');
     expect(prompt).not.toContain('"final_score":null');
@@ -168,14 +177,14 @@ describe('hybrid recommendation flow',()=>{
   });
   it('keeps a valid justification that discusses only the primary film',async()=>{
     const {env}=makeEnv(db);
-    const valid={primary_tmdb_id:1,alternative_tmdb_ids:[2,3],justification:'Film 1 traduz a melancolia e a atmosfera onírica das músicas em uma experiência cinematográfica íntima.',vibe_title:'V',tags:['a','b','c','d'],alternative_calls:['Film 2 para outra textura','Film 3 para outra energia']};
+    const valid={primary_tmdb_id:1,alternative_tmdb_ids:[2,3],justification:'Film 1 aproxima a melancolia das canções de uma narrativa íntima, em que memória e desejo se misturam sem transformar a tristeza em mero ornamento. O ritmo contido abre espaço para que pequenos gestos ganhem peso, enquanto a atmosfera onírica prolonga a sensação de olhar para trás e ainda precisar seguir em frente. Essa combinação cria uma ponte concreta entre a vulnerabilidade das letras e a delicadeza visual do filme, sem depender de semelhanças superficiais ou de uma cena inventada.',vibe_title:'V',tags:['a','b','c','d'],alternative_calls:['Film 2 para outra textura','Film 3 para outra energia']};
     generateJson.mockImplementation(async({schema}:any)=>schema?.properties?.primary_tmdb_id?{model:'m',data:valid}:validProfile());
     const result=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'pt'});
     expect(result.curation).toMatchObject({primary_tmdb_id:1,alternative_tmdb_ids:[2,3],justification:valid.justification});
   });
   it('replaces only a justification that names an alternative and preserves all chosen ids',async()=>{
     const {env}=makeEnv(db);
-    const contaminated={primary_tmdb_id:1,alternative_tmdb_ids:[2,3],justification:'Film 1 combina com a música; como alternativas, fIlM—2 e Film 3 seguem a mesma vibe.',vibe_title:'V',tags:['a','b','c','d'],alternative_calls:['Film 2 para outra textura','Film 3 para outra energia']};
+    const contaminated={primary_tmdb_id:1,alternative_tmdb_ids:[2,3],justification:'Film 1 combina com a música; como alternativas, fIlM—2 e Film 3 seguem a mesma vibe. A memória e a intimidade aparecem em imagens de grande delicadeza, enquanto o ritmo pausado amplia cada gesto e transforma a contenção em tensão. A narrativa acompanha uma pessoa diante de escolhas difíceis, sem oferecer respostas fáceis; esse movimento conversa com a hesitação presente nas canções e com a tentativa de encontrar um lugar próprio. A fotografia discreta sustenta essa leitura sem recorrer a efeitos grandiosos.',vibe_title:'V',tags:['a','b','c','d'],alternative_calls:['Film 2 para outra textura','Film 3 para outra energia']};
     generateJson.mockImplementation(async({schema}:any)=>schema?.properties?.primary_tmdb_id?{model:'m',data:contaminated}:validProfile());
     const result=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'pt'});
     expect(result.curation.primary_tmdb_id).toBe(1);
@@ -189,7 +198,7 @@ describe('hybrid recommendation flow',()=>{
     const first=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'en'});
     const chosen=[first.candidate_ids[3],first.candidate_ids[1],first.candidate_ids[2]];
     generateJson.mockImplementation(async({schema}:any)=>{
-      if(schema?.properties?.primary_tmdb_id) return {model:'m',data:{primary_tmdb_id:chosen[0],alternative_tmdb_ids:[chosen[1],chosen[2]],justification:'fit',vibe_title:'V',tags:['a','b','c','d'],alternative_calls:['x','y']}};
+      if(schema?.properties?.primary_tmdb_id) return {model:'m',data:{primary_tmdb_id:chosen[0],alternative_tmdb_ids:[chosen[1],chosen[2]],justification:'This film gives the songs a specific emotional counterpart through its restrained rhythm and an intimate narrative arc. Its themes of memory and change echo the supplied musical profile, while the measured visual style keeps the recommendation grounded in details present in the catalog rather than invented scenes. The film’s tension develops gradually, creating a useful contrast with the songs’ more immediate emotional pulse. That contrast makes the match distinctive and explains why this title belongs beside the selected tracks. ',vibe_title:'V',tags:['a','b','c','d'],alternative_calls:['x','y']}};
       return validProfile();
     });
     const second=await recommendFromCatalog({env,songs:[{title:'A',artist:'X'}],lyrics:'l',context:'',lang:'en'});
@@ -200,7 +209,7 @@ describe('hybrid recommendation flow',()=>{
   it('hydrates stills only for the primary selected movie',async()=>{
     const {env}=makeEnv(db);env.TMDB_API_KEY='tmdb';
     const cache=new Map<string,string>();env.MOOVIBE_DB={get:async(k:string)=>cache.has(k)?JSON.parse(cache.get(k)!):null,put:async(k:string,v:string)=>cache.set(k,v)};
-    generateJson.mockImplementation(async({schema}:any)=>schema?.properties?.primary_tmdb_id?{model:'m',data:{primary_tmdb_id:1,alternative_tmdb_ids:[2,3],justification:'fit',vibe_title:'V',tags:['a','b','c','d'],alternative_calls:['x','y']}}:validProfile());
+    generateJson.mockImplementation(async({schema}:any)=>schema?.properties?.primary_tmdb_id?{model:'m',data:{primary_tmdb_id:1,alternative_tmdb_ids:[2,3],justification:'This film gives the songs a specific emotional counterpart through its restrained rhythm and an intimate narrative arc. Its themes of memory and change echo the supplied musical profile, while the measured visual style keeps the recommendation grounded in details present in the catalog rather than invented scenes. The film’s tension develops gradually, creating a useful contrast with the songs’ more immediate emotional pulse. That contrast makes the match distinctive and explains why this title belongs beside the selected tracks. '.repeat(2),vibe_title:'V',tags:['a','b','c','d'],alternative_calls:['x','y']}}:validProfile());
     const fetchMock=vi.fn(async(input:RequestInfo|URL)=>{
       const url=new URL(String(input));
       if(url.pathname.endsWith('/images'))return new Response(JSON.stringify({posters:[],backdrops:[{file_path:'/still.jpg',width:1920,height:1080}]}));
@@ -253,7 +262,17 @@ describe('rich final curation contract',()=>{
   it('requires a substantive justification without triggering a rewrite call',()=>{
     expect(curationSchema.properties.justification).toMatchObject({minLength:320,maxLength:950});
     expect(isWeakJustification('A short generic sentence.')).toBe(true);
+    expect(isWeakJustification('A atmosfera, o ritmo e a trajetória emocional deste filme refletem de forma coesa o perfil emocional e estético das músicas analisadas.')).toBe(true);
     expect(isWeakJustification('A specific narrative bridge establishes the central conflict and its emotional pressure in concrete terms. A second distinct bridge considers pacing, intimacy, visual scale, and productive contrast without repeating generic adjectives. '.repeat(2))).toBe(false);
+  });
+  it('builds a specific fallback from the film synopsis and musical profile',()=>{
+    const movie={title:'Noites de Retorno',overview:'Uma pianista regressa à cidade natal para cuidar da mãe e confronta as escolhas que deixou para trás.',genres:['Drama'],enrichment:{themes:['memória'],moods:['melancolia'],atmosphere:['intimista'],pace:'lento'}};
+    const justification=buildFallbackJustification({themes:['memória'],moods:['melancolia'],atmosphere:['onírica'],pace:'lento'},movie,'pt-BR');
+    expect(justification).toContain('pianista regressa à cidade natal');
+    expect(justification).toContain('memória');
+    expect(justification).toContain('melancolia');
+    expect(justification.length).toBeGreaterThan(320);
+    expect(isWeakJustification(justification)).toBe(false);
   });
   it('gives the curator bounded visual style and keyword context',()=>{
     const candidate:any=compactCandidate({tmdb_id:1,title:'Film',overview:'x'.repeat(900),keywords:['a','b','c','d','e','f','g'],enrichment:{moods:['m'],themes:['t'],atmosphere:['a'],visual_style:['one','two','three','four','five']}});

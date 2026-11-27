@@ -17,9 +17,14 @@ export class GroqError extends Error {
 export function groqStructuredSchema(schema: any): any {
   if (Array.isArray(schema)) return schema.map(groqStructuredSchema);
   if (!schema || typeof schema !== 'object') return schema;
-  return Object.fromEntries(Object.entries(schema)
+  const result = Object.fromEntries(Object.entries(schema)
     .filter(([key]) => !['minLength', 'maxLength', 'minItems', 'maxItems', 'minimum', 'maximum'].includes(key))
     .map(([key, value]) => [key, groqStructuredSchema(value)]));
+  if (result.type === 'object' && result.properties) {
+    result.required = Object.keys(result.properties);
+    result.additionalProperties = false;
+  }
+  return result;
 }
 
 // Groq reset headers use Go-style durations (e.g. 2m59.56s, 24h0m0s).
@@ -57,10 +62,22 @@ export class GroqClient implements GenerationProvider {
   private budget: ((reservation: number) => Promise<boolean>) | null = null;
   private reporter: ((outcome: Outcome) => Promise<void>) | null = null;
   private cooldownReporter: ((seconds: number, reason: string) => Promise<void>) | null = null;
-  constructor(private apiKey: string, private model: string, private fetcher: typeof fetch | null = null, private maxCompletionTokens = 2048) {
+  constructor(
+    private apiKey: string,
+    private model: string,
+    private fetcher: typeof fetch | null = null,
+    private maxCompletionTokens = 2048,
+    private options: {
+      maxAttempts?: number;
+      schemaName?: string;
+      validate?: (data: any) => { ok: boolean; error?: string };
+      estimateTokens?: (bodyBytes: number, outputTokens: number) => number;
+    } = {}
+  ) {
     if (!apiKey) throw new Error('INVALID_CREDENTIAL Groq requires XAI_API_KEY (legacy secret name for GroqCloud)');
     if (!Number.isInteger(maxCompletionTokens) || maxCompletionTokens < 512 || maxCompletionTokens > 2048) throw new Error('INVALID_REQUEST completion budget must be 512..2048');
     if (!model) throw new Error('INVALID_REQUEST MOVIE_GENERATION_MODEL is required');
+    if (!Number.isInteger(options.maxAttempts ?? 2) || (options.maxAttempts ?? 2) < 1 || (options.maxAttempts ?? 2) > 2) throw new Error('INVALID_REQUEST attempts must be 1..2');
   }
   setAttemptBudget(fn: (reservation: number) => Promise<boolean>): void { this.budget = fn; }
   setAttemptReporter(fn: (outcome: Outcome) => Promise<void>): void { this.reporter = fn; }
@@ -73,10 +90,14 @@ export class GroqClient implements GenerationProvider {
     const body = JSON.stringify({ model: this.model,
       messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
       temperature, max_completion_tokens: this.maxCompletionTokens, reasoning_effort: 'low', include_reasoning: false,
-      response_format: { type: 'json_schema', json_schema: { name: 'movie_enrichment', strict: true, schema: groqStructuredSchema(schema) } }
+      response_format: { type: 'json_schema', json_schema: { name: this.options.schemaName || 'movie_enrichment', strict: true, schema: groqStructuredSchema(schema) } }
     });
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (this.budget && !(await this.budget(new TextEncoder().encode(body).length + this.maxCompletionTokens + 256))) {
+    for (let attempt = 0; attempt < (this.options.maxAttempts ?? 2); attempt++) {
+      const bodyBytes = new TextEncoder().encode(body).length;
+      const reservation = this.options.estimateTokens
+        ? this.options.estimateTokens(bodyBytes, this.maxCompletionTokens)
+        : bodyBytes + this.maxCompletionTokens + 256;
+      if (this.budget && !(await this.budget(reservation))) {
         const denied = new GroqError('Groq pilot limit reached; attempt denied before network');
         denied.deferred = true;
         denied.retryAfter = Math.max(60, Math.ceil((86400000 - Date.now() % 86400000) / 1000));
@@ -118,7 +139,7 @@ export class GroqClient implements GenerationProvider {
         let parsed: any;
         try { parsed = JSON.parse(choice.message.content); }
         catch { throw new GroqError('Groq invalid output: invalid message JSON'); }
-        const validation = validateEnrichment(parsed);
+        const validation = this.options.validate ? this.options.validate(parsed) : validateEnrichment(parsed);
         if (!validation.ok) throw new GroqError(`Groq invalid output: ${validation.error}`);
         outcome = 'success';
         return { data: parsed, model: this.model, provider: this.name,
@@ -126,7 +147,7 @@ export class GroqClient implements GenerationProvider {
       } catch (e) {
         event.error = e instanceof GroqError ? (e.status === 429 ? (e.quotaExhausted ? (/\btpd\b|tokens per day/i.test(e.message) ? 'daily_tokens_429' : 'daily_requests_429') : /\btpm\b|tokens per minute/i.test(e.message) ? 'minute_tokens_429' : /\brpm\b|requests per minute/i.test(e.message) ? 'minute_requests_429' : 'rate_429') : ([401,403].includes(e.status || 0) || (e.status === 400 && /api.?key|authentication|unauthorized/i.test(e.message))) ? 'credential' : e.message.includes('invalid output') ? 'invalid_json' : 'transient') : 'unknown';
         // Every retry rechecks the circuit and consumes its own pilot slot.
-        retry = attempt === 0 && e instanceof GroqError && [408, 500, 502, 503, 504].includes(e.status || 0) && !e.retryAfter;
+        retry = attempt + 1 < (this.options.maxAttempts ?? 2) && e instanceof GroqError && [408, 500, 502, 503, 504].includes(e.status || 0) && !e.retryAfter;
         if (!retry) throw e;
       } finally {
         try { if (this.telemetry) await this.telemetry(event); } catch { /* reservation is retained on telemetry failure */ }

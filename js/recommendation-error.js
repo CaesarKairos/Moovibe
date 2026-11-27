@@ -1,6 +1,7 @@
 const messages = {
     D1_QUOTA_EXCEEDED: ['quotaTitle', 'quota'],
     GEMINI_UNAVAILABLE: ['quotaTitle', 'ai'],
+    TEXT_GENERATION_UNAVAILABLE: ['quotaTitle', 'ai'],
     EMBEDDING_FAILED: ['analysisTitle', 'analysis'],
     VECTOR_QUERY_FAILED: ['queryTitle', 'query'],
     CATALOG_TOO_SMALL: ['catalogTitle', 'catalog'],

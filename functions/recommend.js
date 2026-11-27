@@ -1215,7 +1215,7 @@ export async function onRequest(context) {
 
     const hasInstrumental=songData.some(song=>song.analysis_basis==='INSTRUMENTAL_ACOUSTIC');
     if(hasInstrumental)console.log(JSON.stringify({event:'instrumental_analysis_started',request_id:failureEvent.request_id,status:'started'}));
-    const catalog = await recommendFromCatalog({ env, songs: songData, lyrics: letra, context: contextoExtra, lang, history:recommendationHistory });
+    const catalog = await recommendFromCatalog({ env, songs: songData, lyrics: letra, context: contextoExtra, lang, history:recommendationHistory, requestId:failureEvent.request_id });
     if(hasInstrumental)console.log(JSON.stringify({event:'instrumental_analysis_completed',request_id:catalog.request_id,status:'completed'}));
     const dadosFilme = movieToLegacy(catalog.primary);
     const nomeFilme = dadosFilme.titulo_pt;
@@ -1350,8 +1350,9 @@ export async function onRequest(context) {
     const classified=classifyRecommendationError(error);
     console.error(JSON.stringify({event:'recommendation_failed',request_id:failureEvent.request_id,stage:classified.stage,error_class:error?.constructor?.name||'Error',error_code:classified.code,safe_message:classified.safeMessage,duration_ms:Date.now()-startedAt,canonical_songs:failureEvent.songs?.map(s=>({title:s.title,artist:s.artist,provider:s.provider,provider_id:s.provider_id}))}));
     await recordRecommendation(env,{...failureEvent,duration_ms:Date.now()-startedAt,success:0,error_code:classified.code,error_message:classified.safeMessage});
-    const status = ['D1_QUOTA_EXCEEDED','D1_READ_FAILED','GEMINI_UNAVAILABLE','EMBEDDING_FAILED','VECTOR_QUERY_FAILED'].includes(classified.code) ? 503 : 500;
+    const status = ['D1_QUOTA_EXCEEDED','D1_READ_FAILED','GEMINI_UNAVAILABLE','TEXT_GENERATION_UNAVAILABLE','EMBEDDING_FAILED','VECTOR_QUERY_FAILED'].includes(classified.code) ? 503 : 500;
     const provider = classified.code.startsWith('D1_') ? 'd1'
+      : classified.code === 'TEXT_GENERATION_UNAVAILABLE' ? 'multiple'
       : classified.code === 'GEMINI_UNAVAILABLE' ? 'gemini'
       : classified.code === 'VECTOR_QUERY_FAILED' ? 'vectorize' : undefined;
     return jsonResponse({ request_id: failureEvent.request_id, error: {
@@ -1362,7 +1363,8 @@ export async function onRequest(context) {
 
 export function classifyRecommendationError(error){
   const message=String(error?.message||error||'');
-  const result=/no such column|has no column named|SQLITE_ERROR.*column/i.test(message)?{code:'D1_SCHEMA_MISMATCH',stage:'catalog_read',safeMessage:'The D1 schema is incompatible with this application version.'}
+  const result=error?.name==='RecommendationGenerationError'?{code:'TEXT_GENERATION_UNAVAILABLE',stage:error.stage||'song_profile',safeMessage:'Text generation is temporarily unavailable from all configured providers.'}
+    :/no such column|has no column named|SQLITE_ERROR.*column/i.test(message)?{code:'D1_SCHEMA_MISMATCH',stage:'catalog_read',safeMessage:'The D1 schema is incompatible with this application version.'}
     :String(error?.code)==='7500'||/D1.*(?:quota|limit)|rows? (?:read|written).*limit/i.test(message)?{code:'D1_QUOTA_EXCEEDED',stage:'catalog_read',safeMessage:'D1 quota is temporarily unavailable.'}
     :/CATALOG_TOO_SMALL/.test(message)?{code:'CATALOG_TOO_SMALL',stage:'candidate_generation',safeMessage:'The eligible catalog is too small.'}
     :/vector/i.test(message)?{code:'VECTOR_QUERY_FAILED',stage:'candidate_generation',safeMessage:'Vector candidate retrieval failed.'}

@@ -17,25 +17,27 @@ export const capacityDay = (now: number) => new Date(now).toISOString().slice(0,
 export function spacing(config: ReturnType<typeof capacityConfig>, reservation: number) {
   return Math.ceil(Math.max(60000 / config.rpm, reservation * 60000 / config.tpm));
 }
-export async function reserveCapacity(db: D1Database, env: Record<string, unknown>, tokens: number, now = Date.now()) {
+export async function reserveCapacity(db: D1Database, env: Record<string, unknown>, tokens: number, now = Date.now(), lane: 'background' | 'interactive' = 'interactive') {
   const c = capacityConfig(env), day = capacityDay(now);
+  const boundedLimit = (name: string, fallback: number, ceiling: number) => Math.floor(bounded(env[name], fallback, ceiling));
+  const totalAttemptLimit = Math.min(800, boundedLimit('MOVIE_GENERATION_PILOT_LIMIT', 800, 800));
+  const interactiveAttemptReserve = boundedLimit('GROQ_INTERACTIVE_ATTEMPT_RESERVE', 100, totalAttemptLimit);
+  const interactiveRequestReserve = boundedLimit('GROQ_INTERACTIVE_RPD_RESERVE', 100, c.rpd);
+  const interactiveTokenReserve = boundedLimit('GROQ_INTERACTIVE_TPD_RESERVE', 40000, c.tpd);
+  const interactiveRpmReserve = boundedLimit('GROQ_INTERACTIVE_RPM_RESERVE', 5, c.rpm);
+  const backgroundTpmShare = bounded(env.GROQ_BACKGROUND_TPM_SHARE, .5, .9);
+  const requestLimit = lane === 'background' ? Math.max(0, c.rpd - interactiveRequestReserve) : c.rpd;
+  const attemptLimit = lane === 'background' ? Math.max(0, totalAttemptLimit - interactiveAttemptReserve) : totalAttemptLimit;
+  const tokenLimit = lane === 'background' ? Math.max(0, c.tpd - interactiveTokenReserve) : c.tpd;
+  const rpmLimit = lane === 'background' ? Math.max(0, c.rpm - interactiveRpmReserve) : c.rpm;
+  const tpmLimit = lane === 'background' ? Math.floor(c.tpm * backgroundTpmShare) : c.tpm;
   const denied = async (seconds: number, reason: string): Promise<never> => {
     try {await db.prepare(`INSERT INTO system_state(key,value) VALUES('groq_last_denial',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(JSON.stringify({reason,at:now,until:now+Math.max(1,seconds)*1000})).run();} catch { /* admission remains closed */ }
     const error = new GroqError(`Groq capacity deferred: ${reason}`);
     error.deferred = true; error.retryAfter = Math.max(1, seconds); throw error;
   };
-  // Provider-controlled mode records usage without local RPM/TPM/TPD admission.
-  // The administrative attempt cap and provider cooldown remain in the caller.
-  if(env.GROQ_CAPACITY_MODE==='provider') {
-    try {
-      await db.prepare(`INSERT INTO groq_capacity(day) VALUES(?) ON CONFLICT(day) DO NOTHING`).bind(day).run();
-      const id=crypto.randomUUID();
-      await db.prepare(`INSERT INTO groq_admissions(id,day,admitted_at,tokens) VALUES(?,?,?,?)`).bind(id,day,now,tokens).run();
-      return {id,day,tokens};
-    } catch {return denied(300,'D1 unavailable; fail closed');}
-  }
   const reset = Math.ceil((Date.parse(day)+86400000-now)/1000);
-  if (!Number.isSafeInteger(tokens) || tokens<1 || c.rpm<1 || c.rpd<1 || tokens>c.tpd || tokens>c.tpm || tokens>(c.itpm??Infinity) || 2048>(c.otpm??Infinity))
+  if (!Number.isSafeInteger(tokens) || tokens<1 || rpmLimit<1 || requestLimit<1 || attemptLimit<1 || tokens>tokenLimit || tokens>tpmLimit || tokens>(c.itpm??Infinity) || 2048>(c.otpm??Infinity))
     return denied(reset, 'request exceeds configured budget');
   try {
     // Initialization never admits an HTTP. Mid-day migration fails closed if legacy usage is unknown.
@@ -50,19 +52,19 @@ export async function reserveCapacity(db: D1Database, env: Record<string, unknow
       AND attempts<MIN(?,server_rpd,server_daily_ceiling,?) AND reserved_tokens+?<=?
       AND (SELECT COUNT(*) FROM groq_admissions WHERE admitted_at>?)<?
       AND COALESCE((SELECT SUM(tokens) FROM groq_admissions WHERE admitted_at>?),0)+?<=MIN(?,CAST(server_tpm*? AS INTEGER),?,?)`)
-      .bind(id,day,now,tokens,day,now,now,c.rpd,Math.max(0,Math.min(800,Number(env.MOVIE_GENERATION_PILOT_LIMIT??800))),tokens,c.tpd,
-        now-60000,c.rpm,now-60000,tokens,c.tpm,1-c.margin,c.itpm??c.tpm,c.otpm??c.tpm).run();
+      .bind(id,day,now,tokens,day,now,now,requestLimit,attemptLimit,tokens,tokenLimit,
+        now-60000,rpmLimit,now-60000,tokens,tpmLimit,1-c.margin,c.itpm??c.tpm,c.otpm??c.tpm).run();
     if (result.meta.changes) return {id,day,tokens};
     const row=await db.prepare('SELECT * FROM groq_capacity WHERE day=?').bind(day).first<any>();
     if(!row) return denied(reset,'LEGACY_USAGE_UNKNOWN');
-    if(row.reserved_tokens+tokens>c.tpd) return denied(reset,'GROQ_TPD');
-    if(row.attempts>=Math.min(c.rpd,row.server_rpd,row.server_daily_ceiling)) return denied(reset,'GROQ_RPD');
-    if(row.attempts>=Math.min(Number(env.MOVIE_GENERATION_PILOT_LIMIT??800),800)) return denied(reset,'ADMIN_ATTEMPT_CAP');
-    if(tokens>Math.floor(row.server_tpm*(1-c.margin))) return denied(reset,'REQUEST_EXCEEDS_ORGANIZATION_TPM');
+    if(row.reserved_tokens+tokens>tokenLimit) return denied(reset,lane==='background'?'INTERACTIVE_TPD_RESERVED':'GROQ_TPD');
+    if(row.attempts>=Math.min(requestLimit,row.server_rpd,row.server_daily_ceiling)) return denied(reset,lane==='background'?'INTERACTIVE_RPD_RESERVED':'GROQ_RPD');
+    if(row.attempts>=attemptLimit) return denied(reset,lane==='background'?'INTERACTIVE_ATTEMPTS_RESERVED':'ADMIN_ATTEMPT_CAP');
+    if(tokens>Math.min(tpmLimit,Math.floor(row.server_tpm*(1-c.margin)))) return denied(reset,'REQUEST_EXCEEDS_ORGANIZATION_TPM');
     const cooldown=await db.prepare('SELECT MAX(next_at) until FROM groq_capacity').first<any>();
     if(cooldown?.until>now) return denied(Math.ceil((cooldown.until-now)/1000),'PROVIDER_COOLDOWN');
     const window=await db.prepare('SELECT COUNT(*) requests,MIN(admitted_at) oldest FROM groq_admissions WHERE admitted_at>?').bind(now-60000).first<any>();
-    return denied(Math.ceil(((window?.oldest??now)+60000-now)/1000),window.requests>=c.rpm?'GROQ_RPM':'GROQ_TPM');
+    return denied(Math.ceil(((window?.oldest??now)+60000-now)/1000),window.requests>=rpmLimit?'GROQ_RPM':'GROQ_TPM');
   } catch(error) {
     if(error instanceof GroqError) throw error;
     return denied(300,'D1 unavailable; fail closed');
@@ -105,7 +107,8 @@ export async function capacityStatus(db: D1Database, env: Record<string,unknown>
   };
   const finalized = await db.prepare("SELECT COUNT(*) n FROM movies WHERE enrichment_status='complete' AND enriched_at>=?").bind(capacityDay(Date.now())).first<any>();
   const waiting = await db.prepare("SELECT COUNT(*) n FROM pipeline_jobs WHERE type IN ('ENRICH_MOVIE','INDEX_MOVIE') AND status='queued' AND last_error LIKE '[GENERATION_DEFERRED]%Groq%'").first<any>();
-  return { day_timezone:'UTC', next_admission_at: row?.next_at ? new Date(row.next_at).toISOString() : null, percentiles_raw_upper_bounds: {p50:percentile(.5),p90:percentile(.9),p95:percentile(.95)}, finalized_today: finalized?.n ?? 0, jobs_waiting_quota: waiting?.n ?? 0, d1_account_usage: null, config, billing: 'not_verified; manually confirm provider plans', ...row,
+  const interactiveReserve = Math.floor(bounded(env.GROQ_INTERACTIVE_TPD_RESERVE,40000,config.tpd));
+  return { day_timezone:'UTC', next_admission_at: row?.next_at ? new Date(row.next_at).toISOString() : null, percentiles_raw_upper_bounds: {p50:percentile(.5),p90:percentile(.9),p95:percentile(.95)}, finalized_today: finalized?.n ?? 0, jobs_waiting_quota: waiting?.n ?? 0, d1_account_usage: null, config, interactive_token_reserve:interactiveReserve, background_token_limit:Math.max(0,config.tpd-interactiveReserve), billing: 'not_verified; manually confirm provider plans', ...row,
     average_raw_tokens: average, stddev_raw_tokens: average == null ? null : Math.sqrt(Math.max(0,row.sum_squares/row.measured-average*average)),
     estimated_remaining: average ? Math.max(0,Math.floor(Math.min(Math.min(config.rpd,row?.server_rpd ?? config.rpd)-(row?.attempts||0), (config.tpd-(row?.reserved_tokens||0))/average, Number(env.MOVIE_GENERATION_PILOT_LIMIT||3)-(row?.attempts||0)))) : null,
     accounting: 'raw measured totals plus conservative outstanding reservations; histogram percentiles are bucket bounds' };
@@ -119,12 +122,16 @@ export async function plannedCapacity(db: D1Database, env: Record<string,unknown
     const legacy = await db.prepare("SELECT value FROM system_state WHERE key='gen_pilot_count:groq'").first<{value:string}>();
     if (legacy) { const prior=JSON.parse(legacy.value); if (prior.day===capacityDay(now) && prior.count>0) return 0; }
   }
-  const remainingRequests = Math.max(0,Math.min(c.rpd,row?.server_rpd ?? c.rpd,row?.server_daily_ceiling??c.rpd,800,Number(env.MOVIE_GENERATION_PILOT_LIMIT??800))-(row?.attempts || 0));
+  const totalAttemptLimit = Math.min(800,Math.floor(bounded(env.MOVIE_GENERATION_PILOT_LIMIT,800,800)));
+  const attemptReserve = Math.floor(bounded(env.GROQ_INTERACTIVE_ATTEMPT_RESERVE,100,totalAttemptLimit));
+  const requestReserve = Math.floor(bounded(env.GROQ_INTERACTIVE_RPD_RESERVE,100,c.rpd));
+  const tokenReserve = Math.floor(bounded(env.GROQ_INTERACTIVE_TPD_RESERVE,40000,c.tpd));
+  const remainingRequests = Math.max(0,Math.min(c.rpd-requestReserve,row?.server_rpd ?? c.rpd,row?.server_daily_ceiling??c.rpd,totalAttemptLimit-attemptReserve)-(row?.attempts || 0));
   // Even a minimal request must reserve completion + protocol framing.
-  const remainingTokens = Math.max(0,c.tpd-(row?.reserved_tokens || 0));
+  const remainingTokens = Math.max(0,c.tpd-tokenReserve-(row?.reserved_tokens || 0));
   const average=row?.measured ? row.total_tokens/row.measured : 2304;
   const deviation=row?.measured ? Math.sqrt(Math.max(0,row.sum_squares/row.measured-average*average)) : 0;
   // Planning only: actual admission still reserves the byte-bound input plus
   // maximum completion, so averages never authorize an unsafe HTTP.
-  return Math.min(remainingRequests,Math.floor(remainingTokens/Math.max(2304,Math.ceil(average+2*deviation))));
+  return Math.min(remainingRequests,Math.floor(remainingTokens/Math.max(2304,Math.ceil(average+2*deviation))),Math.floor(c.tpm*.5/2304));
 }

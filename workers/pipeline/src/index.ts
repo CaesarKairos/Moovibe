@@ -11,6 +11,7 @@ import { classifyProviderError } from './provider-errors';
 import { closeCircuit, circuitState, openCircuit, validateEnrichment, ENRICHMENT_JSON_SCHEMA } from './generation-provider';
 import { createMovieGenerationProvider, isMovieGenerationEnabled, DEFAULT_GROQ_MODEL, GENERATION_CIRCUIT } from './generation-factory';
 import { laneEnabled, queryDiscoveryLane, readPipelineControl, updatePipelineControl } from './pipeline-control';
+import { handleRecommendationGeneration } from './recommendation-generation';
 
 type JobType = 'DISCOVER_QUERY' | 'INDEX_MOVIE' | 'FETCH_MOVIE' | 'ENRICH_MOVIE' | 'EMBED_MOVIE' | 'REFRESH_MOVIE' | 'REEMBED_MOVIE';
 type Job = { type: JobType; key: string; payload: Record<string, unknown>; publicationToken?: string };
@@ -475,7 +476,7 @@ async function scheduleWork(env: Env) {
   const generationEnabled = isMovieGenerationEnabled(env as any);
   const genCircuit = await circuitState(env.MOOVIBE_LIBRARY, GENERATION_CIRCUIT);
   let generationRemaining = Math.max(0, Number(env.MOVIE_GENERATION_PILOT_LIMIT || 3) - await pilotCountToday(env.MOOVIBE_LIBRARY));
-  if(env.GROQ_CAPACITY_MODE!=='provider') generationRemaining = Math.min(generationRemaining, await plannedCapacity(env.MOOVIBE_LIBRARY, env as any).catch(() => 0));
+  generationRemaining = Math.min(generationRemaining, await plannedCapacity(env.MOOVIBE_LIBRARY, env as any).catch(() => 0));
   const embCircuit = await circuitState(env.MOOVIBE_LIBRARY, 'embedding-gemini');
   const over = BACKLOG_OVERSCAN;
   const [collection, enrichment, embedding] = await Promise.all([
@@ -924,7 +925,7 @@ async function enrichOwned(env: Env, job: Job, lockKey: string, lockToken: strin
   });
   provider.setAttemptBudget(async (tokens) => {
     await assertCircuitAvailable();
-    reservation = await reserveCapacity(env.MOOVIBE_LIBRARY, env as any, tokens);
+    reservation = await reserveCapacity(env.MOOVIBE_LIBRARY, env as any, tokens, Date.now(), 'background');
     return pilotConsume(env.MOOVIBE_LIBRARY, pilotLimit);
   });
   provider.setAttemptReporter((outcome) => pilotTally(env.MOOVIBE_LIBRARY, outcome));
@@ -1300,6 +1301,8 @@ export default {
     const url = new URL(request.url);
     const admin = () => Boolean(env.ADMIN_TOKEN && request.headers.get('authorization') === `Bearer ${env.ADMIN_TOKEN}`);
     if (url.pathname === '/health') return json({ ok: true, service: 'moovibe-pipeline' });
+    if (url.pathname === '/internal/recommendation-generation')
+      return handleRecommendationGeneration(request, env as any);
     if (url.pathname === '/admin/gemini-health') {
       if (!admin()) return json({ error: 'unauthorized' }, 401);
       if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);

@@ -98,11 +98,18 @@ describe('durable Groq admission', () => {
     }
     expect(total).toBe(70);expect(row()).toMatchObject({attempts:70,reserved_tokens:70000});
   });
-  it('provider mode records concurrent attempts without applying local minute or daily budgets',async()=>{
+  it('keeps provider mode within the configured free-tier request budget',async()=>{
     const env={GROQ_CAPACITY_MODE:'provider',GROQ_RPM:0,GROQ_TPM:0,GROQ_TPD:0};
     const results=await Promise.allSettled(Array.from({length:100},()=>reserveCapacity(db,env,1000,now)));
-    expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(100);
-    expect(row()).toMatchObject({attempts:100,reserved_tokens:100000});
+    expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(0);
+    expect(row()).toBeUndefined();
+  });
+  it('preserves foreground TPM headroom from background enrichment',async()=>{
+    const env={GROQ_SAFETY_MARGIN:0};
+    const background=await Promise.allSettled(Array.from({length:8},()=>reserveCapacity(db,env,1000,now,'background')));
+    expect(background.filter(result=>result.status==='fulfilled')).toHaveLength(4);
+    await reserveCapacity(db,env,3000,now,'interactive');
+    await expect(reserveCapacity(db,env,1000,now,'background')).rejects.toMatchObject({deferred:true});
   });
   it.each([false,true])('predictive cooldown follows local admission mode %s',async enabled=>{
     const client=new GroqClient('test','model',async()=>new Response(JSON.stringify({choices:[{message:{content:'{}'}}]}),{headers:{'x-ratelimit-remaining-tokens':'100','x-ratelimit-reset-tokens':'2m'}}));

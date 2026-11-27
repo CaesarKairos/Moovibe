@@ -6,7 +6,25 @@ seu **valor deve ser uma chave GroqCloud**. Não é necessário criar outro secr
 O nome legado aparece apenas na configuração interna; valores não são registrados.
 Uma chave Groq jamais é encaminhada à xAI. O cliente xAI permanece apenas para
 compatibilidade histórica e testes isolados, sem importação pela factory ativa.
-Provedores desconhecidos, `xai` e geração `gemini` são recusados; não existe fallback.
+
+## Fallback interativo Gemini → Groq
+
+Gemini continua sendo o provedor principal da recomendação. Nas etapas
+`song_profile` e `final_curation` (curadoria cinematográfica, justificativa,
+título da vibe e tags), uma falha recuperável ou saída inválida do Gemini
+aciona GroqCloud com schema estruturado e validação de negócio no Pages. O
+modelo Groq padrão é `openai/gpt-oss-120b`. Embeddings continuam usando
+`gemini-embedding-2` com 768 dimensões; falha de embedding omite apenas a busca
+semântica e mantém a recuperação numérica do D1, sem misturar vetores.
+
+O Pages encaminha a solicitação para
+`POST /internal/recommendation-generation` no Worker usando
+`PIPELINE_WORKER_URL` e `PIPELINE_ADMIN_TOKEN`. A rota exige o token
+administrativo, limita etapas e tamanho do payload e mantém `XAI_API_KEY`
+somente no Worker. A capacidade é compartilhada por D1: tentativas interativas
+têm prioridade e o lane de fundo só consome capacidade fora da reserva. O
+circuit breaker `generation-groq`, telemetria e registro do modelo/provedor
+são compartilhados entre os dois serviços.
 
 ## Modelo, schema e limites
 
@@ -17,7 +35,7 @@ Configuração versionada em `workers/pipeline/wrangler.jsonc`:
   "MOVIE_GENERATION_PROVIDER": "groq",
   "MOVIE_GENERATION_MODEL": "openai/gpt-oss-120b",
   "MOVIE_GENERATION_ENABLED": "true",
-  "MOVIE_GENERATION_PILOT_LIMIT": "3"
+  "MOVIE_GENERATION_PILOT_LIMIT": "800"
 }
 ```
 
@@ -47,11 +65,14 @@ O recomendador público permanece inalterado.
 - `gen_pilot_count:groq` separa o consumo do histórico `gen_pilot_count` da xAI.
   A admissão continua atômica: cada HTTP consome uma vaga, incluindo falhas e
   retries; requisições negadas antes da rede não consomem. Não há devolução.
-- O teto é **três HTTPs por dia UTC**, não três sucessos. Renova-se na virada
-  UTC; enquanto habilitado, pode executar até três novas tentativas a cada dia.
+- O teto global `MOVIE_GENERATION_PILOT_LIMIT` é de até **800 tentativas por
+  dia UTC**, incluindo falhas e chamadas interativas. Limites efetivos do
+  provedor e reservas de capacidade podem impor um teto menor. Renova-se na
+  virada UTC; tentativas negadas antes da rede não consomem uma chamada.
   O Cron limita novas gerações ao saldo observado; o gate atômico é a defesa
   final contra concorrência e mensagens previamente enfileiradas.
-- `generation-groq` é independente de `generation-xai` e `embedding-gemini`.
+- `generation-groq` é compartilhado por recommendation fallback e enrichment;
+  `embedding-gemini` continua independente.
   Circuito aberto causa adiamento durável em D1 com tentativas do job preservadas;
   a mensagem da Queue é reconhecida e o outbox existente retoma quando vencer.
   Adiamentos administrativos não consomem retries da Queue nem vão à DLQ.

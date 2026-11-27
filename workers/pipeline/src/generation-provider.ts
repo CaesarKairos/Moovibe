@@ -68,5 +68,6 @@ export async function openCircuit(db: D1Database, key: string, delaySeconds: num
   await db.prepare(`INSERT INTO system_state(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP`).bind('circuit:' + key, JSON.stringify({ until, reason })).run();
 }
 export async function closeCircuit(db: D1Database, key: string) {
-  try { await db.prepare(`DELETE FROM system_state WHERE key=?`).bind('circuit:' + key).run(); } catch { /* noop */ }
+  await db.prepare(`DELETE FROM system_state WHERE key=? AND (NOT json_valid(value) OR json_extract(value,'$.until') IS NULL OR json_extract(value,'$.until')<=?)`)
+    .bind('circuit:' + key, new Date().toISOString()).run();
 }

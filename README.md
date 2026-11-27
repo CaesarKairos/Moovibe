@@ -18,7 +18,7 @@
 
 O Moovibe é uma experiência de descoberta cinematográfica guiada por música. Ele reúne letra, contexto e identidade sonora das faixas escolhidas para compreender sentimentos, temas, ritmo e estética — e então encontra filmes que vivem em uma vibração parecida.
 
-O sistema **não pede a uma IA que invente um título**. A busca acontece dentro de uma biblioteca cinematográfica própria: primeiro algoritmos recuperam e ranqueiam candidatos reais; só no fim o Gemini atua como curador, escolhendo um filme principal e duas alternativas entre os finalistas permitidos.
+O sistema **não pede a uma IA que invente um título**. A busca acontece dentro de uma biblioteca cinematográfica própria: primeiro algoritmos recuperam e ranqueiam candidatos reais; no fim o Gemini atua como curador principal, com GroqCloud como alternativa automática para concluir o perfil musical ou a curadoria quando o Gemini falha.
 
 ## 🎵 Como funciona para quem usa
 
@@ -49,13 +49,13 @@ Os filmes enriquecidos do catálogo possuem a mesma linguagem emocional. O recom
 - **Canal semântico:** o Cloudflare Vectorize recupera os 100 filmes semanticamente mais próximos.
 - **Canal numérico:** o D1 compara matematicamente as dez dimensões de vibe e recupera outros 100 candidatos.
 
-Depois, o sistema faz `union` e deduplicação, aplica um score híbrido com sinais numéricos, semânticos, conceituais e de qualidade, promove uma diversificação suave e mantém até 100 finalistas. O Gemini recebe somente esse conjunto e escolhe **um filme principal + duas alternativas**. IDs externos ao catálogo são rejeitados.
+Depois, o sistema faz `union` e deduplicação, aplica um score híbrido com sinais numéricos, semânticos, conceituais e de qualidade, promove uma diversificação suave e mantém até 100 finalistas. O Gemini recebe somente esse conjunto e escolhe **um filme principal + duas alternativas**; se estiver indisponível, GroqCloud recebe o mesmo contrato estruturado. IDs externos ao catálogo são rejeitados.
 
 ```text
 Vectorize top 100 ─┐
                    ├─ union/dedupe → score híbrido → diversificação → até 100 candidatos
 D1 numérico top 100┘                                             ↓
-                                                    Gemini como curador final
+                                          Gemini → GroqCloud como curador final
 ```
 
 ## 🎞️ Um catálogo vivo
@@ -73,7 +73,7 @@ TMDb → discovery contínuo → fetch → enrichment → embedding → Vectoriz
 
 Quando esse fluxo termina, o filme passa a competir automaticamente nas próximas recomendações. D1 guarda o catálogo normalizado e os checkpoints; Vectorize mantém o índice semântico; a Queue permite retries e recuperação sem transformar a coleta em uma execução monolítica.
 
-O Worker preserva o secret `XAI_API_KEY` como nome legado da credencial **GroqCloud**. O piloto configurado permite três tentativas HTTP por dia UTC, incluindo retries e falhas. Instruções de publicação, observabilidade e recuperação explícita estão em [Migração GroqCloud](docs/GROQ-MIGRATION.md).
+O Worker preserva o secret `XAI_API_KEY` como nome legado da credencial **GroqCloud**. O enriquecimento em segundo plano reserva capacidade para recomendações interativas, que compartilham os mesmos limites e circuit breaker. O Pages encaminha o fallback ao Worker por uma rota autenticada; a chave Groq não precisa ser copiada para o Pages. Instruções de operação estão em [Migração GroqCloud](docs/GROQ-MIGRATION.md).
 
 ## ✨ Funcionalidades
 
@@ -98,7 +98,8 @@ Navegador
   └─ HTML/CSS/JavaScript
        └─ Cloudflare Pages Functions
             ├─ fontes musicais (LRCLIB, Genius e fallbacks)
-            ├─ Gemini: perfil, embedding de busca e curadoria
+            ├─ Gemini → GroqCloud: perfil musical e curadoria estruturada
+            ├─ Gemini: embeddings de busca (modelo e dimensões inalterados)
             ├─ D1: candidatos numéricos e dados dos filmes
             ├─ Vectorize: candidatos semânticos
             └─ KV: cache, histórico e compartilhamentos
@@ -109,6 +110,7 @@ Cloudflare Cron
                     ├─ TMDb
                     ├─ D1
                     └─ Vectorize
+       └─ relay autenticado GroqCloud para fallback interativo
 ```
 
 O frontend e o contrato público continuam nas Pages Functions. O pipeline assíncrono roda separadamente no Worker, evitando que a manutenção do catálogo bloqueie uma recomendação feita por uma pessoa.
@@ -123,7 +125,8 @@ O frontend e o contrato público continuam nas Pages Functions. O pipeline assí
 | Cloudflare D1 | Biblioteca normalizada, estados e ranking numérico |
 | Cloudflare Vectorize | Busca semântica dos filmes |
 | Cloudflare KV | Cache, histórico e links compartilhados |
-| Gemini | Perfis estruturados, embeddings e curadoria restrita |
+| Gemini | Provedor principal de geração, embeddings e curadoria restrita |
+| GroqCloud | Fallback de geração e enrichment cinematográfico com capacidade compartilhada |
 | TMDb | Filmes, imagens, créditos e metadados factuais |
 | LRCLIB e Genius | Letras, autocomplete e contexto musical |
 | DuckDuckGo, Wikipedia e Brave Search | Fallbacks de contexto |
@@ -161,7 +164,7 @@ npm run worker:deploy    # pipeline assíncrono
 npm run pages:deploy     # frontend e Pages Functions
 ```
 
-Pages e Worker são serviços diferentes e precisam dos bindings compatíveis para D1 e Vectorize. O KV `MOOVIBE_DB` continua responsável por cache, histórico e compartilhamentos. Nunca grave chaves no Git; use secrets do Cloudflare para Gemini, TMDb, Genius, Brave e endpoints administrativos conforme necessário.
+Pages e Worker são serviços diferentes e precisam dos bindings compatíveis para D1 e Vectorize. O KV `MOOVIBE_DB` continua responsável por cache, histórico e compartilhamentos. O fallback Groq requer `XAI_API_KEY` (chave GroqCloud) no Worker e `PIPELINE_WORKER_URL`/`PIPELINE_ADMIN_TOKEN` no Pages. Nunca grave chaves no Git nem copie o segredo Groq para o Pages.
 
 Para acompanhar o pipeline:
 

@@ -11,6 +11,18 @@ describe('recommendation error presentation', () => {
         }
     });
 
+    it('explains free API limits on recommendation and AI failures', () => {
+        expect(ERROR_COPY['pt-BR'].unknown).toContain('O Moovibe usa apenas APIs gratuitas');
+        expect(ERROR_COPY['pt-BR'].ai).toContain('Gemini e Groq');
+        expect(describeError({code:'TEXT_GENERATION_UNAVAILABLE'})).toMatchObject({
+            title:'quotaTitle', description:'ai',
+        });
+        for (const copy of Object.values(ERROR_COPY)) {
+            expect(copy.unknown).toContain('Gemini');
+            expect(copy.ai).toContain('Groq');
+        }
+    });
+
     it('uses UTC quota reset and preserves only safe metadata', () => {
         expect(describeError({ code: 'D1_QUOTA_EXCEEDED', status: 503, requestId: 'abc-123',
             stage: 'catalog_read', provider: 'd1', message: 'private text' }, new Date('2026-11-25T23:30:00Z')))

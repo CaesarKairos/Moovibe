@@ -20,7 +20,7 @@ export function classifyProviderError(error: unknown): ClassifiedError {
     return { code: 'D1_WRITE_LIMIT', httpStatus: http, retryable: true, retryAfterSeconds: 3600, message };
   if (/too many subrequests/i.test(message))
     return { code: 'WORKER_SUBREQUEST_LIMIT', httpStatus: http, retryable: true, retryAfterSeconds: 300, message };
-  if (http === 401 || http === 403 || /api key not valid|invalid_api_key|invalid[_ ]credential|incorrect api key/i.test(message))
+  if (http === 401 || http === 403 || /api key not valid|invalid_api_key|invalid[_ ]credential|incorrect api key|gemini_api_key is not configured/i.test(message))
     return { code: 'INVALID_CREDENTIAL', httpStatus: http, retryable: false, retryAfterSeconds: 0, message };
   if (/insufficient.*credit|out of credit|payment required/i.test(message) || http === 402)
     return { code: 'INSUFFICIENT_CREDITS', httpStatus: http, retryable: false, retryAfterSeconds: 0, message };
