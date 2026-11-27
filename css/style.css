@@ -88,13 +88,15 @@ a.ranking-media:focus-visible, .ranking-source a:focus-visible { outline: 2px da
 .ranking-leader .ranking-image { width: clamp(44px, 10vw, 110px); }
 .ranking-leader .ranking-film .ranking-image { width: clamp(36px, 8vw, 80px); }
 .ranking-arrow { text-align: center; }
+.ranking-select { justify-self: start; border: var(--brutalist-border); background: var(--accent-gold); color: var(--text-dark); padding: .5rem .65rem; font: 700 .75rem var(--font-mono); cursor: pointer; }
+.ranking-select:focus-visible { outline: 2px dashed var(--accent-red); outline-offset: 3px; }
 .ranking-unavailable { margin-top: 1.5rem; padding: 1rem; border: var(--brutalist-border); box-shadow: var(--brutalist-shadow); }
 @media(max-width: 570px) {
   #view-top-global { padding-inline: .9rem; }
   .ranking-row { grid-template-columns: 2.6rem minmax(0, 1fr); column-gap: .65rem; }
   .ranking-position { grid-row: span 2; }
   .ranking-arrow { display: none; }
-  .ranking-film, .ranking-pending { grid-column: 2; }
+  .ranking-film, .ranking-pending, .ranking-select { grid-column: 2; }
 }
 #error-title { font: clamp(1.85rem, 5vw, 3rem)/1.12 var(--font-display); padding-bottom: .75rem; border-bottom: 2px solid var(--text-dark); }
 #error-message { font: clamp(1rem, 2.5vw, 1.2rem)/1.5 var(--font-body); margin: 1rem 0 .5rem; }

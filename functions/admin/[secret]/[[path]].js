@@ -6,6 +6,7 @@ import { overallGeminiState,runGeminiHealth } from '../../_lib/gemini-health.js'
 import { cachedProductivity } from '../../_lib/admin-productivity.js';
 import { requestPipelineControl } from '../../_lib/pipeline-control-client.js';
 import { topGlobalStatus, updateTopGlobal } from '../../_lib/top-global.js';
+import { REFRESH_STATUS, refreshRanking } from '../../_lib/ranking-refresh.js';
 import { topGlobalAdminMarkup, topGlobalAdminScript } from '../../_lib/top-global-admin.js';
 
 const COOKIE='moovibe_admin';
@@ -46,13 +47,22 @@ export async function onRequest({request,env,params}){if(!env.ADMIN_PATH_SECRET|
  const session=cookieValue(request,COOKIE);if(!path){const csrf=await createCsrfToken(env.ADMIN_TOKEN,session);return html(dashboard(csrf));}if(!path.startsWith('api/'))return hidden(request);const name=path.slice(4),url=new URL(request.url);
  if(name==='top-global'){
   try {
-   if(request.method==='GET')return response(await topGlobalStatus(env));
+   const ranking=env.MOOVIBE_RANKING||env.MOOVIBE_DB;
+   if(request.method==='GET'){
+    const refresh=await ranking.get(REFRESH_STATUS,'json');
+    const manual=await topGlobalStatus(env).catch(()=>({tracks:[],pending:0,associated:0,manual_unavailable:true}));
+    return response({...manual,refresh});
+   }
    if(request.method!=='POST')return response({error:'method_not_allowed'},405);
    if(!validOrigin(request)||!await verifyCsrfToken(env.ADMIN_TOKEN,session,request.headers.get('x-csrf-token')))return response({error:'forbidden'},403);
    if(Number(request.headers.get('content-length')||0)>96000)return response({error:'payload_too_large'},413);
    const raw=await request.text();
    if(raw.length>96000)return response({error:'payload_too_large'},413);
    const body=JSON.parse(raw);
+   if(body.action==='refresh') {
+    const refresh=await refreshRanking(ranking);
+    return response({refresh},refresh.error?502:200);
+   }
    return response(await updateTopGlobal(env,body));
   } catch(error) {
    const code=String(error?.message||'');

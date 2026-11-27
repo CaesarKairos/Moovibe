@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { validateRanking } from '../functions/_lib/top-global-source.js';
 import { SNAPSHOT, updateTopGlobal } from '../functions/_lib/top-global.js';
-import { onRequestGet } from '../functions/top-global.js';
+import { onRequestGet } from '../functions/api/top-global.js';
 import { letterboxdUrl, rankingMovement } from '../js/top-global.js';
 import { LANGUAGES, TOP_GLOBAL_COPY, TOP_GLOBAL_TITLES } from '../js/i18n/locales.js';
 

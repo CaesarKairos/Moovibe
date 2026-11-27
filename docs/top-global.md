@@ -1,6 +1,23 @@
 # Top 50 Global
 
-O endpoint público `GET /top-global` lê apenas o último snapshot publicado no KV. A identidade da faixa no ranking é o ID do Spotify. O D1 mantém as posições, os movimentos e as associações quando uma faixa sai da lista.
+O endpoint público `GET /api/top-global` lê apenas o último snapshot publicado no KV. A identidade da faixa no ranking é o ID do Spotify. O D1 mantém as posições, os movimentos e as associações quando uma faixa sai da lista.
+
+## Coleta automática
+
+O Worker `moovibe-ranking` coleta o feed oficial Apple Music Brasil às 09:00 UTC (06:00 em São Paulo). Ele usa o namespace KV `MOOVIBE_RANKING` e não consulta D1 nem serviços de IA. O snapshot Apple fica em uma chave própria. Uma importação Spotify válida tem prioridade no endpoint público, enquanto a alternativa aparece com plataforma e país explícitos.
+
+O painel oferece atualização imediata e mostra o horário da última tentativa, o último sucesso, a contagem, o erro e a programação. O normalizador usa a data de atualização declarada pelo feed. Uma resposta inválida, antiga ou indisponível preserva o snapshot anterior.
+
+As faixas Apple têm IDs e links Apple. O botão de recomendação preenche título e artista na busca existente para que a pessoa confirme a gravação. As faixas Spotify encaminham seu URL específico. A atualização não gera recomendações.
+
+Para o CSV autorizado do Spotify Charts, cole o conteúdo no painel e informe a data do ranking diário global. São aceitas as colunas `rank`, `track name`, `artist names` e `uri`. A importação considera as primeiras 50 linhas e valida as posições e os IDs.
+
+### Fontes verificadas
+
+- Listune usa Cheerio, IDs Spotify, oEmbed e tarefas programadas. Os dois endpoints públicos documentados retornaram `404 DEPLOYMENT_NOT_FOUND`.
+- Kworb respondeu com a tabela diária. Seu `robots.txt` permite rastreamento, mas não constitui licença de republicação. Os projetos comunitários consultados usam espelhos, arquivos ou chamadas internas, sem comprovar autorização de redistribuição para o Moovibe.
+- O Spotify limita itens de playlists em Development Mode. O teste autenticado permanece disponível no painel com os secrets de Pages, sem expor os valores.
+- Os feeds oficiais Apple para Brasil e EUA retornaram 50 faixas. Nenhum feed global da Apple foi confirmado. O gerador oficial é destinado à incorporação de listas, e a interface atribui a Apple Music e vincula cada faixa à sua página oficial.
 
 ## Acesso à fonte
 

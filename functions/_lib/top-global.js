@@ -1,4 +1,4 @@
-import { SOURCES, trackMovement, validateRanking } from './top-global-source.js';
+import { SOURCES, chartCsvTracks, trackMovement, validateRanking } from './top-global-source.js';
 import { recommendFromCatalog, movieToLegacy } from './catalog.js';
 import { findSong } from './song-library.js';
 import { LRCLIB_URL, lrclibHeaders } from './lrclib.js';
@@ -36,11 +36,13 @@ async function publish(env) {
   const tracks = (await activeTracks(db)).map(({spotify_id, position, title, artist, cover, movement, delta, movie_json}) =>
     ({spotify_id, position, title, artist, cover, movement, delta, movie:movie_json ? JSON.parse(movie_json) : null}));
   if (tracks.length !== 50) throw Error('INCOMPLETE_RANKING');
-  await env.MOOVIBE_DB.put(SNAPSHOT, JSON.stringify({...state, source_url:SOURCES[state.source], tracks}));
+  const ranking = env.MOOVIBE_RANKING || env.MOOVIBE_DB;
+  await ranking.put(SNAPSHOT, JSON.stringify({...state, source_url:SOURCES[state.source], tracks}));
 }
 
 async function importRanking(env, input, state) {
-  const ranking = validateRanking(input);
+  if (input.csv != null && input.source !== 'charts') throw Error('INVALID_CSV_SOURCE');
+  const ranking = validateRanking(input.csv == null ? input : {...input,tracks:chartCsvTracks(input.csv)});
   if (state.reference_date && ranking.reference_date < state.reference_date) throw Error('STALE_RANKING');
   const db = env.MOOVIBE_LIBRARY;
   const rows = (await query(db, `SELECT spotify_id,position,tmdb_id,title,artist,cover,lrclib_id FROM top_global_tracks WHERE spotify_id IN (${ranking.tracks.map(() => '?').join(',')})`,

@@ -1,0 +1,10 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "moovibe-ranking",
+  "main": "index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "triggers": { "crons": ["0 9 * * *"] },
+  "observability": { "enabled": true },
+  "kv_namespaces": [{ "binding": "MOOVIBE_RANKING", "id": "e601d8a7dc07430fbfdd38b225edaba5" }]
+}

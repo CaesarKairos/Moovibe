@@ -8,4 +8,10 @@ describe('result export model',()=>{
   it('keeps multiple songs and does not retain stale input',()=>{const first=normalizeExportData({songs:[{title:'A'},{title:'B'},{title:'C'},{title:'D'}],movie:{title:'One'}});const second=normalizeExportData({song:'Fresh',movie:{title:'Two'}});expect(first.songs.map((song:{title:string})=>song.title)).toEqual(['A','B','C']);expect(second.songs.map((song:{title:string})=>song.title)).toEqual(['Fresh']);});
   it('strips untrusted markup and truncates long copy naturally',()=>{expect(htmlToText('<p>First</p><p>Second &amp; safe</p>')).toContain('First');const text=truncateText('A deliberately long editorial explanation that must fit',25);expect(text.endsWith('…')).toBe(true);expect(text.length).toBeLessThanOrEqual(25);});
   it('creates portable filenames',()=>{expect(exportFilename({song:'Águas / Março?',movie:{title:'Film: One'}})).toBe('moovibe-aguas-marco-film-one.png');});
+  it('keeps the visual data required for a direct export',()=>{
+    const data=normalizeExportData({song:'Vienna',artist:'Billy Joel',songs:[{title:'Vienna',artist:'Billy Joel',cover_url:'https://i.scdn.co/image/a'}],movie:{title:'Eu Me Lembro',poster_url:'https://image.tmdb.org/t/p/w500/a.jpg',stills:['https://image.tmdb.org/t/p/w780/a.jpg'],ai_explanation:'A real explanation.'}});
+    expect(data.movie.poster_url).toContain('image.tmdb.org');
+    expect(data.songs[0].cover_url).toContain('i.scdn.co');
+    expect(data.movie.explanation).toBe('A real explanation.');
+  });
 });

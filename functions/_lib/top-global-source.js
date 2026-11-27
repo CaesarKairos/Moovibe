@@ -3,6 +3,32 @@ export const SOURCES = {
   charts: 'https://charts.spotify.com/charts/view/regional-global-daily/latest',
 };
 
+export function chartCsvTracks(csv) {
+  if (typeof csv !== 'string' || csv.length > 90000) throw Error('INVALID_CHART_CSV');
+  const rows = [];
+  let row = [], field = '', quoted = false;
+  for (let i=0; i<csv.length; i++) {
+    const c = csv[i];
+    if (c === '"') {
+      if (quoted && csv[i+1] === '"') { field += '"'; i++; }
+      else quoted = !quoted;
+    } else if (!quoted && (c === ',' || c === '\n')) {
+      row.push(field); field = '';
+      if (c === '\n') { rows.push(row); row=[]; }
+    } else if (c !== '\r' || quoted) field += c;
+  }
+  if (quoted) throw Error('INVALID_CHART_CSV');
+  rows.push([...row,field]);
+  const columns = rows.shift().map(name => name.replace(/^\uFEFF/,'').trim().toLowerCase());
+  const indexes = ['rank','track name','artist names','uri'].map(name => columns.indexOf(name));
+  if (indexes.includes(-1)) throw Error('INVALID_CHART_CSV_HEADER');
+  return rows.filter(row=>row.some(Boolean)).slice(0,50).map(row => {
+    const [rank,title,artist,uri] = indexes.map(index=>row[index]);
+    return {position:Number(rank),title,artist,spotify_id:uri?.match(/^spotify:track:([a-zA-Z0-9]{22})$/)?.[1]
+      || uri?.match(/^https:\/\/open\.spotify\.com\/track\/([a-zA-Z0-9]{22})$/)?.[1]};
+  });
+}
+
 export function validateRanking(input) {
   if (input?.authorized !== true || !Object.hasOwn(SOURCES, input.source)) throw Error('SOURCE_AUTHORIZATION_REQUIRED');
   const date = input.reference_date;

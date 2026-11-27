@@ -61,7 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function atualizarMetaPorView(targetView) {
         const rota = VIEW_ROUTES[targetView?.id];
         if (!rota) return;
-        const [title,description]=rota.meta==='ranking' ? [`Moovibe — ${TOP_GLOBAL_TITLES[lang]}`,TOP_GLOBAL_COPY[lang][0]]
+        const [title,description]=rota.meta==='ranking' ? [`Moovibe — ${rankingPresentation?.title || TOP_GLOBAL_TITLES[lang]}`,rankingPresentation?.description || TOP_GLOBAL_COPY[lang][0]]
             : PAGE_METADATA[lang]?.[rota.meta]||PAGE_METADATA.en[rota.meta];
         document.title = title;
         const pageDescription = rota.meta === 'how' ? howDescription(lang) : description;
@@ -140,7 +140,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const viewLoading = document.getElementById('view-loading');
     const viewResults = document.getElementById('view-results');
     const viewError = document.getElementById('view-error');
-    const topGlobal = createTopGlobalView(() => lang);
+    let rankingPresentation;
+    const topGlobal = createTopGlobalView(() => lang, {
+        onTitle(title, description) {
+            rankingPresentation = {title, description};
+            const view = document.getElementById('view-top-global');
+            if (view?.classList.contains('active')) atualizarMetaPorView(view);
+        },
+        onSelect(track) {
+            startNewSearch();
+            songInput.value = spotifyTrackUrl('spotify', track.spotify_id) || `${track.title} — ${track.artist}`;
+            songInput.focus();
+            songInput.dispatchEvent(new Event('input', {bubbles:true}));
+        },
+    });
     const loadingText = document.getElementById('loading-text');
     const loadingContainer=document.querySelector('.loading-container');
     const loadingInteraction=document.getElementById('loading-interaction');
